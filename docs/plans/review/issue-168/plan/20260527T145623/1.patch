@@ -1,0 +1,372 @@
+--- docs/plans/review/issue-168/plan/20260527T145623/0.md	2026-05-27 14:56:23
++++ docs/plans/issue-168-hierarchical-artifacts-substrate.md	2026-05-27 15:05:14
+@@ -62,9 +62,19 @@
+ There are two latent drifts to fix while here:
+ 
+ 1. **Layout drift** — web-UI / CLI write flat; subprocess writes hierarchical.
+-2. **Text-filename drift** — web-UI ideator writes `idea.md`; subprocess host
+-   and the binding say `content.md`. Unify on `content.md` (the binding is
+-   authoritative).
++2. **Text-filename drift** — there are currently *three* values in play for the
++   idea text entry: the web-UI ideator route writes `idea.md`
++   ([`ideator.py:418`](../../reference/services/web-ui/src/eden_web_ui/routes/ideator.py)),
++   `predict_artifact_uri`'s bundle collision-check hard-codes `content.md`
++   ([`artifacts.py:143`](../../reference/services/web-ui/src/eden_web_ui/artifacts.py)
++   — a latent predict/write mismatch, harmless today because it only affects a
++   pre-write collision check), and the inline-render reader looks the headline
++   up by the constant `IDEA_BUNDLE_HEADLINE = "idea.md"`
++   ([`_helpers.py:25`](../../reference/services/web-ui/src/eden_web_ui/routes/_helpers.py)).
++   The subprocess host and the binding both say `content.md`. Unify **all four**
++   on `content.md` (the binding is authoritative). The unification is a
++   predict/write/read **lockstep** — miss the reader constant and bundle
++   headlines render blank.
+ 
+ ### 1.2 The substrate is self-describing — no migration shim required
+ 
+@@ -129,93 +139,137 @@
+ 
+ ## 3. Design
+ 
+-### D.1 A single shared path-builder
++### D.1 A single shared path-builder — home and interface
+ 
+ The four writers currently each compute their own path. The chunk introduces
+ one path-builder that all writers call, so the layout lives in exactly one
+ place per language surface.
+ 
+-There are two language surfaces:
++**Home: `eden_service_common`, decided up front (not "during impl").** The
++shared helper must NOT live in `eden_web_ui.artifacts`, because the ideator
++*subprocess host* is a worker-host package and making a worker host depend on
++the web-UI package just to compute a filesystem path is the wrong dependency
++direction. Put the path-builder (and ideally the whole bundle writer) in
++[`eden_service_common`](../../reference/services/_common/src/eden_service_common/),
++which both `eden_web_ui` and the ideator host already depend on. `eden_web_ui.artifacts`
++re-exports / delegates to it so existing web-UI imports keep working; the
++subprocess host imports from `eden_service_common` directly (no cycle).
+ 
+-- **Python** — `eden_web_ui.artifacts` (web-UI ideator + evaluator routes) and
+-  the ideator subprocess host. Add an `entity_artifact_dir()` helper to
+-  [`eden_web_ui/artifacts.py`](../../reference/services/web-ui/src/eden_web_ui/artifacts.py)
+-  and have `write_artifact_bundle` / `predict_artifact_uri` take an
+-  entity-scoped base dir instead of the flat artifacts root.
+-- **Standalone CLI** — [`eden-manual`](../../reference/scripts/manual-ui/eden-manual)
+-  ships as a system-`python3` script and **cannot import** `eden_web_ui`
+-  (documented at [`scripted.py`-adjacent comment, `eden-manual:296-300`](../../reference/scripts/manual-ui/eden-manual)).
+-  Its `_write_artifact_for_role` already mirrors `write_artifact_bundle`
+-  by hand; the mirror gets the same path change. Keep the two in lockstep
+-  (the existing in-file comment already warns about this).
++**The standalone CLI still hand-mirrors.** [`eden-manual`](../../reference/scripts/manual-ui/eden-manual)
++ships as a system-`python3` script and **cannot import** any workspace package
++(documented at [`eden-manual:296-300`](../../reference/scripts/manual-ui/eden-manual)).
++Its `_write_artifact_for_role` already mirrors the bundle writer by hand; the
++mirror gets the same path + filename change. The path-builder test asserts the
++CLI produces the same relative path the shared helper does (§9).
+ 
+-The path-builder maps `(role, entity_id)` → directory:
++**Interface redesign (not a directory-prefix bolt-on).** Today
++`predict_artifact_uri` / `write_artifact_bundle` take `(artifacts_dir, artifact_id)`
++and *choose the basename themselves* — `<artifact_id>.md`, `<artifact_id><ext>`,
++`<artifact_id>.tar.gz` ([`artifacts.py:116,151`](../../reference/services/web-ui/src/eden_web_ui/artifacts.py)).
++Simply prepending `ideas/<idea_id>/` to that would yield
++`ideas/<idea_id>/<idea_id>.md`, **not** `ideas/<idea_id>/content.md`. So the
++helpers must be reworked to separate **where** (the entity dir) from **what name**
++(the per-case filename policy in §D.2): the new signature takes the resolved
++**target directory** plus the filename policy, and predict + write share the
++exact same name-derivation path so they cannot drift.
+ 
++The path-builder maps `(role, entity_id)` → directory under `artifacts/`:
++
+ | Producing role | Entity | Directory under `artifacts/` |
+ |---|---|---|
+ | ideator | idea | `ideas/<idea_id>/` |
+ | executor | variant | `variants/<variant_id>/executor/` |
+ | evaluator | variant | `variants/<variant_id>/evaluator/` |
+ 
+-### D.2 Filename-within-entity-dir convention (the one open decision)
++### D.2 Full filename policy (every case) + no-overwrite handling
+ 
+ The issue left "collision policy within a single entity dir" as "decide during
+-impl." This is load-bearing because of the **no-overwrite durability rule**
+-([`08-storage.md`](../../spec/v0/08-storage.md) §5.4: once a protocol object
+-references an artifact URI, the deployment MUST NOT overwrite the content).
++impl." Because the helpers choose their own basenames today, the layout change
++forces a **complete** filename policy — every write branch (text-only, single
++upload, multi-file bundle) for every producing role. Specifying only the
++text-file case (as the first draft did) leaves the single-upload and bundle
++branches undefined.
+ 
+-Two candidate conventions:
++The policy turns on whether the leaf directory is **write-once** or
++**accumulates** across submissions:
+ 
+-- **(A) Fixed role-coherent filenames** — `ideas/<idea_id>/content.md`,
+-  `variants/<variant_id>/evaluator/evaluation.md`, bundles as `bundle.tar.gz`.
+-  Cleanest browsing. **But** the evaluator can resubmit (chapter 11c:
+-  evaluator-resubmit equivalence is `variant_id`+`status`+`metrics`, and
+-  `artifacts_uri` is explicitly **excluded** — so a corrected resubmit can carry
+-  a *different* artifact). Two evaluator submissions for the same `variant_id`
+-  would both target `variants/<variant_id>/evaluator/evaluation.md` → the second
+-  overwrites the first. If the first URI was already stamped onto the variant's
+-  evaluation manifest, that is a §5.4 violation.
++| Producer | Leaf dir | Write-once? | text-only | single upload | bundle |
++|---|---|---|---|---|---|
++| ideator | `ideas/<idea_id>/` | yes — one idea per dir | `content.md` | `<sanitized-original>` | `bundle.tar.gz` |
++| evaluator | `variants/<variant_id>/evaluator/` | no — accumulates | `eval-<uuid>.md` | `eval-<uuid><ext>` | `eval-<uuid>.tar.gz` |
++| executor (future) | `variants/<variant_id>/executor/` | no — accumulates | `exec-<uuid>.md` | `exec-<uuid><ext>` | `exec-<uuid>.tar.gz` |
+ 
+-- **(B) Unique stem within the entity dir** — keep today's unique
+-  `artifact_id` (a fresh `uuid4().hex` per submission, see
+-  [`ideator.py:386`](../../reference/services/web-ui/src/eden_web_ui/routes/ideator.py))
+-  as the *filename stem*, just nested under the entity dir:
+-  `variants/<variant_id>/evaluator/<artifact_id>.md`. No overwrite is ever
+-  possible; the directory still provides the entity grouping the issue wants
+-  ("what does variant X have?" → `ls variants/<variant_id>/`).
++Rationale for the asymmetry:
+ 
+-**Recommendation: a hybrid.** Ideas are created exactly once, so an idea's dir
+-is already unique — use the clean fixed name `ideas/<idea_id>/content.md`
+-(matching the subprocess host + binding; no resubmit path exists for an idea).
+-For the **evaluator** (the one resubmittable producer), keep a unique stem to
+-preserve §5.4: `variants/<variant_id>/evaluator/<artifact_id>.<ext>` (or
+-`<artifact_id>.tar.gz` for bundles). The executor subdir, when a byte-writer
+-eventually exists, follows the evaluator's unique-stem rule for symmetry.
++- An **idea** is created exactly once (`idea_id = uuid4().hex` is minted per
++  idea, [`ideator.py:386`](../../reference/services/web-ui/src/eden_web_ui/routes/ideator.py));
++  its dir is already unique, so the leaf filenames can be clean fixed names
++  (`content.md`, matching the subprocess host + binding §2.3). The bundle's
++  *internal* headline entry is likewise `content.md` (see §D.3 — the
++  tarball-internal name is separate from the tarball's own filename).
++- The **evaluator** dir is keyed only by `variant_id`, which is **stable across
++  resubmissions** — but the evaluator already mints a fresh per-submission stem
++  `eval-<uuid>` ([`evaluator.py:492`](../../reference/services/web-ui/src/eden_web_ui/routes/evaluator.py)).
++  Carrying that stem into the filename keeps every submission's artifact
++  distinct within the shared variant dir, so the directory still answers "what
++  does variant X have?" while no two submissions ever target the same path.
+ 
+-This is the one decision in this plan that deviates from the issue's literal
+-sketch (which showed `evaluator/<filename>`). The deviation is the
+-§5.4-preserving refinement; **flagged here for plan-review and codex** — if the
+-reviewer prefers fixed filenames everywhere, the alternative is to make the
+-writer refuse to overwrite (raise rather than clobber) and let the form surface
+-a "artifact already exists for this submission" error. Either is defensible;
+-the unique-stem hybrid is the lower-risk default because it cannot violate §5.4
+-even if a future caller forgets the guard.
++**No-overwrite (§5.4) — precise framing.** The first draft claimed the unique
++stem "neutralizes §5.4 by construction." That overstated it: the writers do
++**not** refuse to overwrite — the web-UI uses `os.replace`
++([`artifacts.py:78,237`](../../reference/services/web-ui/src/eden_web_ui/artifacts.py))
++and `eden-manual` writes the tarball straight to its final path
++([`eden-manual:400`](../../reference/scripts/manual-ui/eden-manual)); both
++clobber unconditionally if handed a path that already exists. The property the
++design actually relies on is **"every current caller mints a fresh id per
++write"** (`uuid4().hex` for ideas, `eval-<uuid>` for evaluations), so the same
++target path is never written twice. That holds for all of today's callers, and
++the hierarchical layout preserves it.
+ 
+-> **Surface to operator at plan-review:** confirm the hybrid
+-> (idea → `content.md`; evaluator/executor → `<artifact_id>.<ext>` under the
+-> source subdir) vs. fixed-names-everywhere-with-no-overwrite-guard.
++As **belt-and-suspenders** against a *future* caller that reuses an id, the impl
++SHOULD switch the writers' final materialization to an exclusive create
++(`os.open(..., O_CREAT | O_EXCL)` for the single-file paths, and a pre-check or
++`x`-mode open before the tarball rename) that raises rather than clobbers. This
++is recommended, low-cost, and makes the §5.4 guarantee independent of caller
++discipline — but it is not load-bearing given current callers, so it is a
++SHOULD, not a blocker. Add a test that writes twice to the same target and
++asserts the second raises (once the guard lands) or that the id-minting path
++never produces a duplicate (until it does).
+ 
+-### D.3 Text-filename unification
++This filename policy deviates from the issue's literal `evaluator/<filename>`
++sketch (the issue did not pin single-upload / bundle names). The deviation is
++the §5.4-and-resubmit-safe refinement; **flagged for plan-review and codex**.
+ 
+-Unify the ideator text filename on **`content.md`** (the binding §2.3 value and
+-the subprocess host's value). The web-UI ideator route currently passes
+-`text_filename="idea.md"` ([`ideator.py:418`](../../reference/services/web-ui/src/eden_web_ui/routes/ideator.py));
+-change to `content.md`. The evaluator's text entry stays `evaluation.md`
+-(role-coherent; no competing convention to reconcile).
++### D.3 Text-filename unification (predict/write/read lockstep)
+ 
+-This only affects the *entry name inside a bundle* and the single-text-file
+-name; it does not change any wire field.
++Unify the ideator text filename — both the single-`.md` name and the
++bundle-internal headline entry — on **`content.md`** (the binding §2.3 value and
++the subprocess host's value). This is a four-point lockstep; missing any one
++leaves a real mismatch (a blank bundle headline or a predict/write divergence):
+ 
++1. **Write** — web-UI ideator route passes `text_filename="content.md"` instead
++   of `"idea.md"` ([`ideator.py:418`](../../reference/services/web-ui/src/eden_web_ui/routes/ideator.py)).
++2. **Predict** — `predict_artifact_uri`'s bundle collision-check already
++   hard-codes `content.md` ([`artifacts.py:143`](../../reference/services/web-ui/src/eden_web_ui/artifacts.py));
++   after the write change, predict and write finally agree. (Today they
++   silently disagree — the latent bug §1.1 notes.)
++3. **Read** — change `IDEA_BUNDLE_HEADLINE = "idea.md"` →
++   `"content.md"` ([`_helpers.py:25`](../../reference/services/web-ui/src/eden_web_ui/routes/_helpers.py));
++   the inline-render path looks the headline up by this constant, so a stale
++   value renders the idea bundle's markdown headline blank.
++4. **CLI** — `eden-manual` passes `text_filename="content.md"` for ideation
++   ([`eden-manual`](../../reference/scripts/manual-ui/eden-manual) ideation path).
++
++The evaluator's text entry stays `evaluation.md` (`EVALUATION_BUNDLE_HEADLINE`,
++[`_helpers.py:26`](../../reference/services/web-ui/src/eden_web_ui/routes/_helpers.py));
++role-coherent, no competing convention. `VARIANT_BUNDLE_HEADLINE = "variant.md"`
++([`_helpers.py:27`](../../reference/services/web-ui/src/eden_web_ui/routes/_helpers.py))
++is untouched (no variant text-bundle writer in scope).
++
++This affects only the *entry name inside a bundle* and the single-text-file
++name; it does not change any wire field. Templates that reference the literal
++`idea.md` (grep `templates/`) must switch too — part of the same lockstep.
++
+ ### D.4 URI shape after the change
+ 
+ `eden-manual` stamps the container-internal path
+@@ -320,23 +374,33 @@
+ 
+ **Reference impl (Python):**
+ 
++- [`reference/services/_common/src/eden_service_common/`](../../reference/services/_common/src/eden_service_common/)
++  — **new** shared path-builder + (ideally) the relocated bundle writer
++  (`entity_artifact_dir()` + the `predict`/`write` pair, reworked per §D.1 to
++  take a target dir + filename policy). This is the single source of truth all
++  three Python surfaces import.
+ - [`reference/services/web-ui/src/eden_web_ui/artifacts.py`](../../reference/services/web-ui/src/eden_web_ui/artifacts.py)
+-  — add `entity_artifact_dir()`; thread an entity-scoped base into
+-  `write_artifact_bundle` + `predict_artifact_uri`; unify text filename.
++  — delegate `write_artifact_bundle` / `predict_artifact_uri` to the
++  `eden_service_common` helper (keep the module's public names so existing
++  imports survive).
+ - [`reference/services/web-ui/src/eden_web_ui/routes/ideator.py`](../../reference/services/web-ui/src/eden_web_ui/routes/ideator.py)
+-  — call the path-builder for `ideas/<idea_id>/`; `text_filename="content.md"`.
++  — write into `ideas/<idea_id>/`; `text_filename="content.md"`.
+ - [`reference/services/web-ui/src/eden_web_ui/routes/evaluator.py`](../../reference/services/web-ui/src/eden_web_ui/routes/evaluator.py)
+-  — call the path-builder for `variants/<variant_id>/evaluator/`.
++  — write into `variants/<variant_id>/evaluator/` (keep the existing
++  `eval-<uuid>` stem per §D.2).
++- [`reference/services/web-ui/src/eden_web_ui/routes/_helpers.py`](../../reference/services/web-ui/src/eden_web_ui/routes/_helpers.py)
++  — `IDEA_BUNDLE_HEADLINE = "idea.md"` → `"content.md"` (§D.3 lockstep).
+ - [`reference/services/ideator/src/eden_ideator_host/subprocess_mode.py`](../../reference/services/ideator/src/eden_ideator_host/subprocess_mode.py)
+-  — already writes `ideas/<idea_id>/content.md`; audit for consistency with the
+-  shared helper (route through it if feasible without an import cycle, else
+-  leave + add a lockstep comment).
++  — already writes `ideas/<idea_id>/content.md` ([`subprocess_mode.py:300-306`](../../reference/services/ideator/src/eden_ideator_host/subprocess_mode.py));
++  route it through the `eden_service_common` helper so the path lives in one
++  place (no import cycle — both depend on `_common`).
+ 
+ **Standalone CLI:**
+ 
+ - [`reference/scripts/manual-ui/eden-manual`](../../reference/scripts/manual-ui/eden-manual)
+-  — `_write_artifact_for_role` path change (hand-mirror of the Python helper);
+-  verify `_translate_artifacts_uri_to_host` handles nested relative paths.
++  — `_write_artifact_for_role` path + filename change (hand-mirror of the shared
++  helper; cannot import it); verify `_translate_artifacts_uri_to_host` handles
++  nested relative paths.
+ 
+ **Spec (binding only):**
+ 
+@@ -345,23 +409,37 @@
+ - [`spec/v0/08-storage.md`](../../spec/v0/08-storage.md) — one informational
+   note in §5.1 pointing at the binding's concrete scheme.
+ 
+-**Tests:**
++**Tests (the inventory is wider than "update path assertions" — these are the
++confirmed surfaces that bake in the flat shape or the `idea.md` headline):**
+ 
++- [`reference/services/ideator/tests/test_ideator_subprocess.py`](../../reference/services/ideator/tests/test_ideator_subprocess.py)
++  — does **not** currently assert `ideas/<idea_id>/content.md` (verified — it
++  asserts the URI exists but not the path shape); add the path-shape assertion.
++- [`reference/services/web-ui/tests/conftest.py`](../../reference/services/web-ui/tests/conftest.py)
++  (~L345) — the shared `make_idea`-style fixture fabricates a flat
++  `<idea_id>.md` artifact directly. Because the serve route is layout-agnostic
++  this still *resolves*, but update it to the hierarchical path so fixtures
++  reflect reality and any URI-shape assertion downstream stays honest.
++- [`reference/services/web-ui/tests/test_admin_ideas_routes.py`](../../reference/services/web-ui/tests/test_admin_ideas_routes.py)
++  (~L26) — embeds a flat idea path; update.
+ - [`reference/services/web-ui/tests/test_artifact_bundle.py`](../../reference/services/web-ui/tests/test_artifact_bundle.py),
+   `test_ideator_*`, `test_evaluator_*`, `test_admin_artifacts_routes.py` —
+-  update path assertions; add a path-builder unit test (three mappings +
+-  no-overwrite stem).
+-- [`reference/services/ideator/tests/test_ideator_subprocess.py`](../../reference/services/ideator/tests/test_ideator_subprocess.py)
+-  — likely already asserts `ideas/<idea_id>/content.md`; confirm.
+-- Any test hard-coding `artifacts/<id>.md` flat paths — grep and update.
++  update path + headline (`idea.md`→`content.md`) assertions.
++- **New** path-builder unit test: the three `(role, entity_id)→dir` mappings,
++  the full §D.2 filename policy per branch, and the §D.2 no-overwrite assertion
++  (second write to the same target raises once the `O_EXCL` guard lands).
++- Grep gate before merge: `grep -rn 'artifacts/.*\.md\|<id>\.md\|idea\.md' reference/`
++  to catch any remaining flat-path / headline literal.
+ 
+ **Docs:**
+ 
+ - [`docs/glossary.md`](../../docs/glossary.md) — add the artifact-layout
+   vocabulary if not already covered (per §5).
+-- `CHANGELOG.md` `[Unreleased]` + `docs/roadmap.md` one-liner (planless-style:
+-  roadmap points at the merged PR, since #168 is issue-driven not a phase
+-  chunk) at impl-completion time.
++- `CHANGELOG.md` `[Unreleased]` + `docs/roadmap.md` at impl-completion. **This
++  chunk has a plan under `docs/plans/`, so the roadmap entry points at the
++  plan path, not a PR link** (AGENTS.md: PR-link roadmap entries are only for
++  *genuinely planless* work — hotfixes, mechanical renames). Shape:
++  `- [168](plans/issue-168-hierarchical-artifacts-substrate.md) — <title> — **shipped <date>** (see [CHANGELOG](../CHANGELOG.md))`.
+ 
+ **Note on scripted fixtures:** the scripted hosts
+ ([`scripted.py:64,161,169`](../../reference/services/_common/src/eden_service_common/scripted.py))
+@@ -414,24 +492,28 @@
+ 
+ ## 9. Risks / things to watch
+ 
+-- **No-overwrite (§5.4) on evaluator resubmit.** The load-bearing correctness
+-  risk. The §D.2 unique-stem hybrid neutralizes it by construction; if
+-  plan-review chooses fixed filenames instead, the writer **must** gain a
+-  refuse-to-overwrite guard. Either way, add a test that submits an evaluator
+-  artifact twice for the same `variant_id` and asserts the first is not
+-  clobbered.
++- **No-overwrite (§5.4) — don't conflate id-uniqueness with an overwrite
++  guard.** The writers clobber unconditionally (`os.replace`,
++  [`artifacts.py:78,237`](../../reference/services/web-ui/src/eden_web_ui/artifacts.py);
++  direct tarball write, [`eden-manual:400`](../../reference/scripts/manual-ui/eden-manual)).
++  §5.4 holds today only because **every caller mints a fresh per-submission id**
++  (§D.2), so no path is reused — not because the writer refuses to overwrite.
++  The impl SHOULD add an `O_EXCL`-style exclusive-create guard to make the
++  guarantee caller-independent (recommended, low-cost, not a blocker). Add a
++  test that writes twice to the same target and asserts the second raises (after
++  the guard) — and a test that the evaluator resubmit path mints a distinct
++  `eval-<uuid>` so no two submissions for one `variant_id` ever collide.
+ - **CLI / web-UI lockstep.** `eden-manual` hand-mirrors the bundle logic
+-  because it can't import `eden_web_ui` (system-`python3` script). The path
+-  change must land in both, identically. The existing in-file comment
+-  ([`eden-manual:296-300`](../../reference/scripts/manual-ui/eden-manual))
+-  already flags this; the path-builder test should run against both code paths
+-  (or at least assert the CLI produces the same relative path the helper does).
+-- **Import-cycle temptation.** Routing the subprocess ideator host through
+-  `eden_web_ui.artifacts` would couple a worker-host package to the web-UI
+-  package. If that import is undesirable, duplicate the tiny path-builder into
+-  a shared `eden_service_common` location instead, and have all three Python
+-  surfaces import from there. Decide during impl; surface the chosen home in
+-  the PR.
++  because it can't import any workspace package (system-`python3` script). The
++  path + filename change must land in both, identically. The existing in-file
++  comment ([`eden-manual:296-300`](../../reference/scripts/manual-ui/eden-manual))
++  already flags this; the path-builder test asserts the CLI produces the same
++  relative path the shared helper does.
++- **Helper-home dependency direction.** The shared path-builder lives in
++  `eden_service_common` (§D.1), **not** `eden_web_ui.artifacts` — putting it in
++  the web-UI package would force the ideator subprocess host (a worker-host
++  package) to depend on the web-UI just to compute a path. This is decided up
++  front, not deferred.
+ - **Nested-path host translation.** `_translate_artifacts_uri_to_host` uses
+   `relative_to(CONTAINER_ARTIFACTS_DIR)` — verified to walk the full relative
+   path, so `ideas/<id>/content.md` round-trips. Add the nested-path unit test
+@@ -515,8 +597,9 @@
+ and the web-UI / admin listing resolve it. `e2e.sh` drives the Web-UI ideator
+ walkthrough, proving the web-UI writer's hierarchical path is served correctly.
+ 
+-- CHANGELOG `[Unreleased]` entry + roadmap one-liner (planless shape, points
+-  at the PR).
++- CHANGELOG `[Unreleased]` entry + roadmap one-liner pointing at the **plan
++  path** (this chunk has a plan under `docs/plans/`; PR-link roadmap entries are
++  for genuinely planless work only — §6 Docs).
+ 
+ ## 11. Estimated effort
+ 

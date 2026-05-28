@@ -1,0 +1,46 @@
+--- docs/plans/review/issue-168/plan/20260527T145623/2.md	2026-05-27 15:08:04
++++ docs/plans/issue-168-hierarchical-artifacts-substrate.md	2026-05-27 15:10:14
+@@ -36,7 +36,8 @@
+ ```
+ 
+ The layout choice settled in the issue thread; this plan does **not**
+-re-litigate it (see §3 for the one filename-convention decision left open).
++re-litigate it (§D.2 resolves the filename-within-entity-dir convention the
++issue left as "decide during impl").
+ 
+ ### 1.1 The layout is already half-built — and drifting
+ 
+@@ -443,6 +444,13 @@
+ - **New** path-builder unit test: the three `(role, entity_id)→dir` mappings,
+   the full §D.2 filename policy per branch, and the §D.2 no-overwrite assertion
+   (second write to the same target raises once the `O_EXCL` guard lands).
++- **New** CLI write-side URI assertion (the subtle §D.4 bug): call
++  `_write_artifact_for_role` for the ideation text-only path and assert the
++  **returned** URI is
++  `file:///var/lib/eden/artifacts/ideas/<idea_id>/content.md` (full nested
++  relative path, not the basename-only stamp). The host-translate round-trip
++  test does **not** cover this — the stamp and the translate are independent
++  code paths (§D.4), so the write-side stamp needs its own assertion.
+ - Grep gate before merge: `grep -rn 'artifacts/.*\.md\|<id>\.md\|idea\.md' reference/`
+   to catch any remaining flat-path / headline literal.
+ 
+@@ -570,12 +578,14 @@
+ 
+ **Wave 2 — CLI mirror.**
+ 
+-- Mirror the path change in `eden-manual` `_write_artifact_for_role`; verify
+-  nested-path host-translate.
++- Mirror the path + filename change in `eden-manual` `_write_artifact_for_role`,
++  **including the three write-side URI stamp sites** (basename-only → full
++  relative path, §D.4); verify nested-path host-translate (expected no-op).
++- Add the §6 CLI write-side URI assertion.
+ 
+-*Gate:* `uv run pytest -q` (CLI / manual-ui tests if present) + a manual
+-`eden-manual` ideation-submit smoke against a local stack confirming the URI
+-stamps `…/ideas/<id>/content.md` and the web-UI serves it.
++*Gate:* `uv run pytest -q` (including the new write-side URI assertion) + a
++manual `eden-manual` ideation-submit smoke against a local stack confirming the
++URI stamps `…/ideas/<id>/content.md` and the web-UI serves it.
+ 
+ **Wave 3 — spec binding + docs.**
+ 
