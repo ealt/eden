@@ -1,0 +1,43 @@
+**Findings**
+
+- Major: the new `experiment.base_commit_sha` runtime field still is not carried through the full experiment-runtime / checkpoint / backend-persistence surface. The plan adds the field in the spec/runtime object and `read_experiment`, but `files to touch` still omits chapter 10, checkpoint import/export code, backend schema migrations, and several experiment-shape tests. That is a real completeness gap, not just cleanup. See [issue-122-baseline-variant.md](/Users/ericalt/Documents/eden-worktrees/plan-issue-122-baseline/docs/plans/issue-122-baseline-variant.md:274), [issue-122-baseline-variant.md](/Users/ericalt/Documents/eden-worktrees/plan-issue-122-baseline/docs/plans/issue-122-baseline-variant.md:279), [issue-122-baseline-variant.md](/Users/ericalt/Documents/eden-worktrees/plan-issue-122-baseline/docs/plans/issue-122-baseline-variant.md:287), [issue-122-baseline-variant.md](/Users/ericalt/Documents/eden-worktrees/plan-issue-122-baseline/docs/plans/issue-122-baseline-variant.md:298), [10-checkpoints.md](/Users/ericalt/Documents/eden-worktrees/plan-issue-122-baseline/spec/v0/10-checkpoints.md:21), [10-checkpoints.md](/Users/ericalt/Documents/eden-worktrees/plan-issue-122-baseline/spec/v0/10-checkpoints.md:42), [10-checkpoints.md](/Users/ericalt/Documents/eden-worktrees/plan-issue-122-baseline/spec/v0/10-checkpoints.md:193), [experiment.py](/Users/ericalt/Documents/eden-worktrees/plan-issue-122-baseline/reference/packages/eden-contracts/src/eden_contracts/experiment.py:45), [_checkpoint.py](/Users/ericalt/Documents/eden-worktrees/plan-issue-122-baseline/reference/packages/eden-storage/src/eden_storage/_checkpoint.py:513), [memory.py](/Users/ericalt/Documents/eden-worktrees/plan-issue-122-baseline/reference/packages/eden-storage/src/eden_storage/memory.py:143), [sqlite.py](/Users/ericalt/Documents/eden-worktrees/plan-issue-122-baseline/reference/packages/eden-storage/src/eden_storage/sqlite.py:414), [postgres.py](/Users/ericalt/Documents/eden-worktrees/plan-issue-122-baseline/reference/packages/eden-storage/src/eden_storage/postgres.py:776), [_schema.py](/Users/ericalt/Documents/eden-worktrees/plan-issue-122-baseline/reference/packages/eden-storage/src/eden_storage/_schema.py:211), [_postgres_schema.py](/Users/ericalt/Documents/eden-worktrees/plan-issue-122-baseline/reference/packages/eden-storage/src/eden_storage/_postgres_schema.py:177), [test_checkpoint_wire.py](/Users/ericalt/Documents/eden-worktrees/plan-issue-122-baseline/reference/packages/eden-wire/tests/test_checkpoint_wire.py:116), [conformance _seed.py](/Users/ericalt/Documents/eden-worktrees/plan-issue-122-baseline/conformance/src/conformance/harness/_seed.py:789). I would explicitly add `spec/v0/10-checkpoints.md`, `eden_contracts/experiment.py`, checkpoint serializer/importer code, backend schema/migration files, and read/checkpoint tests to the plan.
+
+- Medium: the conformance section still misses the new wire-authority rule. D.4.1 makes `create_variant(kind="baseline")` orchestrator-group gated, which is wire-observable and normative, but §7 only covers round-trip/integration/metrics/`idea_id` behavior. See [issue-122-baseline-variant.md](/Users/ericalt/Documents/eden-worktrees/plan-issue-122-baseline/docs/plans/issue-122-baseline-variant.md:110), [issue-122-baseline-variant.md](/Users/ericalt/Documents/eden-worktrees/plan-issue-122-baseline/docs/plans/issue-122-baseline-variant.md:216). The new conformance group should include both positive and negative auth cases: ordinary worker rejected, orchestrator-authorized principal accepted.
+
+- Medium: the e2e blast radius is broader than “update exact counts.” Those tests currently assume every successful variant is integrated and has an `idea_id`; a baseline breaks the loop body itself, not just the totals. See [issue-122-baseline-variant.md](/Users/ericalt/Documents/eden-worktrees/plan-issue-122-baseline/docs/plans/issue-122-baseline-variant.md:249), [issue-122-baseline-variant.md](/Users/ericalt/Documents/eden-worktrees/plan-issue-122-baseline/docs/plans/issue-122-baseline-variant.md:353), [test_e2e.py](/Users/ericalt/Documents/eden-worktrees/plan-issue-122-baseline/reference/services/orchestrator/tests/test_e2e.py:285). The plan should say these tests must partition baseline vs ordinary success variants before asserting `variant_commit_sha` and `store.read_idea(variant.idea_id)`.
+
+- Medium: the idempotency story for `ensure_baseline_variant()` is still too weak as written. `AlreadyExists: pass` is only safe if the existing row is verified to be the canonical baseline for that experiment. Otherwise an unrelated row with the chosen deterministic id, or a config-shape mismatch across restarts, silently suppresses baseline creation. See [issue-122-baseline-variant.md](/Users/ericalt/Documents/eden-worktrees/plan-issue-122-baseline/docs/plans/issue-122-baseline-variant.md:92), [issue-122-baseline-variant.md](/Users/ericalt/Documents/eden-worktrees/plan-issue-122-baseline/docs/plans/issue-122-baseline-variant.md:264). I’d require a read-back check: if the row exists, it must already be `kind="baseline"` with the expected seed SHA and compatible status shape, otherwise fail loudly.
+
+- Medium: D.7’s `idea_id` blast-radius list still misses evaluation-task target inheritance. The default evaluation-dispatch path currently falls back through `variant.idea_id` to the originating idea’s `intended_evaluator`; a baseline with no `idea_id` needs an explicit “untargeted evaluation task” rule and a unit test. See [issue-122-baseline-variant.md](/Users/ericalt/Documents/eden-worktrees/plan-issue-122-baseline/docs/plans/issue-122-baseline-variant.md:157), [_base.py](/Users/ericalt/Documents/eden-worktrees/plan-issue-122-baseline/reference/packages/eden-storage/src/eden_storage/_base.py:855). It may already behave acceptably in the reference impl, but the contract should say so.
+
+**3. Alternatives**
+
+Assessment: the revised core choices are now defensible.
+
+Reusing `create_variant` with per-kind authority is reasonable now that D.4.1 closes the privilege hole; I no longer think a dedicated wire op is the better default. Likewise, moving seed SHA onto the experiment runtime object is the right solution for multi-experiment mode.
+
+The one alternative still worth keeping visible is `default-on` vs `opt-in`. The plan now accounts for more of the blast radius, but `default-on` still buys product simplicity at the cost of touching more tests and more runtime paths. If the team wants the smallest rollout surface, opt-in remains the lower-risk alternative. I would not block on that choice, but it is still the main strategic tradeoff.
+
+**4. Completeness**
+
+Assessment: much better than round 0, but not complete yet.
+
+The largest missing area is the experiment-runtime propagation of `base_commit_sha`: spec chapter 10, checkpoint code, backend persistence/migrations, experiment contract model, and experiment-shape tests/helpers all need to be pulled into the plan explicitly.
+
+I would also tighten two smaller completeness points:
+- Add the conformance auth assertion for `kind="baseline"` creates.
+- Update the plan text around exact-count e2es to note that assertion bodies, not just expected numbers, need baseline-aware handling.
+
+There is also one stale plan artifact: the naming map still says the orchestrator consumes `--base-commit-sha` / `EDEN_BASE_COMMIT_SHA`, which no longer matches D.2’s store-backed design. See [issue-122-baseline-variant.md](/Users/ericalt/Documents/eden-worktrees/plan-issue-122-baseline/docs/plans/issue-122-baseline-variant.md:193).
+
+**5. Edge Cases And Risks**
+
+Assessment: the remaining risks are mostly silent-failure risks, not design infeasibility.
+
+The main one is false-idempotency: if baseline creation treats any `AlreadyExists` as success, a conflicting row or config drift can leave the experiment without a valid baseline while looking healthy.
+
+The other subtle risk is “baseline with no idea” leaking into code that was not in the original D.7 audit. The evaluation-target inheritance path is the obvious example; event-only consumers are another reason I would consider making baseline `kind` mandatory, not merely recommended, on `variant.started` payloads.
+
+**Overall Assessment**
+
+This revision resolves the round-0 feasibility blockers and the chosen design is now basically sound. The remaining work is to make the plan complete around `experiment.base_commit_sha` propagation, add the missing conformance auth coverage, and harden the idempotency/null-idea edges so they fail loudly instead of silently. After that, it looks ready to execute.
