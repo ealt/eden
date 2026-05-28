@@ -24,6 +24,7 @@ from __future__ import annotations
 import contextlib
 import uuid
 from collections.abc import Callable
+from dataclasses import replace
 from datetime import timedelta
 from typing import Any
 
@@ -36,8 +37,10 @@ from eden_storage import (
 )
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
+from starlette.datastructures import UploadFile
 
-from ..forms import parse_implement_form
+from ..artifacts import UploadedFile, write_artifact_bundle
+from ..forms import FormErrors, parse_implement_form
 from ._helpers import (
     csrf_ok,
     get_session,
@@ -270,6 +273,7 @@ def _phase3_submit_with_readback(
             commit_sha=draft.commit_sha,
             branch=branch if draft.status == "success" else None,
             status=draft.status,
+            artifacts_uri=draft.artifacts_uri,
         )
     return _render_orphaned(
         request,
@@ -539,7 +543,11 @@ async def submit(  # noqa: PLR0911 — flow has many distinct outcome arms by de
     except DispatchError as exc:
         return _render_error(request, wire_error_banner(exc))
 
-    draft, errors, form_state = _parse_submit_form(form)
+    draft, errors, form_state = _parse_submit_form(
+        form,
+        request=request,
+        uploaded=await _collect_uploads(form, field_name="artifact_files"),
+    )
     if draft is None:
         return _render_draft(
             request,
@@ -672,12 +680,24 @@ def _phase2_publish_work_ref_or_orphan(
     )
 
 
-def _parse_submit_form(form: Any) -> tuple[Any, Any, dict[str, str]]:
-    """Parse the implement-form fields. Returns ``(draft, errors, form_state)``."""
+def _parse_submit_form(
+    form: Any,
+    *,
+    request: Request,
+    uploaded: list[UploadedFile],
+) -> tuple[Any, Any, dict[str, str]]:
+    """Parse the implement-form fields. Returns ``(draft, errors, form_state)``.
+
+    Mirrors the evaluator's ``_parse_evaluator_submit_form`` (issue #120):
+    when the operator supplies text and/or file uploads instead of an
+    explicit ``artifacts_uri``, the draft's ``artifacts_uri`` is rewritten
+    to point at a freshly-bundled artifact (single-file or ``.tar.gz``).
+    """
     status_raw = str(form.get("status") or "")
     commit_sha_raw = str(form.get("commit_sha") or "")
     description_raw = str(form.get("description") or "")
     artifacts_uri_raw = str(form.get("artifacts_uri") or "")
+    artifact_text_raw = str(form.get("artifact_text") or "")
     draft, errors = parse_implement_form(
         status_raw=status_raw,
         commit_sha_raw=commit_sha_raw,
@@ -689,8 +709,91 @@ def _parse_submit_form(form: Any) -> tuple[Any, Any, dict[str, str]]:
         "commit_sha": commit_sha_raw,
         "description": description_raw,
         "artifacts_uri": artifacts_uri_raw,
+        "artifact_text": artifact_text_raw,
     }
+    if draft is None:
+        return None, errors, form_state
+
+    written_uri, bundle_error = _maybe_bundle_executor_artifact(
+        request=request,
+        artifacts_uri_raw=artifacts_uri_raw,
+        artifact_text_raw=artifact_text_raw,
+        uploaded=uploaded,
+    )
+    if bundle_error is not None:
+        new_errors = errors or FormErrors()
+        new_errors.add(0, "artifact", bundle_error)
+        return None, new_errors, form_state
+    if written_uri is not None:
+        draft = replace(draft, artifacts_uri=written_uri)
+        form_state["artifacts_uri"] = written_uri
     return draft, errors, form_state
+
+
+def _maybe_bundle_executor_artifact(
+    *,
+    request: Request,
+    artifacts_uri_raw: str,
+    artifact_text_raw: str,
+    uploaded: list[UploadedFile],
+) -> tuple[str | None, str | None]:
+    """Decide whether to write a new bundled executor artifact.
+
+    Mirrors the evaluator's ``_maybe_bundle_evaluator_artifact``.
+    Returns ``(uri, error)``:
+
+    - ``(None, None)`` if the operator supplied an explicit
+      ``artifacts_uri`` OR provided neither text nor uploads — no new
+      artifact is written.
+    - ``(uri, None)`` on a successful write — the caller pins
+      ``draft.artifacts_uri`` to ``uri``.
+    - ``(None, msg)`` on a bundling collision / filename rejection — the
+      caller turns ``msg`` into a per-field form error.
+    """
+    if artifacts_uri_raw.strip():
+        return None, None
+    if not (artifact_text_raw.strip() or uploaded):
+        return None, None
+    try:
+        uri = write_artifact_bundle(
+            request.app.state.artifacts_dir,
+            f"variant-artifact-{uuid.uuid4().hex}",
+            text_content=artifact_text_raw,
+            text_filename="variant.md",
+            uploads=uploaded,
+        )
+    except ValueError as exc:
+        return None, str(exc)
+    return uri, None
+
+
+async def _collect_uploads(
+    form: Any, *, field_name: str
+) -> list[UploadedFile]:
+    """Pull all ``UploadFile`` entries for ``field_name`` from ``form``.
+
+    Browser file inputs with ``multiple`` post one part per selected
+    file, all under the same field name; ``form.getlist(field_name)``
+    returns them in order. Drops empty-filename entries (Starlette's
+    representation of "user selected nothing") so the bundler doesn't
+    treat the absence-of-uploads as a single empty upload. Mirrors the
+    evaluator route's ``_collect_uploads``.
+    """
+    out: list[UploadedFile] = []
+    for item in form.getlist(field_name):
+        if not isinstance(item, UploadFile):
+            continue
+        if not item.filename:
+            continue
+        data = await item.read()
+        out.append(
+            UploadedFile(
+                filename=item.filename,
+                data=data,
+                content_type=item.content_type,
+            )
+        )
+    return out
 
 
 def _run_success_draft_gates(
@@ -784,6 +887,7 @@ def _render_submitted(
     commit_sha: str | None,
     branch: str | None,
     status: str,
+    artifacts_uri: str | None = None,
 ) -> HTMLResponse:
     return request.app.state.templates.TemplateResponse(
         request,
@@ -794,6 +898,7 @@ def _render_submitted(
             "commit_sha": commit_sha,
             "branch": branch,
             "status": status,
+            "artifacts_uri": artifacts_uri,
         },
     )
 
@@ -850,6 +955,7 @@ def _empty_form_state() -> dict[str, str]:
         "commit_sha": "",
         "description": "",
         "artifacts_uri": "",
+        "artifact_text": "",
     }
 
 

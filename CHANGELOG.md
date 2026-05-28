@@ -8,6 +8,16 @@ Per-chunk entries preserve the full implementation record: contract amendments, 
 
 ## [Unreleased]
 
+### Executor-side multi-file artifact upload UX (issue #212; follow-up to #120)
+
+Extends the issue-#120 multi-file artifact upload UX (text box + file uploads → server-side `.tar.gz` bundle with a top-level `manifest.json`) to the executor submission form. #120 landed this on the ideator + evaluator forms and deferred the executor surface; this closes that gap so executors can attach build outputs, screenshots, profiling captures, etc. alongside their variant submission.
+
+**Template.** [`executor_claim.html`](reference/services/web-ui/src/eden_web_ui/templates/executor_claim.html) gains `enctype="multipart/form-data"` and an `artifact (optional)` fieldset mirroring the evaluator form: an `artifact_text` markdown textarea, a `multiple` `artifact_files` input, and the existing `artifacts_uri` field repositioned as an explicit-URI override ("when set, text / uploads above are ignored"). The fieldset surfaces both the `artifact` (bundling collision / filename rejection) and `artifacts_uri` per-field errors. [`executor_submitted.html`](reference/services/web-ui/src/eden_web_ui/templates/executor_submitted.html) now renders the resulting `artifacts_uri` as a scheme-aware link, matching `evaluator_submitted.html`.
+
+**Route.** [`routes/executor.py`](reference/services/web-ui/src/eden_web_ui/routes/executor.py) reuses the `predict_artifact_uri`-adjacent `write_artifact_bundle` helper from [`artifacts.py`](reference/services/web-ui/src/eden_web_ui/artifacts.py). New `_collect_uploads` + `_maybe_bundle_executor_artifact` helpers mirror the evaluator route exactly; `_parse_submit_form` now collects uploads and rewrites the draft's `artifacts_uri` to the freshly-bundled artifact (single-file `.md`/`<ext>` or `.tar.gz`) when the operator supplies text/uploads instead of an explicit URI. The bundle text entry lands at the role-coherent `variant.md` headline (cf. `idea.md` / `evaluation.md`). The `artifacts_uri` already flowed through `VariantSubmission` onto `Variant.executor_artifacts_uri` (spec `03-roles.md` §3.4, issues #164/#165) — only the URI-production path is new. The executor's separate `Variant.description` field is unchanged.
+
+**Tests.** New [`test_executor_multifile.py`](reference/services/web-ui/tests/test_executor_multifile.py) mirrors `test_evaluator_multifile.py` / `test_ideator_multifile.py`: text+files → `.tar.gz` (with per-entry serving round-trip), text-only → `.md`, single-file → raw `<ext>`, explicit URI overrides bundling, and the no-artifact path stays `artifacts_uri == None`. All cases drive the executor's `status="success"` git-reachability gates with a real child commit.
+
 ### Refactor F-1: split `eden-storage._StoreBase` into a mixin family (issue #114)
 
 Code-quality follow-up from the Phase-A audit ([`docs/audits/2026-05-20-phase-c-disposition.md`](docs/audits/2026-05-20-phase-c-disposition.md) §1 F-1). The 1,638-SLOC `_base.py` monolith (MI 0.00, carried under a `# slop-allow-file:` annotation deferring the split to #114) is split into a thin core plus a per-resource mixin family. **Behavior-preserving by construction** — no spec, schema, wire, or `Store`-Protocol change; the only observable difference is internal file layout.
