@@ -8,7 +8,7 @@ Today the experiment seed — the single commit on `main` at experiment start, c
 
 This leaves a gap: operators want to compare a variant's metrics against "what did the seed score?", but the seed has no metrics because it was never evaluated. For the lineage-tree visualization (a separate issue) the seed is a colorless root with no comparison point.
 
-The fix is to promote the seed to a first-class `Variant` with a new discriminator `kind == "baseline"`. The orchestrator creates it at experiment startup with `commit_sha = base_commit_sha`. From there, three paths:
+The fix is to elevate the seed to a first-class `Variant` with a new discriminator `kind == "baseline"`. The orchestrator creates it at experiment startup with `commit_sha = base_commit_sha`. From there, three paths:
 
 - **Default — real evaluation.** The baseline rides the orchestrator's existing `evaluation_dispatch` decision ([`02-data-model.md`](../../spec/v0/02-data-model.md) §2.4 decision-type 3): it is created `starting` with `commit_sha` set, so the orchestrator dispatches an `evaluation` task for it like any other variant. The evaluator scores the seed against `evaluation_schema`; the baseline ends up `success` with real metrics, via the same mechanism as every other score.
 - **Optional override — config-supplied metrics.** When the config carries a `baseline.metrics` block, the orchestrator creates the baseline already terminal (`success` + the supplied metrics), skipping the evaluation dispatch. Useful when the evaluator is expensive (LLM/human) or a deterministic known-good baseline is wanted without spending evaluation budget.
@@ -18,7 +18,7 @@ The work is a real but tractable spec amendment plus a focused reference-impl ch
 
 ## 2. Decisions captured before drafting
 
-These shape the plan's naming map, scope, and schema surfaces. They follow the issue's proposal; the operator was offered the alternatives and these are the defaults selected. **They are open to override at plan-PR review** — flagged here so codex-review and the operator can challenge them rather than missing them in the diff.
+These shape the plan's naming map, scope, and schema surfaces. They follow the issue's recommendation; the operator was offered the alternatives and these are the defaults selected. **They are open to override at plan-PR review** — flagged here so codex-review and the operator can challenge them rather than missing them in the diff.
 
 1. **Field name: `Variant.kind`.** Matches the issue. `kind` already names the task role-routing field (`ideation`/`execution`/`evaluation`, glossary §3.1); reusing it on `Variant` overloads the term across two entities. Resolution: the glossary gains two scoped sub-entries ("task kind" vs "variant kind") and the data-model prose names the field as `Variant.kind` unambiguously. Alternatives considered and rejected: `variant_kind` (verbose, diverges from issue wording), `origin` (new vocabulary not in the issue). If review prefers disambiguation-by-name, `variant_kind` is the fallback — call it out before impl.
 
@@ -66,7 +66,7 @@ Add an optional `kind` field to the variant data model (§9.1 table) and a new s
 
 | Field | Required | Type | Description |
 |---|---|---|---|
-| `kind` | no | string | Variant classifier. Absent (the default) for ordinary executor-produced variants. `"baseline"` marks the experiment seed promoted to a first-class variant (§9.4). |
+| `kind` | no | string | Variant classifier. Absent (the default) for ordinary executor-produced variants. `"baseline"` marks the experiment seed elevated to a first-class variant (§9.4). |
 
 §9.4 prose (normative) covers:
 
