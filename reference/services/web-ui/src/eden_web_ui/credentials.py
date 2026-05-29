@@ -65,13 +65,30 @@ def default_credential_dir() -> Path:
 
 
 def resolve_credential_dir(args: argparse.Namespace) -> Path:
-    """Resolve the web-ui credential dir from CLI arg, env, or XDG default."""
-    explicit = getattr(args, "credential_dir", None)
-    if explicit:
-        return Path(explicit)
-    env = os.environ.get("EDEN_CREDENTIAL_DIR")
-    if env:
-        return Path(env)
+    """Resolve the base credential dir for the web-ui's per-experiment tokens.
+
+    Precedence (first set wins):
+
+    1. ``--credential-dir`` / ``$EDEN_CREDENTIAL_DIR`` — the web-ui-specific
+       override (issue #145).
+    2. ``--credentials-dir`` / ``$EDEN_WORKER_CREDENTIALS_DIR`` — the common
+       worker-host credential dir. The web-ui IS a worker host, so it shares
+       this dir with the other reference hosts by default; honoring it keeps
+       deployments (and the isolated per-test dirs the e2e suite passes) on a
+       single credential location. Per-experiment tokens live under
+       ``<base>/<experiment_id>/<worker_id>.token``.
+    3. ``${XDG_STATE_HOME:-~/.local/state}/eden/web-ui/`` — the final fallback
+       when no credential dir is configured at all.
+    """
+    candidates = (
+        getattr(args, "credential_dir", None),
+        os.environ.get("EDEN_CREDENTIAL_DIR"),
+        getattr(args, "credentials_dir", None),
+        os.environ.get("EDEN_WORKER_CREDENTIALS_DIR"),
+    )
+    for candidate in candidates:
+        if candidate:
+            return Path(candidate)
     return default_credential_dir()
 
 

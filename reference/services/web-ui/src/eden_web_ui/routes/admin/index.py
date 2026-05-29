@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Request, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
 
-from .._helpers import get_session
+from .._helpers import get_session, resolve_active_context
 from ._common import (
     _KIND_VALUES,
     _STATE_VALUES,
@@ -23,7 +23,10 @@ async def index(request: Request) -> HTMLResponse | RedirectResponse:
     session = get_session(request)
     if session is None:
         return RedirectResponse(url="/signin", status_code=303)
-    store = request.app.state.store
+    active = resolve_active_context(request)
+    if isinstance(active, Response):
+        return active
+    store = active.store
     repo = request.app.state.repo
     now = _now_dt(request)
 
@@ -67,7 +70,7 @@ async def index(request: Request) -> HTMLResponse | RedirectResponse:
 
     recent = list(reversed(events_full))[:10]
 
-    admin_store = request.app.state.admin_store
+    admin_store = active.admin_store
     return request.app.state.templates.TemplateResponse(
         request,
         "admin_index.html",

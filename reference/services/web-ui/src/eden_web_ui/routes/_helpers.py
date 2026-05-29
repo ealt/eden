@@ -27,7 +27,7 @@ from eden_storage import Store
 from eden_storage.errors import NotFound
 from eden_storage.errors import NotFound as StorageNotFound
 from fastapi import Request, Response
-from fastapi.responses import RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 from pydantic import ValidationError
 
 from ..artifacts import (
@@ -291,7 +291,7 @@ def _stale_selection_redirect(request: Request) -> RedirectResponse:
     return response
 
 
-def _unseeded_response(request: Request, experiment_id: str) -> Response:
+def _unseeded_response(request: Request, experiment_id: str) -> HTMLResponse:
     """Render the "experiment registered but not seeded" page."""
     request.state.active_experiment_id = experiment_id
     return request.app.state.templates.TemplateResponse(
@@ -304,7 +304,7 @@ def _unseeded_response(request: Request, experiment_id: str) -> Response:
 
 def resolve_active_context(
     request: Request, *, need_config: bool = False
-) -> ActiveContext | Response:
+) -> ActiveContext | RedirectResponse | HTMLResponse:
     """Resolve the active experiment + per-experiment store(s) for a handler.
 
     Returns an :class:`ActiveContext` ready to use, or a ``Response`` the

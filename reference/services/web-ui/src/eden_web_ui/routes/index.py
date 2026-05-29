@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Request, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
 
-from ._helpers import get_session
+from ._helpers import get_session, resolve_active_context
 
 router = APIRouter()
 
@@ -15,7 +15,10 @@ async def index(request: Request) -> HTMLResponse | RedirectResponse:
     session = get_session(request)
     if session is None:
         return RedirectResponse(url="/signin", status_code=303)
-    store = request.app.state.store
+    active = resolve_active_context(request)
+    if isinstance(active, Response):
+        return active
+    store = active.store
     pending = {
         kind: len(store.list_tasks(kind=kind, state="pending"))
         for kind in ("ideation", "execution", "evaluation")

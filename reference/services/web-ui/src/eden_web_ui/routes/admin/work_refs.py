@@ -5,10 +5,10 @@ from __future__ import annotations
 from typing import Any
 
 from eden_contracts import Variant
-from fastapi import APIRouter, Form, Request
+from fastapi import APIRouter, Form, Request, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
 
-from .._helpers import csrf_ok, get_session
+from .._helpers import csrf_ok, get_session, resolve_active_context
 from ._common import (
     _REF_DELETE_OUTCOMES,
     _WORK_REF_RE,
@@ -41,7 +41,10 @@ async def work_refs_index(request: Request) -> HTMLResponse | RedirectResponse:
                 "outcome": outcome,
             },
         )
-    store = request.app.state.store
+    active = resolve_active_context(request)
+    if isinstance(active, Response):
+        return active
+    store = active.store
     if _repo_has_origin(repo):
         try:
             repo.fetch_all_heads()
@@ -137,7 +140,10 @@ async def work_refs_delete(
         return RedirectResponse(
             url="/admin/work-refs/?error=invalid-ref-name", status_code=303
         )
-    store = request.app.state.store
+    active = resolve_active_context(request)
+    if isinstance(active, Response):
+        return active
+    store = active.store
     groups = _classify_work_refs(repo, store)
     try:
         target = _find_delete_target(groups, ref_name)

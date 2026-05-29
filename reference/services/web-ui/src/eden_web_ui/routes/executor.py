@@ -26,16 +26,16 @@ import uuid
 from collections.abc import Callable
 from dataclasses import replace
 from datetime import timedelta
-from typing import Any
+from typing import Any, cast
 
-from eden_contracts import Idea, Variant
+from eden_contracts import ExecutionTask, Idea, Variant
 from eden_storage import (
     DispatchError,
     NoOpVariant,
     StorageError,
     VariantSubmission,
 )
-from fastapi import APIRouter, Form, Request
+from fastapi import APIRouter, Form, Request, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
 from starlette.datastructures import UploadFile
 
@@ -57,6 +57,7 @@ from ._helpers import (
     parse_list_view,
     read_idea_content,
     read_idea_manifest,
+    resolve_active_context,
 )
 from ._submit_readback import submit_with_readback, wire_error_banner
 
@@ -190,6 +191,7 @@ def _phase1_create_starting_variant(
     *,
     store: Any,
     request: Request,
+    experiment_id: str,
     task_id: str,
     variant_id: str,
     idea: Idea,
@@ -207,7 +209,7 @@ def _phase1_create_starting_variant(
     """
     variant = _build_starting_variant(
         variant_id=variant_id,
-        experiment_id=request.app.state.experiment_id,
+        experiment_id=experiment_id,
         idea_id=idea.idea_id,
         parent_commits=idea.parent_commits,
         branch=branch,
@@ -392,7 +394,12 @@ async def list_pending(request: Request) -> HTMLResponse | RedirectResponse:
     session = get_session(request)
     if session is None:
         return RedirectResponse(url="/signin", status_code=303)
-    store = request.app.state.store
+    active = resolve_active_context(request, need_config=True)
+    if isinstance(active, Response):
+        return active
+    store = active.store
+    config = active.config
+    assert config is not None  # need_config=True populates it
     try:
         pending = store.list_tasks(kind="execution", state="pending")
         recent = _list_recent_variants(store)
@@ -402,7 +409,6 @@ async def list_pending(request: Request) -> HTMLResponse | RedirectResponse:
         return _render_error(
             request, f"task-store transport failure: {exc.__class__.__name__}"
         )
-    config = request.app.state.experiment_config
     artifacts_dir = request.app.state.artifacts_dir
     view = parse_list_view(request.query_params)
     resolver = EligibilityResolver(store, session.worker_id)
@@ -497,7 +503,10 @@ async def claim(
         return RedirectResponse(url="/signin", status_code=303)
     if not csrf_ok(session, csrf_token):
         return _csrf_failure_response(request)
-    store = request.app.state.store
+    active = resolve_active_context(request)
+    if isinstance(active, Response):
+        return active
+    store = active.store
     now: Callable[[], Any] = request.app.state.now
     expires_at = now() + timedelta(seconds=request.app.state.claim_ttl_seconds)
     try:
@@ -527,9 +536,12 @@ async def draft_form(
             status_code=303,
         )
     _, variant_id = entry
-    store = request.app.state.store
+    active = resolve_active_context(request)
+    if isinstance(active, Response):
+        return active
+    store = active.store
     try:
-        task = store.read_task(task_id)
+        task = cast("ExecutionTask", store.read_task(task_id))
         idea: Idea = store.read_idea(task.payload.idea_id)
     except DispatchError as exc:
         return _render_error(request, wire_error_banner(exc))
@@ -565,10 +577,14 @@ async def submit(  # noqa: PLR0911 — flow has many distinct outcome arms by de
         )
     token, variant_id = entry
 
-    store = request.app.state.store
+    active = resolve_active_context(request)
+    if isinstance(active, Response):
+        return active
+    store = active.store
+    experiment_id = active.experiment_id
     repo = request.app.state.repo
     try:
-        task = store.read_task(task_id)
+        task = cast("ExecutionTask", store.read_task(task_id))
         idea = store.read_idea(task.payload.idea_id)
     except DispatchError as exc:
         return _render_error(request, wire_error_banner(exc))
@@ -613,6 +629,7 @@ async def submit(  # noqa: PLR0911 — flow has many distinct outcome arms by de
         request=request,
         store=store,
         repo=repo,
+        experiment_id=experiment_id,
         session=session,
         task_id=task_id,
         token=token,
@@ -628,6 +645,7 @@ def _drive_submit_phases(
     request: Request,
     store: Any,
     repo: Any,
+    experiment_id: str,
     session: Any,
     task_id: str,
     token: str,
@@ -644,6 +662,7 @@ def _drive_submit_phases(
     phase1_error = _phase1_create_starting_variant(
         store=store,
         request=request,
+        experiment_id=experiment_id,
         task_id=task_id,
         variant_id=variant_id,
         idea=idea,

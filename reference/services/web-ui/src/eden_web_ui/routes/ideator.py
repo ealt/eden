@@ -31,7 +31,7 @@ from eden_storage import (
     WrongClaimant,
 )
 from eden_storage.submissions import submissions_equivalent
-from fastapi import APIRouter, Form, Request
+from fastapi import APIRouter, Form, Request, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
 from pydantic import ValidationError
 from starlette.datastructures import UploadFile
@@ -44,7 +44,13 @@ from ..artifacts import (
     write_artifact_bundle,
 )
 from ..forms import FormErrors, IdeaDraft, format_validation_errors, parse_idea_rows
-from ._helpers import csrf_ok, get_session, htmx_aware_redirect, is_htmx_request
+from ._helpers import (
+    csrf_ok,
+    get_session,
+    htmx_aware_redirect,
+    is_htmx_request,
+    resolve_active_context,
+)
 from ._submit_readback import wire_error_banner
 
 router = APIRouter(prefix="/ideator")
@@ -117,9 +123,13 @@ async def list_pending(request: Request) -> HTMLResponse | RedirectResponse:
     session = get_session(request)
     if session is None:
         return RedirectResponse(url="/signin", status_code=303)
-    store = request.app.state.store
+    active = resolve_active_context(request, need_config=True)
+    if isinstance(active, Response):
+        return active
+    store = active.store
+    config = active.config
+    assert config is not None  # need_config=True populates it
     pending = store.list_tasks(kind="ideation", state="pending")
-    config = request.app.state.experiment_config
     ctx: dict[str, Any] = {
         "session": session,
         "pending": pending,
@@ -148,7 +158,10 @@ async def claim(
         return RedirectResponse(url="/signin", status_code=303)
     if not csrf_ok(session, csrf_token):
         return _csrf_failure_response(request)
-    store = request.app.state.store
+    active = resolve_active_context(request)
+    if isinstance(active, Response):
+        return active
+    store = active.store
     now: Callable[[], Any] = request.app.state.now
     expires_at = now() + timedelta(seconds=request.app.state.claim_ttl_seconds)
     try:
@@ -174,10 +187,14 @@ async def draft_form(
             url="/ideator/?banner=claim+missing+from+session",
             status_code=303,
         )
-    config = request.app.state.experiment_config
+    active = resolve_active_context(request, need_config=True)
+    if isinstance(active, Response):
+        return active
+    config = active.config
+    assert config is not None  # need_config=True populates it
     buffered = _DRAFT_BUFFERS.get(_claim_key(session.csrf, task_id))
     form_state = buffered if buffered else [_empty_row()]
-    store = request.app.state.store
+    store = active.store
     ctx: dict[str, Any] = {
         "session": session,
         "task_id": task_id,
@@ -261,8 +278,12 @@ async def add_row(task_id: str, request: Request):
             {"i": existing, "row_state": _empty_row(), "row_errs": {}},
         )
 
-    config = request.app.state.experiment_config
-    store = request.app.state.store
+    active = resolve_active_context(request, need_config=True)
+    if isinstance(active, Response):
+        return active
+    config = active.config
+    assert config is not None  # need_config=True populates it
+    store = active.store
     ctx: dict[str, Any] = {
         "session": session,
         "task_id": task_id,
@@ -343,6 +364,7 @@ def _persist_idea_drafts(  # noqa: E501  # slop-allow: per-row save/validate/wri
     *,
     store: Any,
     request: Request,
+    experiment_id: str,
     drafts: list[Any],
     draft_rows: list[int],
     uploads_per_row: dict[int, list[UploadedFile]],
@@ -410,7 +432,7 @@ def _persist_idea_drafts(  # noqa: E501  # slop-allow: per-row save/validate/wri
         try:
             idea = _make_idea(
                 idea_id=idea_id,
-                experiment_id=request.app.state.experiment_id,
+                experiment_id=experiment_id,
                 draft=draft,
                 artifacts_uri=artifacts_uri,
                 now_iso=_iso(now()),
@@ -472,8 +494,13 @@ async def submit_idea(task_id: str, request: Request) -> HTMLResponse | Redirect
             status_code=303,
         )
 
-    store = request.app.state.store
-    config = request.app.state.experiment_config
+    active = resolve_active_context(request, need_config=True)
+    if isinstance(active, Response):
+        return active
+    store = active.store
+    config = active.config
+    assert config is not None  # need_config=True populates it
+    experiment_id = active.experiment_id
 
     if status == "error":
         return _submit_idea_error_status(
@@ -514,8 +541,8 @@ async def submit_idea(task_id: str, request: Request) -> HTMLResponse | Redirect
         )
 
     idea_ids, slug_warnings, persist_error, validation_errors = _persist_idea_drafts(
-        store=store, request=request, drafts=drafts, draft_rows=draft_rows,
-        uploads_per_row=uploads_per_row,
+        store=store, request=request, experiment_id=experiment_id, drafts=drafts,
+        draft_rows=draft_rows, uploads_per_row=uploads_per_row,
     )
     if validation_errors is not None:
         form_state = _form_state_from_inputs(
