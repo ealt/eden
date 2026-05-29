@@ -1,16 +1,34 @@
-"""Shared helpers for route handlers (session/CSRF lookup + cookie shape)."""
+"""Shared helpers for route handlers (session/CSRF lookup + cookie shape).
+
+Issue #145 adds the per-request active-experiment resolution that lets
+every per-experiment route operate against the experiment the operator
+selected in the switcher (12c ``Session.selected_experiment_id``). The
+load-bearing entry point is :func:`resolve_active_context` — one call at
+the top of a handler that returns either a ready-to-use
+:class:`ActiveContext` (resolved ``experiment_id`` + per-experiment
+``store`` / ``admin_store`` / ``config``) or a ``Response`` the handler
+returns verbatim (a dashboard redirect for stale / unreachable /
+credential / config failures, or an "experiment not seeded" page).
+"""
 
 from __future__ import annotations
 
+import urllib.parse
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlencode, urlparse
 
-from eden_contracts import Idea
+import httpx
+import yaml
+from eden_contracts import ExperimentConfig, Idea
+from eden_service_common import load_experiment_config
+from eden_storage import Store
+from eden_storage.errors import NotFound
 from eden_storage.errors import NotFound as StorageNotFound
 from fastapi import Request, Response
 from fastapi.responses import RedirectResponse
+from pydantic import ValidationError
 
 from ..artifacts import (
     is_bundle_uri,
@@ -18,6 +36,13 @@ from ..artifacts import (
     read_bundle_manifest,
 )
 from ..sessions import SESSION_COOKIE_NAME, Session, SessionCodec, verify_csrf
+from ..store_factory import (
+    AdminTokenRejected,
+    MissingAdminToken,
+    TaskStoreUnreachable,
+)
+
+_DASHBOARD_PATH = "/admin/experiments/"
 
 _CONTENT_MAX_BYTES = 1 << 20  # 1 MiB
 
@@ -80,6 +105,251 @@ def write_session_cookie(
 def csrf_ok(session: Session, presented: str | None) -> bool:
     """Constant-time CSRF token check, exposed for routes."""
     return verify_csrf(session, presented)
+
+
+# ---------------------------------------------------------------------------
+# Active-experiment resolution (issue #145)
+# ---------------------------------------------------------------------------
+
+
+class StaleSelection(Exception):
+    """The session selects an experiment no longer in the control plane.
+
+    Raised by :func:`resolve_active_experiment` when the operator's
+    ``selected_experiment_id`` is absent from the control-plane registry
+    (unregistered concurrently). Callers redirect to the dashboard with
+    ``?error=stale-selection`` and clear the session field.
+    """
+
+    def __init__(self, experiment_id: str) -> None:
+        self.experiment_id = experiment_id
+        super().__init__(f"selected experiment {experiment_id!r} is no longer registered")
+
+
+class ControlPlaneUnreachable(Exception):
+    """A transport error reached the control plane during resolution."""
+
+    def __init__(self, experiment_id: str) -> None:
+        self.experiment_id = experiment_id
+        super().__init__("control plane unreachable while resolving the active experiment")
+
+
+class ExperimentConfigMissing(Exception):
+    """No per-experiment config YAML exists at ``<config-dir>/<id>.yaml``."""
+
+    def __init__(self, experiment_id: str) -> None:
+        self.experiment_id = experiment_id
+        super().__init__(f"no experiment-config YAML for {experiment_id!r}")
+
+
+class ExperimentConfigInvalid(Exception):
+    """The per-experiment config YAML failed to parse / validate."""
+
+    def __init__(self, experiment_id: str, cause: BaseException) -> None:
+        self.experiment_id = experiment_id
+        self.cause = cause
+        super().__init__(f"invalid experiment-config YAML for {experiment_id!r}: {cause}")
+
+
+@dataclass(frozen=True)
+class ResolvedExperiment:
+    """The per-request resolved active experiment.
+
+    ``unseeded`` is ``True`` when the control plane knows the experiment
+    but the task-store-server has no experiment record yet (registered
+    via the dashboard but not yet bootstrapped by ``setup-experiment`` /
+    checkpoint import). Routes render an "initialize me" page instead of
+    treating it as a stale selection (plan Decision 8 / Risk 11).
+    """
+
+    experiment_id: str
+    unseeded: bool = False
+
+
+@dataclass(frozen=True)
+class ActiveContext:
+    """Resolved per-request store/config bundle returned to a handler."""
+
+    experiment_id: str
+    store: Store
+    admin_store: Store | None
+    config: ExperimentConfig | None
+
+
+def resolve_active_experiment(request: Request) -> ResolvedExperiment:
+    """Resolve the experiment the current request operates against.
+
+    Reads ``Session.selected_experiment_id`` and falls back to the
+    deployment default (``app.state.experiment_id``). When no control
+    plane is configured (single-experiment posture), always returns the
+    deployment default with no validation call — today's behavior is
+    unchanged and there is zero per-request overhead.
+
+    For a non-default selection in control-plane mode it (1) validates
+    the experiment still exists in the control plane (``StaleSelection``
+    / ``ControlPlaneUnreachable`` otherwise) and (2) classifies it as
+    seeded vs registered-but-unseeded against the task-store-server,
+    JIT-bootstrapping the per-experiment worker credential as a side
+    effect (``MissingAdminToken`` / ``AdminTokenRejected`` /
+    ``TaskStoreUnreachable`` propagate to the caller).
+    """
+    app = request.app
+    default_id: str = app.state.experiment_id
+    control_plane = app.state.control_plane
+    if control_plane is None:
+        return ResolvedExperiment(default_id)
+    session = get_session(request)
+    selected = session.selected_experiment_id if session is not None else None
+    if selected is None or selected == default_id:
+        return ResolvedExperiment(default_id)
+
+    try:
+        control_plane.read_experiment_metadata(selected)
+    except NotFound as exc:
+        raise StaleSelection(selected) from exc
+    except httpx.TransportError as exc:
+        raise ControlPlaneUnreachable(selected) from exc
+
+    # Classify seeded vs unseeded against the task-store-server. The
+    # for_experiment call JIT-bootstraps the per-experiment worker
+    # credential; a NotFound from either the bootstrap register or the
+    # state read means the experiment exists in the control plane but
+    # not (yet) on the task-store-server.
+    factory = app.state.store_factory
+    try:
+        store = factory.for_experiment(selected, role="worker")
+        store.read_experiment_state()
+    except NotFound:
+        return ResolvedExperiment(selected, unseeded=True)
+    return ResolvedExperiment(selected)
+
+
+def active_config(request: Request, experiment_id: str) -> ExperimentConfig:
+    """Return the ``ExperimentConfig`` for ``experiment_id``.
+
+    Single-experiment / no-control-plane mode returns the startup config
+    (``app.state.experiment_config``). Control-plane mode loads
+    ``<--experiment-config-dir>/<experiment_id>.yaml`` lazily (cached for
+    the process lifetime — configs are immutable post-create), falling
+    back to the startup config for the deployment-default experiment.
+    """
+    app = request.app
+    default_id: str = app.state.experiment_id
+    default_config: ExperimentConfig | None = app.state.experiment_config
+    config_dir: Path | None = app.state.experiment_config_dir
+
+    if app.state.control_plane is None:
+        assert default_config is not None  # single-exp mode requires --experiment-config
+        return default_config
+    if experiment_id == default_id and default_config is not None:
+        return default_config
+    if config_dir is None:
+        if default_config is not None:
+            return default_config
+        raise ExperimentConfigMissing(experiment_id)
+
+    cache: dict[str, ExperimentConfig] = app.state.experiment_config_cache
+    cached = cache.get(experiment_id)
+    if cached is not None:
+        return cached
+    path = config_dir / f"{experiment_id}.yaml"
+    try:
+        config = load_experiment_config(path)
+    except FileNotFoundError as exc:
+        raise ExperimentConfigMissing(experiment_id) from exc
+    except (ValidationError, yaml.YAMLError, ValueError) as exc:
+        raise ExperimentConfigInvalid(experiment_id, exc) from exc
+    cache[experiment_id] = config
+    return config
+
+
+def dashboard_redirect(error: str, *, exp: str | None = None) -> RedirectResponse:
+    """Redirect to the cross-experiment dashboard with an ``?error=`` banner."""
+    params: dict[str, str] = {"error": error}
+    if exp is not None:
+        params["exp"] = exp
+    query = urllib.parse.urlencode(params)
+    return RedirectResponse(url=f"{_DASHBOARD_PATH}?{query}", status_code=303)
+
+
+def _stale_selection_redirect(request: Request) -> RedirectResponse:
+    """Redirect to the dashboard AND clear the stale session selection."""
+    response = dashboard_redirect("stale-selection")
+    session = get_session(request)
+    if session is not None:
+        codec: SessionCodec = request.app.state.session_codec
+        cleared = Session(
+            worker_id=session.worker_id,
+            csrf=session.csrf,
+            selected_experiment_id=None,
+        )
+        write_session_cookie(
+            response,
+            encoded=codec.encode(cleared),
+            secure=request.app.state.secure_cookies,
+        )
+    return response
+
+
+def _unseeded_response(request: Request, experiment_id: str) -> Response:
+    """Render the "experiment registered but not seeded" page."""
+    request.state.active_experiment_id = experiment_id
+    return request.app.state.templates.TemplateResponse(
+        request,
+        "_unseeded.html",
+        {"experiment_id": experiment_id},
+        status_code=409,
+    )
+
+
+def resolve_active_context(
+    request: Request, *, need_config: bool = False
+) -> ActiveContext | Response:
+    """Resolve the active experiment + per-experiment store(s) for a handler.
+
+    Returns an :class:`ActiveContext` ready to use, or a ``Response`` the
+    handler returns verbatim. The ``Response`` cases are: stale-selection
+    redirect (clears the session field), control-plane-unreachable /
+    cannot-bootstrap-credential / task-store-unreachable / config
+    redirects, and the unseeded-experiment page. On the happy path the
+    resolved id is stashed on ``request.state.active_experiment_id`` so
+    the template context processor renders the active experiment.
+    """
+    try:
+        resolved = resolve_active_experiment(request)
+    except StaleSelection:
+        return _stale_selection_redirect(request)
+    except ControlPlaneUnreachable:
+        return dashboard_redirect("control-plane-unreachable")
+    except (MissingAdminToken, AdminTokenRejected) as exc:
+        return dashboard_redirect("cannot-bootstrap-credential", exp=exc.experiment_id)
+    except TaskStoreUnreachable as exc:
+        return dashboard_redirect("task-store-unreachable", exp=exc.experiment_id)
+
+    request.state.active_experiment_id = resolved.experiment_id
+    if resolved.unseeded:
+        return _unseeded_response(request, resolved.experiment_id)
+
+    factory = request.app.state.store_factory
+    store = factory.for_experiment(resolved.experiment_id, role="worker")
+    assert store is not None  # worker role never returns None
+    admin_store = factory.for_experiment(resolved.experiment_id, role="admin")
+
+    config: ExperimentConfig | None = None
+    if need_config:
+        try:
+            config = active_config(request, resolved.experiment_id)
+        except ExperimentConfigMissing as exc:
+            return dashboard_redirect("config-missing", exp=exc.experiment_id)
+        except ExperimentConfigInvalid as exc:
+            return dashboard_redirect("config-invalid", exp=exc.experiment_id)
+
+    return ActiveContext(
+        experiment_id=resolved.experiment_id,
+        store=store,
+        admin_store=admin_store,
+        config=config,
+    )
 
 
 def _resolve_inside_jail(

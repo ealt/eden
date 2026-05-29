@@ -8,9 +8,11 @@ store.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 from eden_contracts import ExperimentConfig
 from eden_control_plane import ControlPlaneClient
@@ -36,6 +38,7 @@ from .routes import ideator as ideator_routes
 from .routes import index as index_routes
 from .routes.admin import control as admin_control_routes
 from .sessions import SessionCodec
+from .store_factory import StaticStoreFactory, StoreFactory
 
 _TEMPLATES_DIR = Path(__file__).parent / "templates"
 _STATIC_DIR = Path(__file__).parent / "static"
@@ -46,6 +49,26 @@ def _now_factory() -> Callable[[], datetime]:
         return datetime.now(UTC)
 
     return _now
+
+
+def _experiment_context(request: Request) -> dict[str, Any]:
+    """Template context processor: per-request active ``experiment_id``.
+
+    Issue #145 moves ``experiment_id`` from a render-time Jinja global
+    (one value for the process lifetime) to a per-request value, so
+    every template reflects the experiment the operator selected. The
+    active id is stashed on ``request.state.active_experiment_id`` by
+    ``resolve_active_context``; absent that (unauthenticated pages,
+    handlers that don't resolve), it falls back to the deployment
+    default.
+    """
+    active = getattr(request.state, "active_experiment_id", None)
+    default = request.app.state.experiment_id
+    return {
+        "experiment_id": active or default,
+        "active_experiment_id": active,
+        "default_experiment_id": default,
+    }
 
 
 def _register_routers(
@@ -86,6 +109,8 @@ def make_app(
     base_commit_sha: str | None = None,
     admin_store: Store | None = None,
     control_plane: ControlPlaneClient | None = None,
+    store_factory: StoreFactory | StaticStoreFactory | None = None,
+    experiment_config_dir: Path | None = None,
 ) -> FastAPI:
     """Construct the FastAPI app.
 
@@ -95,23 +120,54 @@ def make_app(
     admin credential for admin-gated wire ops; ``None`` → mutation
     controls render disabled and POSTs 303 to ``?error=admin-disabled``
     (plan §D.3 four-posture matrix).
+
+    Issue #145: per-experiment routing goes through ``store_factory``.
+    When the CLI builds a live :class:`StoreFactory` it passes it here;
+    when omitted (the single-experiment / test path) a
+    :class:`StaticStoreFactory` is built from ``store`` + ``admin_store``
+    so every route resolves to the one deployment experiment. The legacy
+    ``app.state.store`` / ``admin_store`` attributes remain populated for
+    backward compatibility until the test-fixture sweep (plan W3).
+    ``experiment_config_dir`` enables per-experiment config loading in
+    control-plane mode (plan Decision 6).
     """
-    app = FastAPI(title="EDEN reference Web UI", version="0.0.1")
+    if store_factory is None:
+        store_factory = StaticStoreFactory(
+            experiment_id=experiment_id,
+            store=store,
+            admin_store=admin_store,
+        )
+
+    @asynccontextmanager
+    async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
+        try:
+            yield
+        finally:
+            store_factory.close()
+
+    app = FastAPI(
+        title="EDEN reference Web UI", version="0.0.1", lifespan=_lifespan
+    )
     app.mount(
         "/static",
         StaticFiles(directory=str(_STATIC_DIR)),
         name="static",
     )
-    templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))
-    templates.env.globals["experiment_id"] = experiment_id
+    templates = Jinja2Templates(
+        directory=str(_TEMPLATES_DIR),
+        context_processors=[_experiment_context],
+    )
     templates.env.globals["executor_enabled"] = repo is not None
-    templates.env.globals["admin_enabled"] = admin_store is not None
+    templates.env.globals["admin_enabled"] = store_factory.admin_enabled
     templates.env.globals["control_plane_enabled"] = control_plane is not None
 
     app.state.store = store
     app.state.admin_store = admin_store
+    app.state.store_factory = store_factory
     app.state.experiment_id = experiment_id
     app.state.experiment_config = experiment_config
+    app.state.experiment_config_dir = experiment_config_dir
+    app.state.experiment_config_cache = {}
     app.state.worker_id = worker_id
     app.state.session_codec = SessionCodec(session_secret)
     app.state.claim_ttl_seconds = claim_ttl_seconds
