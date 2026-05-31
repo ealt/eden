@@ -36,6 +36,15 @@ $EDEN list-tasks --kind execution --state pending
 Default: pick the first pending. If zero pending, suggest the user play
 ideator first.
 
+> The web-ui executor page is the point-and-click alternative to this
+> CLI listing. Its pending-task table (issue #137) is a high-signal
+> **slug / priority / target / created by** grid, priority-sorted by
+> default, with **eligible for me** / **target** / **group by creator**
+> filter chips and a per-row **context links** expander. Sort + filter
+> state lives in the URL query string, so a curated view is shareable.
+> When helping the user choose a task, mirror that signal here: lead
+> with the highest-priority eligible task's slug.
+
 ### Phase 2: Inspect (automatic)
 
 ```bash

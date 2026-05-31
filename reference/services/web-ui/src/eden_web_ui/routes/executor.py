@@ -42,9 +42,14 @@ from starlette.datastructures import UploadFile
 from ..artifacts import UploadedFile, write_artifact_bundle
 from ..forms import FormErrors, parse_implement_form
 from ._helpers import (
+    EligibilityResolver,
+    arrange_pending_rows,
+    build_artifact_links,
+    build_list_links,
     csrf_ok,
     get_session,
     is_htmx_request,
+    parse_list_view,
     read_idea_content,
     read_idea_manifest,
 )
@@ -394,16 +399,25 @@ async def list_pending(request: Request) -> HTMLResponse | RedirectResponse:
         )
     config = request.app.state.experiment_config
     artifacts_dir = request.app.state.artifacts_dir
+    view = parse_list_view(request.query_params)
+    resolver = EligibilityResolver(store, session.worker_id)
     pending_rows, read_failed_count = _build_executor_pending_rows(
-        store, pending, artifacts_dir
+        store, pending, artifacts_dir, resolver
     )
+    arranged_rows, pending_groups = arrange_pending_rows(pending_rows, view)
     return request.app.state.templates.TemplateResponse(
         request,
         "executor_list.html",
         {
             "session": session,
             "pending": pending,
-            "pending_rows": pending_rows,
+            "pending_rows": arranged_rows,
+            "pending_groups": pending_groups,
+            "view": view,
+            "links": build_list_links(view),
+            "registered": resolver.registered,
+            "registration_unknown": resolver.registration_unknown,
+            "eligibility_unresolved_count": resolver.unresolved_count,
             "read_failed_count": read_failed_count,
             "objective": config.objective,
             "recent_variants": recent,
@@ -413,14 +427,19 @@ async def list_pending(request: Request) -> HTMLResponse | RedirectResponse:
 
 
 def _build_executor_pending_rows(
-    store: Any, pending: list[Any], artifacts_dir: Any
+    store: Any,
+    pending: list[Any],
+    artifacts_dir: Any,
+    resolver: EligibilityResolver,
 ) -> tuple[list[dict[str, Any]], int]:
-    """Per pending execution task, build a preview row with idea context.
+    """Per pending execution task, build a row with idea + eligibility context.
 
-    Plan §D.4 — one ``read_idea`` per row. ``StorageNotFound`` →
-    ``idea=None`` and the template renders "(idea unavailable)".
-    Transport-shaped → ``read_failed=True`` and the page-level
-    counter increments.
+    Issue #137 — one ``read_idea`` per row. ``StorageNotFound`` →
+    ``idea=None``; the slug/priority/created_by cells degrade to ``—``
+    and the row sinks to the bottom under any sort. Transport-shaped →
+    ``read_failed=True`` and the page-level read counter increments.
+    Eligibility is resolved per row from ``task.target`` (independent of
+    the idea read) via the shared :class:`EligibilityResolver`.
     """
     from eden_storage.errors import NotFound as StorageNotFound
 
@@ -428,7 +447,6 @@ def _build_executor_pending_rows(
     read_failed = 0
     for task in pending:
         idea: Any | None = None
-        idea_content: str | None = None
         read_failed_row = False
         try:
             idea = store.read_idea(task.payload.idea_id)
@@ -438,17 +456,24 @@ def _build_executor_pending_rows(
             idea = None
             read_failed_row = True
             read_failed += 1
-        if idea is not None:
-            try:
-                idea_content = read_idea_content(idea, artifacts_dir)
-            except Exception:  # noqa: BLE001 — defensive
-                idea_content = None
+        eligible, eligibility_unknown = resolver.resolve(task.target)
+        artifact_links = (
+            build_artifact_links(idea.artifacts_uri, artifacts_dir)
+            if idea is not None
+            else {"kind": "none"}
+        )
         rows.append(
             {
                 "task": task,
                 "idea": idea,
-                "idea_content": idea_content,
+                "idea_id": task.payload.idea_id,
+                "slug": idea.slug if idea is not None else None,
+                "priority": idea.priority if idea is not None else None,
+                "created_by": idea.created_by if idea is not None else None,
                 "target": task.target,
+                "eligible": eligible,
+                "eligibility_unknown": eligibility_unknown,
+                "artifact_links": artifact_links,
                 "lineage_link": f"/admin/tasks/{task.task_id}/",
                 "read_failed": read_failed_row,
             }

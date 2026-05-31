@@ -10,6 +10,7 @@ from conftest import (
     get_evaluate_submission,
     seed_evaluate_task,
 )
+from eden_contracts import TaskTarget
 from eden_storage import InMemoryStore
 from eden_web_ui.routes import evaluator as evaluator_routes
 from fastapi.testclient import TestClient
@@ -363,3 +364,34 @@ class TestIntegerWireForm:
         )
         assert draft is None
         assert errors.by_row.get(0, {}).get("count") == "value is not an integer"
+
+
+class TestIneligibleClaimRegression:
+    """Issue #137 §1.1.1 / §D.5 — server-side graceful fallback.
+
+    The redesigned list disables the claim button for ineligible rows,
+    but a stale page / non-browser client can still POST an ineligible
+    claim. The claim route MUST catch ``WorkerNotEligible`` (a
+    ``StorageError``) and render a 303 banner-redirect, NOT a 500. This
+    regression locks that in; there is no handler code change.
+    """
+
+    def test_ineligible_direct_claim_redirects_not_500(
+        self, signed_in_client: TestClient, store: InMemoryStore
+    ) -> None:
+        eval_id, _, _ = seed_evaluate_task(
+            store,
+            slug="targeted",
+            variant_id="vt",
+            target=TaskTarget(kind="worker", id="other-w"),
+        )
+        csrf = get_csrf(signed_in_client)
+        resp = _post_form(
+            signed_in_client,
+            f"/evaluator/{eval_id}/claim",
+            [("csrf_token", csrf)],
+        )
+        assert resp.status_code == 303
+        location = resp.headers["location"]
+        assert location.startswith("/evaluator/?banner=")
+        assert "worker-not-eligible" in location
