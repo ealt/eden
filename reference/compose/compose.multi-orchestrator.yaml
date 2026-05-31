@@ -46,10 +46,12 @@ services:
       - /etc/eden/credential-helper.sh
       - --experiment-config
       - /etc/eden/experiment-config.yaml
+      # Issue #157: max_quiescent_iterations is read from the
+      # experiment-config YAML (single-experiment mode), so orchestrator-2
+      # picks up the same value as the primary orchestrator from the
+      # shared eden-experiment-config.
       - --poll-interval
       - "1.0"
-      - --max-quiescent-iterations
-      - "${EDEN_MAX_QUIESCENT_ITERATIONS:-30}"
       - --log-level
       - info
     configs:

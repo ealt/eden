@@ -41,63 +41,75 @@ click "terminate". The form short-circuits with
 
 Use this when termination is a function of experiment state —
 "terminate when N variants attempted", "terminate when score crosses
-0.95", etc. The orchestrator consults a deployment-supplied
-`TerminationPolicy` once per iteration when
+0.95", etc. The orchestrator consults the experiment-config-supplied
+`termination_policy` once per iteration when
 `dispatch_mode.termination == "auto"`.
 
 `dispatch_mode.termination` defaults to `"manual"` so pre-12a-3
-deployments are unchanged. To enable, flip it via
-`PATCH /v0/experiments/{E}/dispatch_mode` (or `/admin/dispatch-mode/`)
-and point the orchestrator's `--termination-policy` flag at a
-factory:
+deployments are unchanged. To enable, set both keys in the experiment
+config **before** bringing the stack up — the single-experiment
+orchestrator reads `termination_policy` from the experiment-config YAML
+at startup (issue #157 retired the `--termination-policy` CLI flag /
+`EDEN_TERMINATION_POLICY` env var for this path):
 
-```bash
-# Set the policy in the orchestrator's environment and flip the gate.
-EDEN_TERMINATION_POLICY=my_policies:two_hour_deadline \
-docker compose --env-file .env up -d --wait orchestrator
-curl -X PATCH \
-    -H "X-Eden-Experiment-Id: $EDEN_EXPERIMENT_ID" \
-    -H "Authorization: Bearer admin-eric:<token>" \
-    -H 'Content-Type: application/json' \
-    -d '{"termination": "auto"}' \
-    http://localhost:8080/v0/experiments/$EDEN_EXPERIMENT_ID/dispatch_mode
+```yaml
+# experiment-config.yaml
+dispatch_mode:
+  termination: auto          # required for termination_policy to be consulted
+termination_policy:
+  kind: max_wall_time
+  duration: "PT2H"
 ```
+
+`termination_policy` is **required** when `dispatch_mode.termination ==
+"auto"` — config validation fails if it is absent. To flip an
+already-running experiment to `auto`, you must also restart the
+orchestrator so it re-reads the config (policies are set at experiment
+creation; there is no hot-reload). The `dispatch_mode` itself can still
+be toggled at runtime via `PATCH /v0/experiments/{E}/dispatch_mode` (or
+`/admin/dispatch-mode/`), but the policy callable is bound at startup.
+
+> In `--control-plane-url` multi-experiment mode the orchestrator still
+> reads the `--termination-policy` CLI flag (per-experiment config
+> resolution through the chapter-11 registry is deferred to
+> [#214](https://github.com/ealt/eden/issues/214)). The single-experiment
+> path — every Compose deployment today — uses the YAML block.
 
 ## Reference policies
 
 [`eden_dispatch.termination`](../../reference/packages/eden-dispatch/src/eden_dispatch/termination.py)
-ships five callables. Each is a factory; deployments wrap them in a
-small local module to set the configuration:
+ships five kinds. Select one declaratively in the experiment config; the
+orchestrator's `build_termination_policy()` factory maps the `kind` +
+parameters to the callable. Three worked recipes:
 
-```python
-# my_policies.py
-from datetime import timedelta
-from eden_dispatch.termination import (
-    max_variants_policy,
-    max_wall_time_policy,
-    convergence_window_policy,
-    target_condition_policy,
-)
-
-def cap_at_20_variants():
-    return max_variants_policy(target=20)
-
-def two_hour_deadline():
-    return max_wall_time_policy(duration=timedelta(hours=2))
-
-def converge_on_score():
-    # Terminate when the trailing 3 integrated variants show no
-    # improvement on the `score` metric.
-    return convergence_window_policy("score", window=3)
-
-def hit_target():
-    return target_condition_policy("score", threshold=0.95)
+```yaml
+# Terminate after 20 variants have been attempted.
+termination_policy:
+  kind: max_variants
+  target: 20
 ```
 
-Reference the factory via `--termination-policy
-my_policies:cap_at_20_variants` (CLI flag) or
-`EDEN_TERMINATION_POLICY=my_policies:cap_at_20_variants` (Compose
-env).
+```yaml
+# Terminate after 2 hours of wall-time (ISO 8601 duration string).
+termination_policy:
+  kind: max_wall_time
+  duration: "PT2H"
+```
+
+```yaml
+# Terminate when the trailing 3 integrated variants show no improvement
+# on the `score` metric.
+termination_policy:
+  kind: convergence_window
+  metric: score
+  window: 3
+  direction: maximize       # optional; defaults to maximize
+```
+
+The remaining kinds are `never_terminate` (the default when the block is
+absent) and `target_condition` (`{kind: target_condition, metric: score,
+threshold: 0.95}` — terminate when the latest integrated variant's metric
+crosses the threshold).
 
 ### `max_wall_time_policy` caveat
 
@@ -146,10 +158,14 @@ for a future spec lineage.
 
 These are distinct concepts:
 
-- `EDEN_MAX_QUIESCENT_ITERATIONS` is a **heuristic** for when the
-  orchestrator process should exit (no progress observed for N
-  iterations). Pre-12a-3 deployments used this as the *only* way to
-  shut an experiment down.
+- `max_quiescent_iterations` (the experiment-config field; issue #157
+  retired the `EDEN_MAX_QUIESCENT_ITERATIONS` env var / CLI flag for the
+  single-experiment path) is a **heuristic** for when the orchestrator
+  process should exit (no progress observed for N iterations). Pre-12a-3
+  deployments used this as the *only* way to shut an experiment down.
+  Manual-UI sessions — where a human is drafting / claiming at human
+  speed — should set a high value (e.g. `max_quiescent_iterations: 3600`)
+  so the orchestrator does not quiesce mid-session.
 - `terminate_experiment` is a **deliberate decision**: state flips
   to `terminated`, no new work is accepted, the integration drain
   runs to completion, the orchestrator process then quiesces and

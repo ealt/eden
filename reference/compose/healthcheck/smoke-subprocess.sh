@@ -65,11 +65,14 @@ bash "${REPO_ROOT}/reference/scripts/setup-experiment/setup-experiment.sh" \
 
 # Issue #133: cap lifetime ideation creation so the policy quiesces
 # after 3 variants. Same posture as smoke.sh.
+# Issue #157: max_quiescent_iterations is now an experiment-config field
+# (30 reproduces the retired EDEN_MAX_QUIESCENT_ITERATIONS:-30 default).
 EXPERIMENT_CONFIG="${REPO_ROOT}/reference/compose/experiment-config.yaml"
 cat >>"$EXPERIMENT_CONFIG" <<'YAML'
 ideation_policy:
   kind: fixed_total
   total: 3
+max_quiescent_iterations: 30
 YAML
 
 EDEN_BASE_COMMIT_SHA="$(grep -E '^EDEN_BASE_COMMIT_SHA=' "$ENV_FILE" | cut -d= -f2-)"

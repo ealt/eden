@@ -117,7 +117,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument("--ideation-startup-deadline", type=float, default=30.0)
-    parser.add_argument("--ideation-task-deadline", type=float, default=120.0)
+    # --ideation-task-deadline retired (#157): now experiment-config ideation_task_deadline field.
     parser.add_argument("--ideation-shutdown-deadline", type=float, default=10.0)
     parser.add_argument("--ideation-env-file", default=None)
     parser.add_argument("--poll-interval", type=float, default=0.1)
@@ -318,12 +318,15 @@ def _run_subprocess_mode(
             env_keys=list(env.keys()),
         )
 
+    # Issue #157: the per-task deadline is an experiment-config field that
+    # travels with the ideation_command. Default 120.0 when omitted.
+    task_deadline = config.ideation_task_deadline or 120.0
     subprocess_config = build_subprocess_config(
         command=command,
         cwd=Path(args.experiment_dir).resolve(),
         env=env,
         startup_deadline=args.ideation_startup_deadline,
-        task_deadline=args.ideation_task_deadline,
+        task_deadline=task_deadline,
         shutdown_deadline=args.ideation_shutdown_deadline,
         wrap_factory=wrap_factory,
         worker_id=args.worker_id,

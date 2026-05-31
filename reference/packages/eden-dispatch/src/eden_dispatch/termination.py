@@ -39,13 +39,17 @@ from __future__ import annotations
 
 import logging
 import math
-import os
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
+
+from pydantic import TypeAdapter
 
 from .state_view import ExperimentStateView
+
+if TYPE_CHECKING:
+    from eden_contracts import TerminationPolicyConfig
 
 _log = logging.getLogger(__name__)
 
@@ -259,7 +263,7 @@ def target_condition_policy(
 
 
 # ----------------------------------------------------------------------
-# Default policy + env-var-configured factories
+# Default policy + declarative factory
 # ----------------------------------------------------------------------
 
 
@@ -288,31 +292,53 @@ def default_termination_policy() -> TerminationPolicy:
     return never_terminate
 
 
-def env_max_variants_policy() -> TerminationPolicy:
-    """``max_variants_policy(EDEN_TERMINATION_MAX_VARIANTS)``; raises if unset.
+_DURATION_ADAPTER: TypeAdapter[timedelta] = TypeAdapter(timedelta)
 
-    Pre-12a-3 deployments that consumed the ``max_variants`` config
-    field can point ``--termination-policy`` at this factory and set
-    ``EDEN_TERMINATION_MAX_VARIANTS=<N>`` in the environment to recover
-    the legacy semantics. The pre-12a-3 field is removed from the
-    normative schema; this is the reference path for restoring its
-    behavior.
+
+def build_termination_policy(
+    config: TerminationPolicyConfig | None,
+) -> TerminationPolicy:
+    """Map a declarative ``TerminationPolicyConfig`` to a callable ``TerminationPolicy``.
+
+    Cousin of :func:`eden_dispatch.policies.build_policy` for ideation.
+    The experiment config's ``termination_policy`` block selects one of
+    the five reference policies; this factory constructs the matching
+    callable with the validated arguments. When ``config`` is ``None``
+    (no ``termination_policy`` block) the default is :func:`never_terminate`
+    — the same default the retired ``--termination-policy`` flag had.
+
+    Args:
+        config: The validated ``termination_policy`` block from the
+            experiment config, or ``None``.
+
+    Returns:
+        A :data:`TerminationPolicy` callable.
+
+    Raises:
+        ValueError: if the config's per-kind arguments are invalid (the
+            underlying factory's validation is the source of the error).
     """
-    raw = os.environ.get("EDEN_TERMINATION_MAX_VARIANTS")
-    if not raw:
-        msg = (
-            "env_max_variants_policy requires EDEN_TERMINATION_MAX_VARIANTS "
-            "to be set to a positive integer"
+    if config is None or config.kind == "never_terminate":
+        return never_terminate
+    if config.kind == "max_variants":
+        return max_variants_policy(target=config.target)
+    if config.kind == "max_wall_time":
+        # config.duration is the validated ISO 8601 string; convert to a
+        # timedelta at the boundary so the policy-callable layer sees a
+        # timedelta (using the same adapter the contracts side validated
+        # with, so accept/reject parity holds).
+        duration = _DURATION_ADAPTER.validate_python(config.duration)
+        return max_wall_time_policy(duration=duration)
+    if config.kind == "convergence_window":
+        return convergence_window_policy(
+            config.metric, window=config.window, direction=config.direction
         )
-        raise ValueError(msg)
-    try:
-        target = int(raw)
-    except ValueError as exc:
-        msg = (
-            f"EDEN_TERMINATION_MAX_VARIANTS={raw!r} is not a valid integer"
+    if config.kind == "target_condition":
+        return target_condition_policy(
+            config.metric, threshold=config.threshold, direction=config.direction
         )
-        raise ValueError(msg) from exc
-    return max_variants_policy(target)
+    msg = f"unhandled termination_policy kind: {config!r}"
+    raise ValueError(msg)
 
 
 # ----------------------------------------------------------------------
@@ -361,9 +387,9 @@ __all__ = [
     "Terminate",
     "TerminationDecision",
     "TerminationPolicy",
+    "build_termination_policy",
     "convergence_window_policy",
     "default_termination_policy",
-    "env_max_variants_policy",
     "max_variants_policy",
     "max_wall_time_policy",
     "never_terminate",

@@ -96,11 +96,16 @@ bash "${REPO_ROOT}/reference/scripts/setup-experiment/setup-experiment.sh" \
 # 4 via the experiment config (issue #133) so the orchestrator
 # quiesces after 4 variants land. The e2e_drive.py script discovers
 # the task ids dynamically from the wire.
+# Issue #157: max_quiescent_iterations is now an experiment-config field
+# (30 reproduces the retired EDEN_MAX_QUIESCENT_ITERATIONS:-30 default;
+# the staged bring-up keeps a live actor making progress during the
+# UI walkthrough so 30s of stall tolerance remains sufficient).
 EXPERIMENT_CONFIG="${REPO_ROOT}/reference/compose/experiment-config.yaml"
 cat >>"$EXPERIMENT_CONFIG" <<'YAML'
 ideation_policy:
   kind: fixed_total
   total: 4
+max_quiescent_iterations: 30
 YAML
 
 echo "--- stage 1: bring up everything except forgejo + ideator-host ---"

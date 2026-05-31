@@ -97,7 +97,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--worktrees-dir",
         default="/var/lib/eden/worktrees",
     )
-    parser.add_argument("--evaluation-task-deadline", type=float, default=300.0)
+    # --evaluation-task-deadline retired (issue #157): the per-task deadline
+    # is now the experiment-config ``evaluation_task_deadline`` field, read in
+    # subprocess mode below (it travels with the evaluation_command).
     parser.add_argument("--evaluation-shutdown-deadline", type=float, default=10.0)
     parser.add_argument("--evaluation-env-file", default=None)
     parser.add_argument("--poll-interval", type=float, default=0.1)
@@ -176,13 +178,16 @@ def _run_subprocess_mode(
     # internal-bug message if the invariant ever breaks.
     assert args.experiment_dir is not None
     assert args.repo_path is not None
+    # Issue #157: the per-task deadline is an experiment-config field that
+    # travels with the evaluation_command. Default 300.0 when omitted.
+    task_deadline = config.evaluation_task_deadline or 300.0
     sub_config = EvaluatorSubprocessConfig(
         command=command,
         experiment_dir=Path(args.experiment_dir).resolve(),
         env=env,
         repo_path=Path(args.repo_path).resolve(),
         worktrees_root=Path(args.worktrees_dir),
-        task_deadline=args.evaluation_task_deadline,
+        task_deadline=task_deadline,
         shutdown_deadline=args.evaluation_shutdown_deadline,
         exec_mode=exec_args.mode,
         exec_image=exec_args.image,

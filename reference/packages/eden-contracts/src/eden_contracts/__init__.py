@@ -1,7 +1,8 @@
 """Pydantic bindings for the EDEN protocol wire formats (spec/v0)."""
 
-from ._common import CommitSha, DateTimeStr, WorkerId
+from ._common import CommitSha, DateTimeStr, DurationStr, WorkerId
 from .config import (
+    ConvergenceWindowTerminationConfig,
     Direction,
     DispatchMode,
     DispatchModeValue,
@@ -10,7 +11,13 @@ from .config import (
     IdeationPolicyConfig,
     IdeationPolicyKind,
     MaintainPendingPolicyConfig,
+    MaxVariantsTerminationConfig,
+    MaxWallTimeTerminationConfig,
+    NeverTerminateConfig,
     ObjectiveSpec,
+    TargetConditionTerminationConfig,
+    TerminationPolicyConfig,
+    TerminationPolicyKind,
 )
 from .evaluation import EvaluationSchema, MetricName, MetricType
 from .event import (
@@ -65,6 +72,7 @@ __all__ = [
     "REGISTERED_EVENT_TYPES",
     "CommitSha",
     "DateTimeStr",
+    "DurationStr",
     "Direction",
     "DispatchMode",
     "DispatchModeValue",
@@ -78,10 +86,17 @@ __all__ = [
     "ExperimentState",
     "ExperimentTerminatedEvent",
     "FailReason",
+    "ConvergenceWindowTerminationConfig",
     "FixedTotalPolicyConfig",
     "IdeationPolicyConfig",
     "IdeationPolicyKind",
     "MaintainPendingPolicyConfig",
+    "MaxVariantsTerminationConfig",
+    "MaxWallTimeTerminationConfig",
+    "NeverTerminateConfig",
+    "TargetConditionTerminationConfig",
+    "TerminationPolicyConfig",
+    "TerminationPolicyKind",
     "ExecutionPayload",
     "ExecutionTask",
     "Group",

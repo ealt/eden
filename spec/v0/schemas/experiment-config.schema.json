@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "EDEN experiment config",
-  "description": "Declarative input to an EDEN experiment. Fields here are the host-mechanism-independent core: objective, evaluation schema, concurrency bound. Termination is a deployment-supplied policy (see 03-roles.md §6.2 decision-type 0); the pre-12a-3 max_variants / max_wall_time / convergence_window / target_condition fields have been removed from the normative schema (deployments MAY still carry them as additional properties — conforming implementations ignore them). Role bindings (how the ideator, executor, and evaluator are hosted — local subprocess, HTTP service, etc.) are implementation-defined and travel under additional properties; chapter 03 defines the role contracts but explicitly defers a normative role-binding representation to a future v0 addition or a v1 chapter (see 03-roles.md §6).",
+  "description": "Declarative input to an EDEN experiment. Fields here are the host-mechanism-independent core: objective, evaluation schema, concurrency bound. Termination is selected via the termination_policy field (see 03-roles.md §6.2 decision-type 0); the pre-12a-3 top-level max_variants / max_wall_time / convergence_window / target_condition scalar fields have been removed from the normative schema — their semantics now round-trip as termination_policy.kind values (deployments that still carry the old top-level fields MAY do so as additional properties — conforming implementations ignore them). Worker-host per-task SLA deadlines (ideation_task_deadline / execution_task_deadline / evaluation_task_deadline) and the orchestrator quiescence budget (max_quiescent_iterations) are likewise implementation-defined config fields. Role bindings (how the ideator, executor, and evaluator are hosted — local subprocess, HTTP service, etc.) are implementation-defined and travel under additional properties; chapter 03 defines the role contracts but explicitly defers a normative role-binding representation to a future v0 addition or a v1 chapter (see 03-roles.md §6).",
   "type": "object",
   "required": [
     "parallel_variants",
@@ -99,6 +99,100 @@
           "then": {"required": ["kind", "total"]}
         }
       ]
+    },
+    "termination_policy": {
+      "type": "object",
+      "description": "Declarative selection of the termination policy invoked by the orchestrator when dispatch_mode.termination == 'auto' (see 02-data-model.md §2.4 and 03-roles.md §6.2 decision-type 0). Cousin of ideation_policy. The five named kinds are the reference policies; conforming implementations MUST accept the listed kinds. Unknown kinds MUST fail config validation rather than silently fall back. When dispatch_mode.termination == 'auto' the field is required (enforced by an experiment-config-level allOf-if-then over dispatch_mode.termination); when 'manual' (the default) the field is ignored. The mechanism is implementation-defined per 03-roles.md §6.",
+      "required": ["kind"],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": ["never_terminate", "max_variants", "max_wall_time", "convergence_window", "target_condition"],
+          "description": "Named policy kind. Conforming implementations MUST accept the five values defined here; unrecognized kinds MUST fail config validation rather than silently fall back."
+        },
+        "target": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "kind='max_variants' only — hard ceiling on attempted variants. REQUIRED for max_variants."
+        },
+        "duration": {
+          "type": "string",
+          "format": "duration",
+          "minLength": 1,
+          "description": "kind='max_wall_time' only — ISO 8601 duration string (e.g. 'PT2H'). MUST parse as a positive (> 0) timedelta; the FormatChecker rejects unparseable strings and zero/negative durations. The orchestrator's build_termination_policy() factory parses to timedelta at the boundary. REQUIRED for max_wall_time."
+        },
+        "metric": {
+          "type": "string",
+          "minLength": 1,
+          "description": "kind in {'convergence_window', 'target_condition'} — evaluation key to read. REQUIRED for both kinds."
+        },
+        "window": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "kind='convergence_window' only — trailing window of integrated variants. REQUIRED for convergence_window."
+        },
+        "threshold": {
+          "type": "number",
+          "description": "kind='target_condition' only — comparison threshold. REQUIRED for target_condition."
+        },
+        "direction": {
+          "type": "string",
+          "enum": ["maximize", "minimize"],
+          "description": "kind in {'convergence_window', 'target_condition'} — direction of optimization. Defaults to 'maximize'."
+        }
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"kind": {"const": "max_variants"}}, "required": ["kind"]},
+          "then": {"required": ["kind", "target"]}
+        },
+        {
+          "if": {"properties": {"kind": {"const": "max_wall_time"}}, "required": ["kind"]},
+          "then": {"required": ["kind", "duration"]}
+        },
+        {
+          "if": {"properties": {"kind": {"const": "convergence_window"}}, "required": ["kind"]},
+          "then": {"required": ["kind", "metric", "window"]}
+        },
+        {
+          "if": {"properties": {"kind": {"const": "target_condition"}}, "required": ["kind"]},
+          "then": {"required": ["kind", "metric", "threshold"]}
+        }
+      ]
+    },
+    "max_quiescent_iterations": {
+      "type": "integer",
+      "minimum": 2,
+      "description": "Orchestrator quiescence budget — a polling orchestrator exits after N consecutive no-progress iterations (the orchestrator role is single-shot-or-polling per 03-roles.md §6, so this count is non-normative). MUST be >= 2; N=1 risks exiting while a worker is mid-submit. When omitted, the reference orchestrator uses 3 (manual-UI sessions want a much higher value — see operator playbook). Implementation-defined. Read only in single-experiment-mode orchestrator startup; multi-experiment-mode keeps the existing --max-quiescent-iterations CLI flag pending #214."
+    },
+    "ideation_task_deadline": {
+      "type": "number",
+      "exclusiveMinimum": 0,
+      "description": "Seconds the ideator host waits for a single ideation_command invocation to produce its idea-list payload. Default: 120.0. Implementation-defined; bounds the per-task worker-host SLA."
+    },
+    "execution_task_deadline": {
+      "type": "number",
+      "exclusiveMinimum": 0,
+      "description": "Seconds the executor host waits for a single execution_command invocation to write its variant. Default: 600.0. Implementation-defined; bounds the per-task worker-host SLA."
+    },
+    "evaluation_task_deadline": {
+      "type": "number",
+      "exclusiveMinimum": 0,
+      "description": "Seconds the evaluator host waits for a single evaluation_command invocation to produce its metrics. Default: 300.0. Implementation-defined; bounds the per-task worker-host SLA."
     }
-  }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "dispatch_mode": {
+            "properties": {"termination": {"const": "auto"}},
+            "required": ["termination"]
+          }
+        },
+        "required": ["dispatch_mode"]
+      },
+      "then": {"required": ["termination_policy"]}
+    }
+  ]
 }

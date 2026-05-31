@@ -81,11 +81,16 @@ bash "${REPO_ROOT}/reference/scripts/setup-experiment/setup-experiment.sh" \
 # would top up the queue every iteration and never quiesce. Append
 # a `fixed_total` policy to the copied experiment config so the loop
 # quiesces after exactly 3 variants land.
+# Issue #157: max_quiescent_iterations is now an experiment-config field
+# (the single-experiment orchestrator no longer reads the
+# EDEN_MAX_QUIESCENT_ITERATIONS env var). 30 reproduces the retired
+# compose-level default — 30 iterations × 1s poll = 30s of stall tolerance.
 EXPERIMENT_CONFIG="${REPO_ROOT}/reference/compose/experiment-config.yaml"
 cat >>"$EXPERIMENT_CONFIG" <<'YAML'
 ideation_policy:
   kind: fixed_total
   total: 3
+max_quiescent_iterations: 30
 YAML
 
 # Resolve the project name from compose config and assert it

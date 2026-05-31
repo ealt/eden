@@ -7,7 +7,12 @@ import importlib
 import re
 
 from eden_control_plane import ControlPlaneClient
-from eden_dispatch import IdeationPolicy, TerminationPolicy, build_policy
+from eden_dispatch import (
+    IdeationPolicy,
+    TerminationPolicy,
+    build_policy,
+    build_termination_policy,
+)
 from eden_git import GitRepo, Identity, Integrator
 from eden_service_common import (
     StopFlag,
@@ -38,6 +43,16 @@ from .multi_loop import (
 )
 
 _AUTHOR_RE = re.compile(r"^(?P<name>.+?)\s+<(?P<email>[^>]+)>$")
+
+# argparse defaults for the two flags whose values the single-experiment
+# branch now reads from the experiment-config instead (issue #157). The
+# flags stay registered because multi-experiment mode still consults them
+# (deferred to #214). A non-default CLI value in single-experiment mode
+# triggers a startup-warning and is ignored.
+_TERMINATION_POLICY_FLAG_DEFAULT = (
+    "eden_dispatch.termination:default_termination_policy"
+)
+_MAX_QUIESCENT_ITERATIONS_FLAG_DEFAULT = 3
 
 
 def _quiescent_iterations(raw: str) -> int:
@@ -147,19 +162,19 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--termination-policy",
-        default="eden_dispatch.termination:default_termination_policy",
+        default=_TERMINATION_POLICY_FLAG_DEFAULT,
         help=(
             "Importable ``module:callable`` whose call returns a "
             "``TerminationPolicy`` "
             "(``Callable[[ExperimentStateView], TerminationDecision]``). "
-            "Consulted once per orchestrator iteration when "
-            "``dispatch_mode.termination == 'auto'`` "
-            "(03-roles.md §6.2 decision-type 0). Default: "
+            "In single-experiment mode the experiment-config "
+            "``termination_policy`` block takes precedence; a non-default "
+            "CLI value triggers a startup-warning and is ignored. In "
+            "--control-plane-url multi-experiment mode the CLI value is "
+            "consulted (per-experiment config resolution deferred to #214). "
+            "Default: "
             "``eden_dispatch.termination:default_termination_policy`` "
-            "(``never_terminate``; preserves pre-12a-3 behavior). "
-            "Reference policies: ``max_variants_policy``, "
-            "``max_wall_time_policy``, ``convergence_window_policy``, "
-            "``target_condition_policy`` — see the module docstring."
+            "(``never_terminate``; preserves pre-12a-3 behavior)."
         ),
     )
     parser.add_argument(
@@ -186,10 +201,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--max-quiescent-iterations",
         type=_quiescent_iterations,
-        default=3,
+        default=_MAX_QUIESCENT_ITERATIONS_FLAG_DEFAULT,
         help=(
             "Exit after N consecutive no-progress iterations (default: 3). "
-            "Must be >=2 — N=1 risks exiting while a worker is mid-submit."
+            "Must be >=2 — N=1 risks exiting while a worker is mid-submit. "
+            "In single-experiment mode the experiment-config "
+            "``max_quiescent_iterations`` field takes precedence; a "
+            "non-default CLI value triggers a startup-warning and is "
+            "ignored. In --control-plane-url multi-experiment mode the CLI "
+            "value is consulted (deferred to #214)."
         ),
     )
     parser.add_argument(
@@ -239,25 +259,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def _resolve_ideation_policy(experiment_config_path: str) -> IdeationPolicy:
-    """Build an :data:`IdeationPolicy` from the experiment-config YAML.
-
-    Reads the ``ideation_policy`` block from
-    ``experiment_config_path`` and dispatches on its ``kind``
-    discriminator. When the block is absent the reference default
-    (``maintain_pending(target=3)``) is used. Per-kind argument
-    validation lives in the underlying factories; invalid values raise
-    ``ValueError`` which the CLI surfaces as a startup failure.
-    """
-    config = load_experiment_config(experiment_config_path)
-    return build_policy(config.ideation_policy)
-
-
 def _resolve_termination_policy(spec: str) -> TerminationPolicy:
     """Import ``module:callable`` and call it to get a :data:`TerminationPolicy`.
 
-    Same shape as :func:`_resolve_ideation_policy`: the CLI flag
-    points at a no-arg factory that returns the configured policy.
+    Used only by multi-experiment mode (issue #157: single-experiment mode
+    reads the experiment-config ``termination_policy`` field instead). The
+    CLI flag points at a no-arg factory that returns the configured policy.
     Deployments that want one of the four reference policies wrap them
     in a small factory module:
 
@@ -352,11 +359,21 @@ def main(argv: list[str] | None = None) -> int:
     stop = StopFlag()
     install_stop_handlers(stop)
 
-    ideation_policy = _resolve_ideation_policy(args.experiment_config)
-    termination_policy = _resolve_termination_policy(args.termination_policy)
     admin_token = resolve_admin_token(args)
 
     if args.control_plane_url is not None:
+        # Multi-experiment mode drives termination from the --termination-policy
+        # CLI flag (per-experiment config resolution through the chapter-11
+        # registry is #214). The bootstrap config is loaded only for its
+        # ideation_policy; skip the single-experiment termination-policy
+        # cross-field requirement so a termination=auto bootstrap config that
+        # relies on the CLI flag (valid pre-#157) still starts.
+        config = load_experiment_config(
+            args.experiment_config,
+            validation_context={"require_termination_policy": False},
+        )
+        ideation_policy = build_policy(config.ideation_policy)
+        termination_policy = _resolve_termination_policy(args.termination_policy)
         return _run_multi_experiment(
             args=args,
             ideation_policy=ideation_policy,
@@ -364,14 +381,61 @@ def main(argv: list[str] | None = None) -> int:
             stop=stop,
             log=log,
         )
+
+    # Single-experiment mode: the experiment-config fields take precedence
+    # over the CLI flags. The full cross-field validation applies here (this
+    # is the mode that reads termination_policy from the config).
+    config = load_experiment_config(args.experiment_config)
+    ideation_policy = build_policy(config.ideation_policy)
+    # Warn (not silently) on any ignored non-default flag.
+    _warn_ignored_single_experiment_flags(args, log)
+    termination_policy = build_termination_policy(config.termination_policy)
+    max_quiescent_iterations = (
+        config.max_quiescent_iterations or _MAX_QUIESCENT_ITERATIONS_FLAG_DEFAULT
+    )
     return _run_single_experiment(
         args=args,
         ideation_policy=ideation_policy,
         termination_policy=termination_policy,
+        max_quiescent_iterations=max_quiescent_iterations,
         admin_token=admin_token,
         stop=stop,
         log=log,
     )
+
+
+def _warn_ignored_single_experiment_flags(
+    args,  # noqa: ANN001 — argparse Namespace
+    log,  # noqa: ANN001 — _CtxAdapter
+) -> None:
+    """Log a WARN per non-default CLI flag superseded by the experiment-config.
+
+    In single-experiment mode the ``termination_policy`` /
+    ``max_quiescent_iterations`` experiment-config fields take precedence
+    over ``--termination-policy`` / ``--max-quiescent-iterations``. Rather
+    than silently ignore a non-default CLI value, announce it at startup so
+    the operator knows exactly which flag is being overridden.
+    """
+    if args.termination_policy != _TERMINATION_POLICY_FLAG_DEFAULT:
+        log.warning(
+            "orchestrator_cli_flag_ignored",
+            flag="--termination-policy",
+            value=args.termination_policy,
+            reason=(
+                "experiment-config termination_policy takes precedence "
+                "in single-experiment mode"
+            ),
+        )
+    if args.max_quiescent_iterations != _MAX_QUIESCENT_ITERATIONS_FLAG_DEFAULT:
+        log.warning(
+            "orchestrator_cli_flag_ignored",
+            flag="--max-quiescent-iterations",
+            value=args.max_quiescent_iterations,
+            reason=(
+                "experiment-config max_quiescent_iterations takes "
+                "precedence in single-experiment mode"
+            ),
+        )
 
 
 def _run_single_experiment(
@@ -379,6 +443,7 @@ def _run_single_experiment(
     args,  # noqa: ANN001 — argparse Namespace
     ideation_policy: IdeationPolicy,
     termination_policy: TerminationPolicy,
+    max_quiescent_iterations: int,
     admin_token: str | None,
     stop: StopFlag,
     log,  # noqa: ANN001 — _CtxAdapter
@@ -404,7 +469,7 @@ def _run_single_experiment(
         "starting",
         mode="single-experiment",
         experiment_config=args.experiment_config,
-        termination_policy=args.termination_policy,
+        max_quiescent_iterations=max_quiescent_iterations,
         repo=args.repo_path,
         worker_id=args.worker_id,
     )
@@ -465,7 +530,7 @@ def _run_single_experiment(
             execution_task_prefix=args.execution_task_prefix,
             evaluation_task_prefix=args.evaluation_task_prefix,
             poll_interval=args.poll_interval,
-            max_quiescent_iterations=args.max_quiescent_iterations,
+            max_quiescent_iterations=max_quiescent_iterations,
             stop=stop,
         )
     log.info("orchestrator exited")

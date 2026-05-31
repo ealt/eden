@@ -399,10 +399,13 @@ def test_stranded_claim_recovered_by_orchestrator_loop(tmp_path: Path) -> None:
         # plus the already-seeded ideation tasks means the policy
         # returns 0 every iteration — no new tasks created, no claim
         # cycle restarted.
+        # Issue #157: max_quiescent_iterations is now an experiment-config
+        # field (the single-experiment orchestrator ignores the CLI flag).
         orchestrator_config = tmp_path / "orchestrator-config.yaml"
         orchestrator_config.write_text(
             FIXTURE_CONFIG.read_text(encoding="utf-8")
-            + "\nideation_policy:\n  kind: maintain_pending\n  max_total: 0\n",
+            + "\nideation_policy:\n  kind: maintain_pending\n  max_total: 0\n"
+            + "max_quiescent_iterations: 2\n",
             encoding="utf-8",
         )
         orchestrator_log = logs_dir / "orchestrator.log"
@@ -417,8 +420,6 @@ def test_stranded_claim_recovered_by_orchestrator_loop(tmp_path: Path) -> None:
                 str(bare_repo),
                 "--experiment-config",
                 str(orchestrator_config),
-                "--max-quiescent-iterations",
-                "2",
                 "--poll-interval",
                 "0.1",
             ],

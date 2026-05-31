@@ -263,37 +263,23 @@ services:
       - /etc/eden/credential-helper.sh
       - --experiment-config
       - /etc/eden/experiment-config.yaml
-      # The orchestrator reads the ideation_policy block from the
-      # experiment config to build the policy callable invoked when
-      # dispatch_mode.ideation_creation == "auto". Absent block →
-      # maintain_pending(target=3).
-      # Compose-friendly quiescence: 30 iterations × 1s = 30s of
-      # zero progress before the orchestrator declares the
-      # experiment done. Tuned for the smoke tests where worker
-      # hosts auto-claim within milliseconds. Manual-UI sessions
-      # (a human at the keyboard) want a much higher value — set
-      # EDEN_MAX_QUIESCENT_ITERATIONS in .env to override. See
-      # GitHub issue #98 for the design discussion (the structural fix
+      # Issue #157: the single-experiment orchestrator reads its
+      # ideation_policy, termination_policy, and max_quiescent_iterations
+      # from the experiment-config YAML — not from CLI flags / env vars.
+      # The smoke scripts inject these fields into the config before
+      # bringing the stack up (max_quiescent_iterations: 30 reproduces the
+      # retired EDEN_MAX_QUIESCENT_ITERATIONS:-30 deployment default — 30
+      # iterations × 1s poll = 30s of zero progress before quiescence-exit).
+      # Manual-UI sessions (a human at the keyboard) want a much higher
+      # value — set max_quiescent_iterations in the experiment-config YAML.
+      # See GitHub issue #98 for the design discussion (the structural fix
       # — orchestrator as cross-experiment infra — is deferred to
       # Phase 12c control plane).
       - --poll-interval
       - "1.0"
-      - --max-quiescent-iterations
-      - "${EDEN_MAX_QUIESCENT_ITERATIONS:-30}"
-      # 12a-3 wave 4: --termination-policy gates the new decision-type 0
-      # branch. Default `default_termination_policy` returns
-      # `never_terminate`; deployments that want policy-driven
-      # termination point this at a configured factory (see
-      # docs/operations/experiment-lifecycle.md for the patterns).
-      - --termination-policy
-      - ${EDEN_TERMINATION_POLICY:-eden_dispatch.termination:default_termination_policy}
       - --log-level
       - info
     environment:
-      # 12a-3 wave 4: per-policy configuration. The
-      # `env_max_variants_policy` factory reads this; other
-      # deployment-supplied policies MAY follow the same convention.
-      EDEN_TERMINATION_MAX_VARIANTS: ${EDEN_TERMINATION_MAX_VARIANTS:-}
       # Issue #109: file-handler companion to docker json-file driver.
       EDEN_LOG_DIR: /var/lib/eden/logs
     configs:
