@@ -7,9 +7,9 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Discriminator, Field
+from pydantic import BaseModel, ConfigDict, Discriminator, Field, model_validator
 
-from ._common import NotNone
+from ._common import DurationStr, NotNone
 from .evaluation import EvaluationSchema
 
 Direction = Literal["maximize", "minimize"]
@@ -85,6 +85,94 @@ IdeationPolicyConfig = Annotated[
 """Discriminated union over named ideation-policy kinds (see §2.4)."""
 
 
+TerminationPolicyKind = Literal[
+    "never_terminate",
+    "max_variants",
+    "max_wall_time",
+    "convergence_window",
+    "target_condition",
+]
+"""Named termination-policy kinds shipped by the reference impl."""
+
+
+class NeverTerminateConfig(BaseModel):
+    """Never terminate — the reference default; explicit no-op.
+
+    Schema: see ``termination_policy`` (kind="never_terminate") in
+    ``schemas/experiment-config.schema.json``.
+    """
+
+    model_config = ConfigDict(strict=True, extra="allow")
+
+    kind: Literal["never_terminate"]
+
+
+class MaxVariantsTerminationConfig(BaseModel):
+    """Terminate when ``target`` variants have been attempted.
+
+    Schema: see ``termination_policy`` (kind="max_variants").
+    """
+
+    model_config = ConfigDict(strict=True, extra="allow")
+
+    kind: Literal["max_variants"]
+    target: Annotated[int, Field(ge=1)]
+
+
+class MaxWallTimeTerminationConfig(BaseModel):
+    """Terminate when wall-time since experiment start exceeds ``duration``.
+
+    ``duration`` is a validated ISO 8601 duration string (e.g. ``"PT2H"``)
+    that the orchestrator's ``build_termination_policy`` converts to a
+    ``timedelta`` at the factory boundary. Schema: see ``termination_policy``
+    (kind="max_wall_time").
+    """
+
+    model_config = ConfigDict(strict=True, extra="allow")
+
+    kind: Literal["max_wall_time"]
+    duration: DurationStr
+
+
+class ConvergenceWindowTerminationConfig(BaseModel):
+    """Terminate when ``metric`` has not improved over the trailing ``window``.
+
+    Schema: see ``termination_policy`` (kind="convergence_window").
+    """
+
+    model_config = ConfigDict(strict=True, extra="allow")
+
+    kind: Literal["convergence_window"]
+    metric: Annotated[str, Field(min_length=1)]
+    window: Annotated[int, Field(ge=1)]
+    direction: Direction = "maximize"
+
+
+class TargetConditionTerminationConfig(BaseModel):
+    """Terminate when the latest integrated variant's ``metric`` crosses ``threshold``.
+
+    Schema: see ``termination_policy`` (kind="target_condition").
+    """
+
+    model_config = ConfigDict(strict=True, extra="allow")
+
+    kind: Literal["target_condition"]
+    metric: Annotated[str, Field(min_length=1)]
+    threshold: float
+    direction: Direction = "maximize"
+
+
+TerminationPolicyConfig = Annotated[
+    NeverTerminateConfig
+    | MaxVariantsTerminationConfig
+    | MaxWallTimeTerminationConfig
+    | ConvergenceWindowTerminationConfig
+    | TargetConditionTerminationConfig,
+    Discriminator("kind"),
+]
+"""Discriminated union over named termination-policy kinds (see §2.4)."""
+
+
 class ObjectiveSpec(BaseModel):
     """Scalar optimization target: expression over metrics + direction."""
 
@@ -99,12 +187,22 @@ class ExperimentConfig(BaseModel):
 
     Pre-12a-3 the model carried ``max_variants``, ``max_wall_time``,
     ``convergence_window``, and ``target_condition`` as normative
-    termination bounds; 12a-3 moves termination to a deployment-supplied
-    policy callable (``03-roles.md`` §6.2 decision-type 0) and the four
-    fields are removed from the normative shape. Deployments MAY still
-    carry them as additional top-level fields under the §2.3
+    top-level termination bounds; 12a-3 removed those scalar fields from
+    the normative shape. Their semantics now round-trip as
+    ``termination_policy.kind`` values: the orchestrator selects a
+    termination policy declaratively via the ``termination_policy`` block
+    (``03-roles.md`` §6.2 decision-type 0), and the ``build_termination_policy``
+    factory in ``eden-dispatch`` maps it to a callable. Deployments MAY
+    still carry the old top-level fields under the §2.3
     forward-compatibility rule; the ``extra="allow"`` config makes them
     round-trip without rejection.
+
+    ``max_quiescent_iterations`` is the orchestrator's quiescent-exit
+    budget (``03-roles.md`` §3.1); the three ``*_task_deadline`` fields
+    bound each worker host's per-task SLA. All four are optional with
+    reference defaults; ``termination_policy`` is required when
+    ``dispatch_mode.termination == "auto"`` (enforced below and mirrored
+    by the JSON Schema's top-level ``allOf-if-then``).
 
     Role bindings (how the ideator, executor, and evaluator are hosted)
     are implementation-defined and flow through the same ``extra="allow"``
@@ -118,3 +216,24 @@ class ExperimentConfig(BaseModel):
     objective: ObjectiveSpec
     dispatch_mode: Annotated[DispatchMode | None, NotNone] = None
     ideation_policy: Annotated[IdeationPolicyConfig | None, NotNone] = None
+    termination_policy: Annotated[TerminationPolicyConfig | None, NotNone] = None
+    max_quiescent_iterations: Annotated[int | None, NotNone, Field(ge=2)] = None
+    ideation_task_deadline: Annotated[float | None, NotNone, Field(gt=0)] = None
+    execution_task_deadline: Annotated[float | None, NotNone, Field(gt=0)] = None
+    evaluation_task_deadline: Annotated[float | None, NotNone, Field(gt=0)] = None
+
+    @model_validator(mode="after")
+    def _termination_required_when_auto(self) -> ExperimentConfig:
+        # Mirrors the JSON Schema's top-level allOf-if-then over
+        # dispatch_mode.termination. Both sides reject the same fixtures;
+        # the schema-parity test is the gate that keeps them in lockstep.
+        if (
+            self.dispatch_mode is not None
+            and self.dispatch_mode.termination == "auto"
+            and self.termination_policy is None
+        ):
+            raise ValueError(
+                "termination_policy is required when "
+                "dispatch_mode.termination == 'auto'"
+            )
+        return self

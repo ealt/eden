@@ -57,9 +57,36 @@ Every experiment is driven by a YAML config validated against [`spec/v0/schemas/
 | `objective.expr` | string | yes | Scalar expression over `evaluation_schema` fields. |
 | `objective.direction` | `"maximize"` \| `"minimize"` | yes | |
 | `dispatch_mode.<key>` | `"auto"` \| `"manual"` | no | Per-key gate on the orchestrator's five decision types (`termination` defaults to `"manual"`; the four operational keys default to `"auto"`). See [`02-data-model.md`](../spec/v0/02-data-model.md) §2.4. |
+| `ideation_policy` | object | no | Named ideation-creation policy (`kind`: `maintain_pending` \| `fixed_total`). Defaults to `maintain_pending(target=3)`. See [`02-data-model.md`](../spec/v0/02-data-model.md) §2.4. |
+| `termination_policy` | object | conditional | Named termination policy (`kind`: `never_terminate` \| `max_variants` \| `max_wall_time` \| `convergence_window` \| `target_condition`). **Required when `dispatch_mode.termination == "auto"`**, ignored when `"manual"`. See the recipes in [`docs/operations/experiment-lifecycle.md`](operations/experiment-lifecycle.md). |
+| `max_quiescent_iterations` | integer ≥ 2 | no | A polling orchestrator exits after N consecutive no-progress iterations. Default 3; manual-UI sessions want a much higher value (e.g. 3600). |
+| `ideation_task_deadline` / `execution_task_deadline` / `evaluation_task_deadline` | number > 0 | no | Seconds each worker host waits for one `*_command` invocation. Defaults: 120 / 600 / 300. |
 | `ideation_command` / `execution_command` / `evaluation_command` | string | no (impl-specific) | Shell commands to invoke for [subprocess mode](#3-worker-host-modes). Travel under additional-properties; the spec defers role-bindings to a future chapter. |
 
-The pre-12a-3 termination fields (`max_variants` / `max_wall_time` / `convergence_window` / `target_condition`) are **removed** from the normative schema. Termination is now a deployment-supplied policy callable per [`03-roles.md`](../spec/v0/03-roles.md) §6.2 decision-type 0 — see [`docs/operations/experiment-lifecycle.md`](operations/experiment-lifecycle.md) for the operator playbook. Configs that still carry the old fields validate (they round-trip under the schema's permissive additional-properties posture) but the orchestrator ignores them.
+The pre-12a-3 top-level termination fields (`max_variants` / `max_wall_time` / `convergence_window` / `target_condition`) are **removed** from the normative schema — their semantics now round-trip as `termination_policy.kind` values selected declaratively per [`03-roles.md`](../spec/v0/03-roles.md) §6.2 decision-type 0 (see [`docs/operations/experiment-lifecycle.md`](operations/experiment-lifecycle.md) for the operator playbook). Configs that still carry the old top-level fields validate (they round-trip under the schema's permissive additional-properties posture) but the orchestrator ignores them.
+
+The `termination_policy` / `max_quiescent_iterations` / `*_task_deadline` fields were CLI flags / deployment env vars before [issue #157](https://github.com/ealt/eden/issues/157); they moved into the experiment config because two experiments sharing one deployment plausibly want different values. A worked example using all of them:
+
+```yaml
+parallel_variants: 4
+evaluation_schema:
+  accuracy: real
+objective:
+  expr: "accuracy"
+  direction: "maximize"
+dispatch_mode:
+  termination: auto          # required for termination_policy to be consulted
+ideation_policy:
+  kind: fixed_total
+  total: 20
+termination_policy:
+  kind: max_wall_time
+  duration: "PT2H"           # ISO 8601 duration; terminate after 2 hours
+max_quiescent_iterations: 60
+ideation_task_deadline: 180.0
+execution_task_deadline: 900.0
+evaluation_task_deadline: 300.0
+```
 
 Concrete example — the repo's fixture at [`tests/fixtures/experiment/.eden/config.yaml`](../tests/fixtures/experiment/.eden/config.yaml):
 

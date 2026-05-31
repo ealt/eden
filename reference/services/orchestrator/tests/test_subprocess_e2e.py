@@ -252,10 +252,14 @@ def test_three_variant_experiment_subprocess_mode(tmp_path: Path) -> None:
     # every ideation task stays pending.
     # The fixed_total ideation policy reproduces the pre-12a-2
     # fixed-seed shape this test depends on (exactly 3 ideation tasks).
+    # Issue #157: max_quiescent_iterations is now an experiment-config field
+    # (the single-experiment orchestrator ignores the CLI flag); 20 * 0.5s
+    # keeps the quiescence tolerance above worker startup-to-first-claim.
     orchestrator_config = tmp_path / "orchestrator-config.yaml"
     orchestrator_config.write_text(
         FIXTURE_CONFIG.read_text(encoding="utf-8")
-        + "\nideation_policy:\n  kind: fixed_total\n  total: 3\n",
+        + "\nideation_policy:\n  kind: fixed_total\n  total: 3\n"
+        + "max_quiescent_iterations: 20\n",
         encoding="utf-8",
     )
     orchestrator = _spawn(
@@ -269,8 +273,6 @@ def test_three_variant_experiment_subprocess_mode(tmp_path: Path) -> None:
             str(bare_repo),
             "--poll-interval",
             "0.5",
-            "--max-quiescent-iterations",
-            "20",
             "--experiment-config",
             str(orchestrator_config),
         ],

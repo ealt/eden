@@ -4,8 +4,8 @@ The parity tests need to run each case twice — once against the Pydantic
 model and once against the hand-authored JSON Schema. This conftest wires
 up both paths over the same case corpus so they stay in sync.
 
-A custom ``FormatChecker`` enables ``uri`` and ``date-time`` format
-validation on the schema side; jsonschema's default does not enforce
+A custom ``FormatChecker`` enables ``uri``, ``date-time``, and ``duration``
+format validation on the schema side; jsonschema's default does not enforce
 ``format`` keywords unless a checker is supplied. The model side enforces
 the same semantics in :mod:`eden_contracts._common`.
 """
@@ -30,6 +30,7 @@ from eden_contracts import (
     Variant,
     Worker,
 )
+from eden_contracts._common import _check_duration
 from jsonschema import Draft202012Validator, FormatChecker
 from referencing import Registry, Resource
 from referencing.jsonschema import DRAFT202012
@@ -90,6 +91,17 @@ def _check_datetime(instance: Any) -> bool:
     if not isinstance(instance, str):
         return True
     datetime.fromisoformat(instance)
+    return True
+
+
+@_register_format("duration")
+def _check_duration_format(instance: Any) -> bool:
+    if not isinstance(instance, str):
+        return True
+    # Reuse the model-side validator so the schema side and the Pydantic
+    # side accept/reject identical strings (no two-source-of-truth for
+    # "what counts as a valid, positive ISO-8601 duration").
+    _check_duration(instance)
     return True
 
 

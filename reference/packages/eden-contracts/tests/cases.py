@@ -118,6 +118,9 @@ EXPERIMENT_CONFIG_CASES: list[Case] = [
                 "evaluation_dispatch": "auto",
                 "integration": "auto",
             },
+            # termination == "auto" REQUIRES a termination_policy (cross-field
+            # rule, enforced on both schema + Pydantic sides).
+            "termination_policy": {"kind": "never_terminate"},
         },
         True,
     ),
@@ -139,11 +142,13 @@ EXPERIMENT_CONFIG_CASES: list[Case] = [
         "dispatch_mode_termination_only",
         # 12a-3: a deployment that wants policy-driven termination flips
         # only the new key; the four operational keys default to "auto".
+        # Issue #157: termination == "auto" now REQUIRES a termination_policy.
         {
             "parallel_variants": 2,
             "evaluation_schema": {"accuracy": "real"},
             "objective": {"expr": "accuracy", "direction": "maximize"},
             "dispatch_mode": {"termination": "auto"},
+            "termination_policy": {"kind": "max_variants", "target": 50},
         },
         True,
     ),
@@ -312,6 +317,358 @@ EXPERIMENT_CONFIG_CASES: list[Case] = [
             "evaluation_schema": {"accuracy": "real"},
             "objective": {"expr": "accuracy", "direction": "maximize"},
             "ideation_policy": None,
+        },
+        False,
+    ),
+    # --- termination_policy (issue #157) ---
+    Case(
+        "termination_policy_never_terminate",
+        {
+            "parallel_variants": 2,
+            "evaluation_schema": {"accuracy": "real"},
+            "objective": {"expr": "accuracy", "direction": "maximize"},
+            "termination_policy": {"kind": "never_terminate"},
+        },
+        True,
+    ),
+    Case(
+        "termination_policy_max_variants_ok",
+        {
+            "parallel_variants": 2,
+            "evaluation_schema": {"accuracy": "real"},
+            "objective": {"expr": "accuracy", "direction": "maximize"},
+            "termination_policy": {"kind": "max_variants", "target": 200},
+        },
+        True,
+    ),
+    Case(
+        "termination_policy_max_variants_missing_target",
+        {
+            "parallel_variants": 2,
+            "evaluation_schema": {"accuracy": "real"},
+            "objective": {"expr": "accuracy", "direction": "maximize"},
+            "termination_policy": {"kind": "max_variants"},
+        },
+        False,
+    ),
+    Case(
+        "termination_policy_max_variants_target_zero",
+        {
+            "parallel_variants": 2,
+            "evaluation_schema": {"accuracy": "real"},
+            "objective": {"expr": "accuracy", "direction": "maximize"},
+            "termination_policy": {"kind": "max_variants", "target": 0},
+        },
+        False,
+    ),
+    Case(
+        "termination_policy_max_wall_time_ok",
+        {
+            "parallel_variants": 2,
+            "evaluation_schema": {"accuracy": "real"},
+            "objective": {"expr": "accuracy", "direction": "maximize"},
+            "termination_policy": {"kind": "max_wall_time", "duration": "PT2H"},
+        },
+        True,
+    ),
+    Case(
+        "termination_policy_max_wall_time_missing_duration",
+        {
+            "parallel_variants": 2,
+            "evaluation_schema": {"accuracy": "real"},
+            "objective": {"expr": "accuracy", "direction": "maximize"},
+            "termination_policy": {"kind": "max_wall_time"},
+        },
+        False,
+    ),
+    Case(
+        "termination_policy_max_wall_time_duration_not_iso",
+        {
+            "parallel_variants": 2,
+            "evaluation_schema": {"accuracy": "real"},
+            "objective": {"expr": "accuracy", "direction": "maximize"},
+            "termination_policy": {"kind": "max_wall_time", "duration": "2h"},
+        },
+        False,
+    ),
+    Case(
+        "termination_policy_max_wall_time_duration_zero",
+        {
+            "parallel_variants": 2,
+            "evaluation_schema": {"accuracy": "real"},
+            "objective": {"expr": "accuracy", "direction": "maximize"},
+            "termination_policy": {"kind": "max_wall_time", "duration": "PT0S"},
+        },
+        False,
+    ),
+    Case(
+        "termination_policy_convergence_window_ok",
+        {
+            "parallel_variants": 2,
+            "evaluation_schema": {"accuracy": "real"},
+            "objective": {"expr": "accuracy", "direction": "maximize"},
+            "termination_policy": {
+                "kind": "convergence_window",
+                "metric": "accuracy",
+                "window": 10,
+                "direction": "minimize",
+            },
+        },
+        True,
+    ),
+    Case(
+        "termination_policy_convergence_window_default_direction",
+        {
+            "parallel_variants": 2,
+            "evaluation_schema": {"accuracy": "real"},
+            "objective": {"expr": "accuracy", "direction": "maximize"},
+            "termination_policy": {
+                "kind": "convergence_window",
+                "metric": "accuracy",
+                "window": 5,
+            },
+        },
+        True,
+    ),
+    Case(
+        "termination_policy_convergence_window_missing_window",
+        {
+            "parallel_variants": 2,
+            "evaluation_schema": {"accuracy": "real"},
+            "objective": {"expr": "accuracy", "direction": "maximize"},
+            "termination_policy": {"kind": "convergence_window", "metric": "accuracy"},
+        },
+        False,
+    ),
+    Case(
+        "termination_policy_convergence_window_missing_metric",
+        {
+            "parallel_variants": 2,
+            "evaluation_schema": {"accuracy": "real"},
+            "objective": {"expr": "accuracy", "direction": "maximize"},
+            "termination_policy": {"kind": "convergence_window", "window": 5},
+        },
+        False,
+    ),
+    Case(
+        "termination_policy_convergence_window_window_zero",
+        {
+            "parallel_variants": 2,
+            "evaluation_schema": {"accuracy": "real"},
+            "objective": {"expr": "accuracy", "direction": "maximize"},
+            "termination_policy": {
+                "kind": "convergence_window",
+                "metric": "accuracy",
+                "window": 0,
+            },
+        },
+        False,
+    ),
+    Case(
+        "termination_policy_target_condition_ok",
+        {
+            "parallel_variants": 2,
+            "evaluation_schema": {"accuracy": "real"},
+            "objective": {"expr": "accuracy", "direction": "maximize"},
+            "termination_policy": {
+                "kind": "target_condition",
+                "metric": "accuracy",
+                "threshold": 0.95,
+                "direction": "maximize",
+            },
+        },
+        True,
+    ),
+    Case(
+        "termination_policy_target_condition_missing_threshold",
+        {
+            "parallel_variants": 2,
+            "evaluation_schema": {"accuracy": "real"},
+            "objective": {"expr": "accuracy", "direction": "maximize"},
+            "termination_policy": {"kind": "target_condition", "metric": "accuracy"},
+        },
+        False,
+    ),
+    Case(
+        "termination_policy_target_condition_missing_metric",
+        {
+            "parallel_variants": 2,
+            "evaluation_schema": {"accuracy": "real"},
+            "objective": {"expr": "accuracy", "direction": "maximize"},
+            "termination_policy": {"kind": "target_condition", "threshold": 0.95},
+        },
+        False,
+    ),
+    Case(
+        "termination_policy_unknown_extra_key_tolerated",
+        {
+            "parallel_variants": 2,
+            "evaluation_schema": {"accuracy": "real"},
+            "objective": {"expr": "accuracy", "direction": "maximize"},
+            "termination_policy": {
+                "kind": "max_variants",
+                "target": 10,
+                "future_arg": "ignored",
+            },
+        },
+        True,
+    ),
+    Case(
+        "termination_policy_bad_kind",
+        {
+            "parallel_variants": 2,
+            "evaluation_schema": {"accuracy": "real"},
+            "objective": {"expr": "accuracy", "direction": "maximize"},
+            "termination_policy": {"kind": "halt_now"},
+        },
+        False,
+    ),
+    Case(
+        "termination_policy_missing_kind",
+        {
+            "parallel_variants": 2,
+            "evaluation_schema": {"accuracy": "real"},
+            "objective": {"expr": "accuracy", "direction": "maximize"},
+            "termination_policy": {"target": 10},
+        },
+        False,
+    ),
+    Case(
+        "termination_policy_null",
+        {
+            "parallel_variants": 2,
+            "evaluation_schema": {"accuracy": "real"},
+            "objective": {"expr": "accuracy", "direction": "maximize"},
+            "termination_policy": None,
+        },
+        False,
+    ),
+    # --- cross-field: termination_policy required when termination == "auto" ---
+    Case(
+        "termination_auto_with_policy",
+        {
+            "parallel_variants": 2,
+            "evaluation_schema": {"accuracy": "real"},
+            "objective": {"expr": "accuracy", "direction": "maximize"},
+            "dispatch_mode": {"termination": "auto"},
+            "termination_policy": {"kind": "never_terminate"},
+        },
+        True,
+    ),
+    Case(
+        "termination_auto_without_policy",
+        {
+            "parallel_variants": 2,
+            "evaluation_schema": {"accuracy": "real"},
+            "objective": {"expr": "accuracy", "direction": "maximize"},
+            "dispatch_mode": {"termination": "auto"},
+        },
+        False,
+    ),
+    Case(
+        "termination_manual_with_policy",
+        # termination == "manual" (the default): a termination_policy MAY be
+        # present (ignored at runtime) and is schema-valid.
+        {
+            "parallel_variants": 2,
+            "evaluation_schema": {"accuracy": "real"},
+            "objective": {"expr": "accuracy", "direction": "maximize"},
+            "dispatch_mode": {"termination": "manual"},
+            "termination_policy": {"kind": "max_variants", "target": 10},
+        },
+        True,
+    ),
+    Case(
+        "termination_manual_without_policy",
+        {
+            "parallel_variants": 2,
+            "evaluation_schema": {"accuracy": "real"},
+            "objective": {"expr": "accuracy", "direction": "maximize"},
+            "dispatch_mode": {"termination": "manual"},
+        },
+        True,
+    ),
+    # --- max_quiescent_iterations (issue #157) ---
+    Case(
+        "max_quiescent_iterations_ok",
+        {
+            "parallel_variants": 2,
+            "evaluation_schema": {"accuracy": "real"},
+            "objective": {"expr": "accuracy", "direction": "maximize"},
+            "max_quiescent_iterations": 30,
+        },
+        True,
+    ),
+    Case(
+        "max_quiescent_iterations_below_min",
+        {
+            "parallel_variants": 2,
+            "evaluation_schema": {"accuracy": "real"},
+            "objective": {"expr": "accuracy", "direction": "maximize"},
+            "max_quiescent_iterations": 1,
+        },
+        False,
+    ),
+    Case(
+        "max_quiescent_iterations_bool",
+        {
+            "parallel_variants": 2,
+            "evaluation_schema": {"accuracy": "real"},
+            "objective": {"expr": "accuracy", "direction": "maximize"},
+            "max_quiescent_iterations": True,
+        },
+        False,
+    ),
+    Case(
+        "max_quiescent_iterations_null",
+        {
+            "parallel_variants": 2,
+            "evaluation_schema": {"accuracy": "real"},
+            "objective": {"expr": "accuracy", "direction": "maximize"},
+            "max_quiescent_iterations": None,
+        },
+        False,
+    ),
+    # --- *_task_deadline scalars (issue #157) ---
+    Case(
+        "task_deadlines_ok",
+        {
+            "parallel_variants": 2,
+            "evaluation_schema": {"accuracy": "real"},
+            "objective": {"expr": "accuracy", "direction": "maximize"},
+            "ideation_task_deadline": 120.0,
+            "execution_task_deadline": 600.0,
+            "evaluation_task_deadline": 300.0,
+        },
+        True,
+    ),
+    Case(
+        "ideation_task_deadline_zero",
+        {
+            "parallel_variants": 2,
+            "evaluation_schema": {"accuracy": "real"},
+            "objective": {"expr": "accuracy", "direction": "maximize"},
+            "ideation_task_deadline": 0,
+        },
+        False,
+    ),
+    Case(
+        "execution_task_deadline_negative",
+        {
+            "parallel_variants": 2,
+            "evaluation_schema": {"accuracy": "real"},
+            "objective": {"expr": "accuracy", "direction": "maximize"},
+            "execution_task_deadline": -1.0,
+        },
+        False,
+    ),
+    Case(
+        "evaluation_task_deadline_null",
+        {
+            "parallel_variants": 2,
+            "evaluation_schema": {"accuracy": "real"},
+            "objective": {"expr": "accuracy", "direction": "maximize"},
+            "evaluation_task_deadline": None,
         },
         False,
     ),

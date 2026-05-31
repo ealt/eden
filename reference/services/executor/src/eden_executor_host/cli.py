@@ -93,7 +93,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default="/var/lib/eden/worktrees",
         help="Root directory for per-task worktrees (host subdir created underneath).",
     )
-    parser.add_argument("--execution-task-deadline", type=float, default=600.0)
+    # --execution-task-deadline retired (issue #157): the per-task deadline
+    # is now the experiment-config ``execution_task_deadline`` field, read in
+    # subprocess mode below (it travels with the execution_command).
     parser.add_argument("--execution-shutdown-deadline", type=float, default=10.0)
     parser.add_argument("--execution-env-file", default=None)
     parser.add_argument("--poll-interval", type=float, default=0.1)
@@ -176,13 +178,16 @@ def _run_subprocess_mode(
     # argparse guarantees otherwise).
     assert args.repo_path is not None
     assert args.experiment_dir is not None
+    # Issue #157: the per-task deadline is an experiment-config field that
+    # travels with the execution_command. Default 600.0 when omitted.
+    task_deadline = config.execution_task_deadline or 600.0
     sub_config = ExecutorSubprocessConfig(
         command=command,
         experiment_dir=Path(args.experiment_dir).resolve(),
         env=env,
         repo_path=Path(args.repo_path).resolve(),
         worktrees_root=Path(args.worktrees_dir),
-        task_deadline=args.execution_task_deadline,
+        task_deadline=task_deadline,
         shutdown_deadline=args.execution_shutdown_deadline,
         exec_mode=exec_args.mode,
         exec_image=exec_args.image,

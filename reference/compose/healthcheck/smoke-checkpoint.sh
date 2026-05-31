@@ -89,6 +89,16 @@ bash "${REPO_ROOT}/reference/scripts/setup-experiment/setup-experiment.sh" \
 
 rm -f "${ENV_FILE}.bak"
 
+# Issue #157: max_quiescent_iterations is now an experiment-config field
+# (the single-experiment orchestrator no longer reads the retired
+# EDEN_MAX_QUIESCENT_ITERATIONS env var). 30 reproduces the retired
+# compose-level default. The fixture config carries ideation_policy
+# already; append the quiescence budget to the copied config.
+EXPERIMENT_CONFIG="${REPO_ROOT}/reference/compose/experiment-config.yaml"
+cat >>"$EXPERIMENT_CONFIG" <<'YAML'
+max_quiescent_iterations: 30
+YAML
+
 EDEN_ADMIN_TOKEN="$(grep -E '^EDEN_ADMIN_TOKEN=' "$ENV_FILE" | cut -d= -f2-)"
 test -n "$EDEN_ADMIN_TOKEN"
 POSTGRES_USER="$(grep -E '^POSTGRES_USER=' "$ENV_FILE" | cut -d= -f2-)"
