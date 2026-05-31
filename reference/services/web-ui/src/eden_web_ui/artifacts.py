@@ -11,6 +11,8 @@ New code may import from :mod:`eden_service_common.artifacts` directly.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from eden_service_common.artifacts import (
     MANIFEST_NAME,
     MANIFEST_VERSION,
@@ -39,4 +41,24 @@ __all__ = [
     "read_bundle_manifest",
     "submission_naming",
     "write_artifact_bundle",
+    "write_idea_artifact",
 ]
+
+
+def write_idea_artifact(
+    artifacts_dir: Path | str,
+    idea_id: str,
+    markdown: str,
+) -> str:
+    """Write a text-only idea artifact at ``ideas/<idea_id>/content.md``.
+
+    Back-compat public helper preserved across the issue-#168 relocation. New
+    code should call :func:`entity_artifact_dir` + :func:`write_artifact_bundle`
+    directly; this thin wrapper keeps the pre-existing import surface stable.
+    """
+    target_dir = entity_artifact_dir(
+        artifacts_dir, producer="ideator", entity_id=idea_id
+    )
+    return write_artifact_bundle(
+        target_dir, idea_naming(), text_content=markdown, uploads=[]
+    )

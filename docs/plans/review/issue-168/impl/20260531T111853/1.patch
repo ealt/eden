@@ -1,0 +1,12 @@
+--- /tmp/eden168_brief_prev.md	2026-05-31 11:28:00
++++ docs/plans/review/issue-168/impl/20260531T111853/1.md	2026-05-31 11:28:58
+@@ -37,3 +37,9 @@
+ 
+ ## Review Status
+ Round 0 — awaiting initial review.
++
++## Round 1 — addressed
++
++- **Bug (subprocess whitespace-only content)** — FIXED. `_persist_ideas` now gates `_write_content` on `content.strip()` (subprocess_mode.py:279), so whitespace-only text falls through to the `artifacts_uri` requirement → `ProtocolViolation` → caught → `status="error"` (no stuck claim). Added regression `test_whitespace_only_content_errors_not_stuck` + a `ideas/<idea_id>/content.md` path-shape assertion on the success test (test_ideator_subprocess.py).
++- **Risk (dropped `write_idea_artifact`)** — FIXED. Re-added `write_idea_artifact` to the web-UI shim as a thin wrapper over `entity_artifact_dir` + `write_artifact_bundle`, preserving the pre-existing public import surface (plan §6).
++- **Risk (CLI no-overwrite drift)** — FIXED. Added `_write_exclusive` (tmp + `os.link`) to `eden-manual` and routed all three write branches (text-only, single-upload, bundle) through exclusive finalization, mirroring the shared helper's `FileExistsError`-on-clobber guarantee. Added `test_cli_second_write_*` regression tests.

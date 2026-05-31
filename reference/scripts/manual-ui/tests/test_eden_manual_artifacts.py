@@ -143,3 +143,39 @@ def test_submission_naming_parity(cli) -> None:
     naming = submission_naming("eval-xyz", headline="evaluation.md")
     assert naming.text_only_name == "eval-xyz.md"
     assert naming.bundle_name == "eval-xyz.tar.gz"
+
+
+def test_cli_second_write_to_same_target_raises(cli, env, tmp_path) -> None:
+    """The CLI mirrors the shared helper's no-overwrite guarantee (§5.4)."""
+    kwargs = dict(
+        relative_dir="ideas/idea-dup",
+        text_only_name="content.md",
+        single_stem=None,
+        bundle_name="bundle.tar.gz",
+        headline="content.md",
+        file_paths=[],
+    )
+    cli._write_artifact_for_role(env, text_content="first", **kwargs)
+    with pytest.raises(FileExistsError):
+        cli._write_artifact_for_role(env, text_content="second", **kwargs)
+    # The first write's bytes survive — not clobbered.
+    assert (
+        tmp_path / "artifacts" / "ideas" / "idea-dup" / "content.md"
+    ).read_text() == "first"
+
+
+def test_cli_second_bundle_write_to_same_target_raises(cli, env, tmp_path) -> None:
+    src = tmp_path / "a.bin"
+    src.write_bytes(b"x")
+    kwargs = dict(
+        relative_dir="variants/v1/evaluator",
+        text_only_name="eval-z.md",
+        single_stem="eval-z",
+        bundle_name="eval-z.tar.gz",
+        headline="evaluation.md",
+        text_content="notes",
+        file_paths=[src],
+    )
+    cli._write_artifact_for_role(env, **kwargs)
+    with pytest.raises(FileExistsError):
+        cli._write_artifact_for_role(env, **kwargs)

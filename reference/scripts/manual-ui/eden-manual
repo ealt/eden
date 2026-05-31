@@ -318,6 +318,26 @@ def _single_upload_name(src: Path, single_stem: str | None) -> str:
     return f"{single_stem}{Path(safe).suffix}"  # eval/exec: <stem><ext>
 
 
+def _write_exclusive(final: Path, data: bytes) -> None:
+    """Atomically materialize ``data`` at ``final``, refusing to clobber.
+
+    Mirrors ``eden_service_common.artifacts._materialize_exclusive``: write to a
+    temp sibling then ``os.link`` it into place (atomic; raises
+    ``FileExistsError`` if ``final`` already exists), so the chapter-8 §5.4
+    no-overwrite guarantee holds for the CLI writer too — not just the shared
+    helper. The temp is always dropped.
+    """
+    tmp = final.with_name(final.name + ".tmp")
+    tmp.write_bytes(data)
+    try:
+        os.link(tmp, final)
+    finally:
+        try:
+            os.unlink(tmp)
+        except FileNotFoundError:
+            pass
+
+
 def _write_artifact_for_role(
     env: dict[str, str],
     *,
@@ -366,15 +386,14 @@ def _write_artifact_for_role(
         )
 
     if has_text and n_files == 0:
-        host_path = host_dir / text_only_name
         assert stripped is not None
-        host_path.write_text(stripped, encoding="utf-8")
+        _write_exclusive(host_dir / text_only_name, stripped.encode("utf-8"))
         return _stamp(text_only_name)
 
     if not has_text and n_files == 1:
         src = file_paths[0]
         name = _single_upload_name(src, single_stem)
-        (host_dir / name).write_bytes(src.read_bytes())
+        _write_exclusive(host_dir / name, src.read_bytes())
         return _stamp(name)
 
     # Bundle path: tar.gz with manifest.json
@@ -418,10 +437,19 @@ def _write_artifact_for_role(
     manifest_bytes = json.dumps(manifest, indent=2).encode("utf-8")
 
     host_path = host_dir / bundle_name
-    with tarfile.open(host_path, mode="w:gz") as tar:
+    tmp_path = host_path.with_name(host_path.name + ".tmp")
+    with tarfile.open(tmp_path, mode="w:gz") as tar:
         _add_tar_entry(tar, _BUNDLE_MANIFEST_NAME, manifest_bytes)
         for name, data in payloads:
             _add_tar_entry(tar, name, data)
+    # Exclusive finalize (mirrors the shared helper's no-overwrite guarantee).
+    try:
+        os.link(tmp_path, host_path)
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except FileNotFoundError:
+            pass
     return _stamp(bundle_name)
 
 

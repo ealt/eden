@@ -276,7 +276,13 @@ def _persist_ideas(
             raise ProtocolViolation(f"idea missing priority: {record!r}")
         if not isinstance(parents, list) or not parents:
             raise ProtocolViolation(f"idea missing parent_commits: {record!r}")
-        if isinstance(content, str) and content:
+        # Gate on content.strip(): the shared writer (issue #168) strips and
+        # rejects whitespace-only text with ValueError, which is NOT a
+        # ProtocolViolation and would leave the task stuck claimed. Treating
+        # whitespace-only as "no content" falls through to the artifacts_uri
+        # requirement below (→ ProtocolViolation → status="error") and matches
+        # the web-UI writer, which also treats whitespace as empty.
+        if isinstance(content, str) and content.strip():
             artifacts_uri = _write_content(
                 artifacts_dir=artifacts_dir,
                 idea_id=idea_id,
