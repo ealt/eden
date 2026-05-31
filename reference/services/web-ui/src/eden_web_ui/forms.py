@@ -187,7 +187,7 @@ def _parse_idea_row(
     Issue #120: ``content`` is required only when no file uploads
     are attached to the row. A row with uploads (but no markdown
     body) is a valid multi-file artifact — the bundler stores the
-    uploads alone without a synthetic ``idea.md``.
+    uploads alone without a synthetic ``content.md``.
     """
     _validate_slug(i, slug, errors)
     priority = _parse_priority(i, priority_raw, errors)

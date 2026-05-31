@@ -180,6 +180,8 @@ A conforming artifact store MUST support:
 
 URIs MUST be RFC 3986–conformant ([`schemas/idea.schema.json`](schemas/idea.schema.json) enforces this on the idea side).
 
+> *Reference deployment note (informative).* The naming scheme stays implementation-defined here; the reference deployment pins a concrete entity-hierarchical layout (`ideas/<idea_id>/`, `variants/<variant_id>/{executor,evaluator}/`) documented in the [worker-host-subprocess binding](reference-bindings/worker-host-subprocess.md) §10. That layout is a reference-binding detail, not a normative requirement.
+
 ### 5.2 Durability
 
 Once the artifact store returns a URI to an uploader, the content at that URI MUST remain resolvable until the experiment's retention window elapses. A conforming deployment MUST define its retention window explicitly. A URI recorded on a `variant/*` commit's evaluation manifest — whether as the optional `artifacts_uri` field ([`06-integrator.md`](06-integrator.md) §4.2) or inside the optional per-file `artifacts` inventory ([`06-integrator.md`](06-integrator.md) §4.4) — MUST be resolvable for at least as long as that `variant/*` commit is retained.

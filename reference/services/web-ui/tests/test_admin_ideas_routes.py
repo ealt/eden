@@ -28,7 +28,9 @@ def _seed_idea(
 ) -> str:
     idea_id = f"idea-{slug}"
     if artifacts_dir is not None:
-        path = artifacts_dir / f"{idea_id}.md"
+        # Issue #168: ideas live under ideas/<idea_id>/content.md.
+        path = artifacts_dir / "ideas" / idea_id / "content.md"
+        path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(artifact_text)
         artifacts_uri = f"file://{path.resolve()}"
     else:

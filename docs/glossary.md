@@ -183,9 +183,12 @@ error.
 | **task store** | Durable store of tasks, ideas, variants, submissions; provides atomic claim and idempotent submit | [`08-storage.md`](../spec/v0/08-storage.md) |
 | **event log** | Append-only ordered log of events; provides replay and subscribe | [`05-event-protocol.md`](../spec/v0/05-event-protocol.md) |
 | **artifact store** | Holds content documents, evaluator artifacts, etc., addressed by URI | [`08-storage.md`](../spec/v0/08-storage.md) §5 (deferred) |
+| **artifact layout** | The reference deployment's on-disk grouping of artifacts: `ideas/<idea_id>/` (ideator) and `variants/<variant_id>/{executor,evaluator}/` (executor / evaluator), under `artifacts/`. Top-level dirs use the artifact noun (`ideas` / `variants`); variant sub-dirs use the producing-role noun. A reference-binding detail, not a normative scheme — `08-storage.md` §5.1 keeps the naming "implementation-defined". | [worker-host-subprocess](../spec/v0/reference-bindings/worker-host-subprocess.md) §10 |
 
 In the reference impl, all three are backed by Postgres + the
-deployment filesystem; the protocol abstracts over the choice.
+deployment filesystem; the protocol abstracts over the choice. The
+**artifact layout** above is the reference deployment's concrete naming
+scheme, pinned in the worker-host-subprocess binding §10.
 
 ## 6. Git topology
 
