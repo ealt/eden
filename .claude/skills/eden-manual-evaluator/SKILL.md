@@ -46,6 +46,16 @@ $EDEN list-tasks --kind evaluation --state pending
 If empty, tell the user there's nothing to evaluate yet and suggest
 finishing an execution cycle first.
 
+> The web-ui evaluator page is the point-and-click alternative to this
+> CLI listing. Its pending-task table (issue #137) is a high-signal
+> **slug / priority / target / created by** grid, priority-sorted by
+> default, with **eligible for me** / **target** / **group by creator**
+> filter chips and a per-row **context links** expander (which also
+> links the variant under evaluation). Sort + filter state lives in the
+> URL query string, so a curated view is shareable. When helping the
+> user choose, mirror that signal: lead with the highest-priority
+> eligible task's slug.
+
 ### Phase 2: Inspect task + variant (automatic)
 
 ```bash

@@ -15,6 +15,7 @@ from conftest import (
     get_csrf,
     seed_implement_task,
 )
+from eden_contracts import TaskTarget
 from eden_git import GitRepo
 from eden_storage import InMemoryStore
 from fastapi.testclient import TestClient
@@ -258,6 +259,44 @@ class TestSubmitFormValidation:
             ],
         )
         assert resp.status_code == 403
+
+
+class TestIneligibleClaimRegression:
+    """Issue #137 §1.1.1 / §D.5 — server-side graceful fallback.
+
+    The redesigned list disables the claim button for ineligible rows,
+    so a normal browser never POSTs an ineligible claim. But a stale
+    page or a non-browser client still can; the claim route MUST handle
+    it gracefully — catching ``WorkerNotEligible`` (a ``StorageError``)
+    and rendering a 303 banner-redirect, NOT propagating a 500. This is
+    the regression that locks that behavior in; there is no handler code
+    change in this issue.
+    """
+
+    def test_ineligible_direct_claim_redirects_not_500(
+        self,
+        signed_in_impl_client: TestClient,
+        store: InMemoryStore,
+        base_sha: str,
+    ) -> None:
+        # Target the task at a different worker; the session worker
+        # (ui-w) is registered but not eligible.
+        task_id, _ = seed_implement_task(
+            store,
+            base_sha=base_sha,
+            slug="targeted",
+            target=TaskTarget(kind="worker", id="other-w"),
+        )
+        csrf = get_csrf(signed_in_impl_client)
+        resp = _post_form(
+            signed_in_impl_client,
+            f"/executor/{task_id}/claim",
+            [("csrf_token", csrf)],
+        )
+        assert resp.status_code == 303
+        location = resp.headers["location"]
+        assert location.startswith("/executor/?banner=")
+        assert "worker-not-eligible" in location
 
 
 class TestRepoExposure:

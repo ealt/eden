@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
-from eden_contracts import ExperimentConfig
+from eden_contracts import ExperimentConfig, TaskTarget
 from eden_git import GitRepo, Identity, TreeEntry
 from eden_service_common import load_experiment_config
 from eden_storage import InMemoryStore
@@ -333,12 +333,17 @@ def seed_implement_task(
     slug: str = "demo",
     artifacts_dir: Path | None = None,
     artifact_text: str = "content",
+    priority: float = 1.0,
+    created_by: str | None = None,
+    target: TaskTarget | None = None,
 ) -> tuple[str, str]:
     """Seed a ready idea + pending execution task; return (task_id, idea_id).
 
     Builds a `file://` artifacts_uri inside ``artifacts_dir`` so the
     content renders inline in tests that need it. Pass
-    ``artifacts_dir=None`` to use a non-file URI.
+    ``artifacts_dir=None`` to use a non-file URI. ``priority`` /
+    ``created_by`` / ``target`` parameterize the redesigned list
+    (issue #137) sort / group / eligibility tests.
     """
     from eden_contracts import Idea
 
@@ -353,16 +358,18 @@ def seed_implement_task(
         idea_id=idea_id,
         experiment_id=store.experiment_id,
         slug=slug,
-        priority=1.0,
+        priority=priority,
         parent_commits=[base_sha],
         artifacts_uri=artifacts_uri,
         state="drafting",
         created_at="2026-04-24T11:00:00Z",
     )
+    if created_by is not None:
+        idea = idea.model_copy(update={"created_by": created_by})
     store.create_idea(idea)
     store.mark_idea_ready(idea_id)
     task_id = f"execute-{slug}"
-    store.create_execution_task(task_id, idea_id)
+    store.create_execution_task(task_id, idea_id, target=target)
     return task_id, idea_id
 
 
@@ -376,6 +383,9 @@ def seed_evaluate_task(
     variant_artifact_path: Path | None = None,
     variant_description: str | None = None,
     commit_sha: str = "b" * 40,
+    priority: float = 1.0,
+    created_by: str | None = None,
+    target: TaskTarget | None = None,
 ) -> tuple[str, str, str]:
     """Seed a starting variant (with commit_sha) + a pending evaluation task.
 
@@ -403,12 +413,14 @@ def seed_evaluate_task(
         idea_id=idea_id,
         experiment_id=store.experiment_id,
         slug=slug,
-        priority=1.0,
+        priority=priority,
         parent_commits=["a" * 40],
         artifacts_uri=artifacts_uri,
         state="drafting",
         created_at="2026-04-24T11:00:00Z",
     )
+    if created_by is not None:
+        idea = idea.model_copy(update={"created_by": created_by})
     store.create_idea(idea)
     store.mark_idea_ready(idea_id)
     exec_task_id = f"execute-{slug}"
@@ -440,7 +452,7 @@ def seed_evaluate_task(
     store.accept(exec_task_id)
 
     eval_task_id = f"evaluate-{slug}"
-    store.create_evaluation_task(eval_task_id, variant_id)
+    store.create_evaluation_task(eval_task_id, variant_id, target=target)
     return eval_task_id, variant_id, idea_id
 
 

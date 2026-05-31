@@ -287,7 +287,13 @@ The executor turns one execution task (which references an idea) into a git comm
 
 ### Execution via the Web UI
 
-Claim a pending execution task on the executor page. The form surfaces the idea (slug / parents / rationale, rendered inline if the artifact is reachable). You provide the `commit_sha` of your already-pushed branch; the UI does the create-variant + ref-create + submit. **You're responsible for getting the commit into Forgejo** before pasting the SHA — clone forgejo locally, edit, commit, push, then run `git rev-parse HEAD` in your worktree to print the SHA to paste.
+The executor page lists pending execution tasks in a high-signal table — **slug**, **priority**, **target**, **created by** — sorted by priority (highest first) by default. Click the **slug** or **priority** header to re-sort (click again to flip direction). Filter chips above the table drive the view via URL query params (so a sorted/filtered view is bookmarkable and shareable):
+
+- **eligible for me** (default ON) — hides tasks you can't claim (targeted at another worker, or a group you're not in). Toggle it off to see every pending task; ineligible rows then render a disabled claim button with a tooltip explaining why.
+- **target: all / targeted / untargeted** — filter by whether the task names a `target` at all.
+- **group by creator** — collapse the rows into a `<details>` group per idea author.
+
+Each row has a **context links** expander (there is no inline content preview): one click reveals admin-detail links for the task, creator, and idea, plus the idea's artifacts (a per-entry link list for bundle artifacts, a single "view content" link for single-file artifacts). Claim a task with its in-row **claim** button. The claim form then surfaces the idea (slug / parents / rationale, rendered inline if the artifact is reachable). You provide the `commit_sha` of your already-pushed branch; the UI does the create-variant + ref-create + submit. **You're responsible for getting the commit into Forgejo** before pasting the SHA — clone forgejo locally, edit, commit, push, then run `git rev-parse HEAD` in your worktree to print the SHA to paste.
 
 ### Execution via the CLI (full end-to-end)
 
@@ -331,7 +337,7 @@ The evaluator scores a variant against the experiment's `evaluation_schema` and 
 
 ### Evaluation via the Web UI
 
-The evaluator page lists pending evaluation tasks. The claim flow surfaces the variant (branch / commit_sha / parent_commits / executor description / artifacts_uri) plus the idea context. The form auto-generates one input per `evaluation_schema` field, typed by the declared metric type. Submit a metric per field for `status=success`.
+The evaluator page lists pending evaluation tasks in the same high-signal table as the executor page — **slug**, **priority**, **target**, **created by**, priority-sorted by default, with the same **eligible for me** / **target** / **group by creator** filter chips (all query-param driven). Each row's **context links** expander adds a link to the variant under evaluation (and shows its work-branch name) alongside the task / creator / idea / artifact links. Claim a task with its in-row **claim** button. The claim flow then surfaces the variant (branch / commit_sha / parent_commits / executor description / artifacts_uri) plus the idea context. The form auto-generates one input per `evaluation_schema` field, typed by the declared metric type. Submit a metric per field for `status=success`.
 
 ### Evaluation via the CLI
 

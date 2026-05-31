@@ -1,0 +1,157 @@
+{#
+  Issue #137 — shared pending-task list body for the executor and
+  evaluator modules. Both lists are visually identical; the only
+  role-specific divergence is the claim-action prefix, the degraded-row
+  copy, and the evaluator's extra variant link in the expansion.
+
+  All list state (sort / direction / filter / group) is carried in URL
+  query params; every href is precomputed in the route handler from
+  allow-listed values (`links`), so this template echoes no raw query
+  input (§D.2 query-param-injection guard).
+#}
+
+{% macro _sort_th(col, label, links) %}
+<th>
+    <a href="{{ links.sort[col].href }}" class="sort-link{{ ' sort-active' if links.sort[col].active else '' }}">
+        {{ label }}{% if links.sort[col].active %} {{ '▾' if links.sort[col].direction == 'desc' else '▴' }}{% endif %}
+    </a>
+</th>
+{% endmacro %}
+
+{% macro _target_cell(target) %}
+{% if target %}{{ target.kind }}:<code>{{ target.id }}</code>{% else %}<span class="muted">any</span>{% endif %}
+{% endmacro %}
+
+{% macro _claim_cell(row, claim_prefix, session) %}
+{% if row.eligibility_unknown %}
+    <button type="button" disabled title="Eligibility could not be resolved (transient store/transport failure); refresh to retry.">claim</button>
+    <small class="muted">(eligibility unknown)</small>
+{% elif row.eligible %}
+    <form action="{{ claim_prefix }}/{{ row.task.task_id }}/claim" method="post" class="claim-form">
+        <input type="hidden" name="csrf_token" value="{{ session.csrf }}">
+        <button type="submit">claim</button>
+    </form>
+{% else %}
+    {% if row.target %}
+    <button type="button" disabled title="This task is targeted at {{ row.target.kind }}:{{ row.target.id }}; you are not in its target.">claim</button>
+    {% else %}
+    <button type="button" disabled title="You are not registered for this experiment.">claim</button>
+    {% endif %}
+{% endif %}
+{% endmacro %}
+
+{% macro _artifact_links(al) %}
+{% if al.kind == 'none' %}<em class="muted">(no artifacts)</em>
+{% elif al.kind == 'unreadable' %}<em class="muted">(artifacts unavailable)</em>
+{% elif al.kind == 'external' %}<a href="{{ al.uri }}" target="_blank" rel="noopener"><code>{{ al.uri }}</code></a>
+{% elif al.kind == 'opaque' %}<code>{{ al.uri }}</code>
+{% elif al.kind == 'file' %}<a href="/artifacts?uri={{ al.uri | urlencode }}" target="_blank" rel="noopener">view content</a>
+{% elif al.kind == 'bundle' %}
+    {% if al.entries %}
+    <ul class="artifact-entries">
+        {% for entry in al.entries %}
+        <li><a href="/artifacts?uri={{ al.uri | urlencode }}&amp;entry={{ entry | urlencode }}" target="_blank" rel="noopener">{{ entry }}</a></li>
+        {% endfor %}
+    </ul>
+    {% else %}<em class="muted">(empty bundle)</em>{% endif %}
+{% endif %}
+{% endmacro %}
+
+{% macro _expansion(row, role) %}
+<details class="row-expand">
+    <summary>context links</summary>
+    <div class="expand-body">
+        <ul class="context-links">
+            <li>task: <a href="{{ row.lineage_link }}"><code>{{ row.task.task_id }}</code></a></li>
+            {% if row.created_by %}<li>creator: <a href="/admin/workers/{{ row.created_by }}/"><code>{{ row.created_by }}</code></a></li>{% endif %}
+            {% if row.idea_id %}<li>idea: <a href="/admin/ideas/{{ row.idea_id }}/"><code>{{ row.idea_id }}</code></a></li>{% endif %}
+            {% if role == 'evaluator' and row.variant_id %}
+            <li>variant: <a href="/admin/variants/{{ row.variant_id }}/"><code>{{ row.variant_id }}</code></a>{% if row.variant and row.variant.branch %} &mdash; branch <code>{{ row.variant.branch }}</code>{% endif %}</li>
+            {% endif %}
+        </ul>
+        <div class="artifacts">artifacts: {{ _artifact_links(row.artifact_links) }}</div>
+    </div>
+</details>
+{% endmacro %}
+
+{% macro _slug_cell(row, role) %}
+{% if row.slug %}<strong>{{ row.slug }}</strong>
+{% elif row.read_failed %}<em class="muted">(read failed)</em>
+{% elif role == 'executor' %}<em class="muted">(idea unavailable)</em>
+{% elif row.variant is none %}<em class="muted">(variant unavailable)</em>
+{% else %}<em class="muted">(idea unavailable)</em>
+{% endif %}
+{% endmacro %}
+
+{% macro _pending_table(rows, role, claim_prefix, session, links) %}
+<table class="pending-table">
+    <thead>
+        <tr>
+            {{ _sort_th('slug', 'slug', links) }}
+            {{ _sort_th('priority', 'priority', links) }}
+            <th>target</th>
+            <th>created by</th>
+            <th>claim</th>
+        </tr>
+    </thead>
+    <tbody>
+    {% for row in rows %}
+        <tr class="task-row{{ ' ineligible' if not row.eligible and not row.eligibility_unknown else '' }}">
+            <td class="slug-cell">{{ _slug_cell(row, role) }}</td>
+            <td>{% if row.priority is not none %}{{ row.priority }}{% else %}<span class="muted">—</span>{% endif %}</td>
+            <td>{{ _target_cell(row.target) }}</td>
+            <td>{% if row.created_by %}<a href="/admin/workers/{{ row.created_by }}/"><code>{{ row.created_by }}</code></a>{% else %}<span class="muted">—</span>{% endif %}</td>
+            <td class="claim-cell">{{ _claim_cell(row, claim_prefix, session) }}</td>
+        </tr>
+        <tr class="expand-row"><td colspan="5">{{ _expansion(row, role) }}</td></tr>
+    {% endfor %}
+    </tbody>
+</table>
+{% endmacro %}
+
+{#
+  pending_section — the full pending block (warning banners, filter
+  chips, table or grouped tables, empty-state). Called by both list
+  templates with the role-specific bits passed explicitly.
+#}
+{% macro pending_section(role, claim_prefix, kind_label, read_fail_copy, session, view, links,
+                         pending_rows, pending_groups, registered, registration_unknown,
+                         eligibility_unresolved_count, read_failed_count) %}
+{% if read_failed_count and read_failed_count > 0 %}
+<div class="banner banner-warn">{{ read_failed_count }} {{ read_fail_copy }}; refresh to retry.</div>
+{% endif %}
+{% if eligibility_unresolved_count and eligibility_unresolved_count > 0 %}
+<div class="banner banner-warn">{{ eligibility_unresolved_count }} task eligibility check(s) could not be resolved; those rows are shown as not-claimable — refresh to retry.</div>
+{% endif %}
+{% if not registered and not registration_unknown %}
+<div class="banner banner-warn">You are not registered for this experiment, so no tasks are claimable.</div>
+{% endif %}
+
+<section class="pending">
+    <h2>pending {{ kind_label }} tasks</h2>
+    <div class="filter-bar">
+        <a class="chip {{ 'chip-on' if view.eligible_only else 'chip-off' }}" href="{{ links.eligible_toggle }}">eligible for me{{ ' ✓' if view.eligible_only else '' }}</a>
+        <span class="chip-group">target:
+            {% for f in ['all', 'targeted', 'untargeted'] %}
+            <a class="chip {{ 'chip-on' if view.target_filter == f else '' }}" href="{{ links.target[f] }}">{{ f }}</a>
+            {% endfor %}
+        </span>
+        <a class="chip {{ 'chip-on' if view.group_by_creator else 'chip-off' }}" href="{{ links.group_toggle }}">group by creator{{ ' ✓' if view.group_by_creator else '' }}</a>
+    </div>
+
+    {% if pending_rows %}
+        {% if pending_groups is not none %}
+            {% for group in pending_groups %}
+            <details class="creator-group" open>
+                <summary>created by {% if group.created_by %}<code>{{ group.created_by }}</code>{% else %}<em>(unknown)</em>{% endif %} ({{ group.rows | length }})</summary>
+                {{ _pending_table(group.rows, role, claim_prefix, session, links) }}
+            </details>
+            {% endfor %}
+        {% else %}
+            {{ _pending_table(pending_rows, role, claim_prefix, session, links) }}
+        {% endif %}
+    {% else %}
+    <p>no pending {{ kind_label }} tasks{% if view.eligible_only %} eligible for you{% endif %}.</p>
+    {% endif %}
+</section>
+{% endmacro %}

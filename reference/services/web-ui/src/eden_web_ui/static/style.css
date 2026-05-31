@@ -77,6 +77,64 @@ button.danger { background: var(--error); }
     border: 1px solid var(--error);
     color: var(--error);
 }
+.banner-warn {
+    background: #fef3c7;
+    border: 1px solid #d97706;
+    color: #92400e;
+}
+
+/* Issue #137 — pending-task list redesign (executor + evaluator). */
+.muted { color: var(--muted); }
+
+button:disabled {
+    background: var(--muted);
+    cursor: not-allowed;
+    filter: none;
+    opacity: 0.6;
+}
+
+.filter-bar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+    align-items: center;
+    margin: 1rem 0;
+    font-size: 0.9em;
+}
+.filter-bar .chip-group { display: inline-flex; gap: 0.35rem; align-items: center; }
+.chip {
+    display: inline-block;
+    padding: 0.2rem 0.6rem;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    text-decoration: none;
+    color: var(--accent);
+    background: white;
+}
+.chip:hover { border-color: var(--accent); }
+.chip-on {
+    background: var(--accent);
+    color: white;
+    border-color: var(--accent);
+}
+
+.pending-table .sort-link { color: var(--fg); text-decoration: none; }
+.pending-table .sort-link:hover { text-decoration: underline; }
+.pending-table .sort-active { color: var(--accent); font-weight: 600; }
+.pending-table .task-row.ineligible { color: var(--muted); }
+.pending-table .claim-form { margin: 0; }
+.pending-table .claim-cell small { display: block; margin-top: 0.2rem; }
+
+/* The expansion row sits directly under its task row; trim the gap so
+   the two read as one unit. */
+.pending-table .expand-row > td { padding-top: 0; border-bottom: 2px solid var(--border); }
+.row-expand > summary { cursor: pointer; color: var(--accent); font-size: 0.9em; }
+.row-expand .expand-body { padding: 0.5rem 0 0.25rem 1rem; }
+.context-links { margin: 0.25rem 0; padding-left: 1.2rem; }
+.artifact-entries { margin: 0.25rem 0; padding-left: 1.2rem; }
+
+.creator-group { margin: 0.75rem 0; }
+.creator-group > summary { cursor: pointer; font-weight: 600; padding: 0.3rem 0; }
 
 .idea-form fieldset {
     border: 1px solid var(--border);
