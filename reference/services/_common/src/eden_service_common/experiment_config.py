@@ -11,16 +11,29 @@ experiment-config YAML the task-store-server consumes. The
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import yaml
 from eden_contracts import ExperimentConfig
 
 
-def load_experiment_config(path: str | Path) -> ExperimentConfig:
-    """Parse a YAML experiment-config file."""
+def load_experiment_config(
+    path: str | Path,
+    *,
+    validation_context: dict[str, Any] | None = None,
+) -> ExperimentConfig:
+    """Parse a YAML experiment-config file.
+
+    ``validation_context`` is forwarded to ``model_validate`` for callers
+    that need to toggle context-dependent cross-field rules (e.g. the
+    orchestrator's multi-experiment mode passes
+    ``{"require_termination_policy": False}`` to skip the
+    single-experiment termination-policy requirement — see
+    ``ExperimentConfig._termination_required_when_auto``).
+    """
     with Path(path).open() as f:
         data = yaml.safe_load(f)
-    return ExperimentConfig.model_validate(data)
+    return ExperimentConfig.model_validate(data, context=validation_context)
 
 
 def require_command(config: ExperimentConfig, key: str) -> str:

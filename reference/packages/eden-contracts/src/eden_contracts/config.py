@@ -7,7 +7,14 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Discriminator, Field, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Discriminator,
+    Field,
+    ValidationInfo,
+    model_validator,
+)
 
 from ._common import DurationStr, NotNone
 from .evaluation import EvaluationSchema
@@ -223,10 +230,25 @@ class ExperimentConfig(BaseModel):
     evaluation_task_deadline: Annotated[float | None, NotNone, Field(gt=0)] = None
 
     @model_validator(mode="after")
-    def _termination_required_when_auto(self) -> ExperimentConfig:
+    def _termination_required_when_auto(
+        self, info: ValidationInfo
+    ) -> ExperimentConfig:
         # Mirrors the JSON Schema's top-level allOf-if-then over
         # dispatch_mode.termination. Both sides reject the same fixtures;
-        # the schema-parity test is the gate that keeps them in lockstep.
+        # the schema-parity test (which validates with no context) is the
+        # gate that keeps them in lockstep.
+        #
+        # This is a SINGLE-EXPERIMENT-mode contract: that mode reads the
+        # termination policy from this config's termination_policy block.
+        # The orchestrator's multi-experiment mode drives termination from
+        # the --termination-policy CLI flag instead (per-experiment config
+        # resolution is deferred to issue #214), so it loads the bootstrap
+        # config with context={"require_termination_policy": False} to skip
+        # this check — keeping a termination=auto bootstrap config that was
+        # valid pre-#157 startable. Absent that explicit opt-out the rule is
+        # enforced.
+        if info.context and info.context.get("require_termination_policy") is False:
+            return self
         if (
             self.dispatch_mode is not None
             and self.dispatch_mode.termination == "auto"

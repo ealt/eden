@@ -359,13 +359,20 @@ def main(argv: list[str] | None = None) -> int:
     stop = StopFlag()
     install_stop_handlers(stop)
 
-    config = load_experiment_config(args.experiment_config)
-    ideation_policy = build_policy(config.ideation_policy)
     admin_token = resolve_admin_token(args)
 
     if args.control_plane_url is not None:
-        # Multi-experiment mode still resolves the CLI flag; per-experiment
-        # config resolution through the chapter-11 registry is #214.
+        # Multi-experiment mode drives termination from the --termination-policy
+        # CLI flag (per-experiment config resolution through the chapter-11
+        # registry is #214). The bootstrap config is loaded only for its
+        # ideation_policy; skip the single-experiment termination-policy
+        # cross-field requirement so a termination=auto bootstrap config that
+        # relies on the CLI flag (valid pre-#157) still starts.
+        config = load_experiment_config(
+            args.experiment_config,
+            validation_context={"require_termination_policy": False},
+        )
+        ideation_policy = build_policy(config.ideation_policy)
         termination_policy = _resolve_termination_policy(args.termination_policy)
         return _run_multi_experiment(
             args=args,
@@ -376,7 +383,11 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     # Single-experiment mode: the experiment-config fields take precedence
-    # over the CLI flags. Warn (not silently) on any ignored non-default flag.
+    # over the CLI flags. The full cross-field validation applies here (this
+    # is the mode that reads termination_policy from the config).
+    config = load_experiment_config(args.experiment_config)
+    ideation_policy = build_policy(config.ideation_policy)
+    # Warn (not silently) on any ignored non-default flag.
     _warn_ignored_single_experiment_flags(args, log)
     termination_policy = build_termination_policy(config.termination_policy)
     max_quiescent_iterations = (
