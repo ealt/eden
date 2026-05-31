@@ -61,7 +61,11 @@ def make_plan_fn(
                     slug=f"{task.task_id}-p{i}",
                     priority=float(ideas_per_ideation - i),
                     parent_commits=(base_commit_sha,),
-                    artifacts_uri=f"file:///tmp/artifacts/{task.task_id}/{i}",
+                    # Fictional URI (scripted mode never writes bytes); shaped
+                    # like the issue #168 layout for legible admin listings.
+                    artifacts_uri=(
+                        f"file:///tmp/artifacts/ideas/{task.task_id}-p{i}/content.md"
+                    ),
                 )
             )
         return templates
@@ -158,7 +162,7 @@ def make_evaluate_fn(
         if fail_every is not None and fail_every > 0 and index % fail_every == 0:
             return EvaluationOutcome(
                 status="error",
-                artifacts_uri=f"file:///tmp/artifacts/{variant.variant_id}",
+                artifacts_uri=_scripted_eval_uri(variant.variant_id),
             )
         evaluation: dict[str, Any] = {}
         for name, kind in evaluation_schema.root.items():
@@ -166,10 +170,16 @@ def make_evaluate_fn(
         return EvaluationOutcome(
             status="success",
             evaluation=evaluation,
-            artifacts_uri=f"file:///tmp/artifacts/{variant.variant_id}",
+            artifacts_uri=_scripted_eval_uri(variant.variant_id),
         )
 
     return _evaluate
+
+
+def _scripted_eval_uri(variant_id: str) -> str:
+    # Fictional URI (scripted mode never writes bytes); shaped like the issue
+    # #168 layout (variants/<variant_id>/evaluator/) for legible admin listings.
+    return f"file:///tmp/artifacts/variants/{variant_id}/evaluator/evaluation.md"
 
 
 def _default_for_kind(kind: str, index: int) -> Any:

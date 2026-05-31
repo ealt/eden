@@ -38,6 +38,8 @@ from starlette.datastructures import UploadFile
 
 from ..artifacts import (
     UploadedFile,
+    entity_artifact_dir,
+    idea_naming,
     predict_artifact_uri,
     write_artifact_bundle,
 )
@@ -385,14 +387,19 @@ def _persist_idea_drafts(  # noqa: E501  # slop-allow: per-row save/validate/wri
     for draft, row_index in zip(drafts, draft_rows, strict=True):
         idea_id = uuid.uuid4().hex
         uploads = uploads_per_row.get(row_index, [])
+        # Issue #168: ideator artifacts land under ideas/<idea_id>/.
+        target_dir = entity_artifact_dir(
+            artifacts_dir, producer="ideator", entity_id=idea_id
+        )
+        naming = idea_naming()
         # Predict the artifact URI without writing the file yet, so a
         # ValidationError on Idea construction leaves the disk clean.
         # The Idea is built first (validation barrier), THEN the
         # artifact is written, THEN the store is told about it.
         try:
             artifacts_uri = predict_artifact_uri(
-                artifacts_dir,
-                idea_id,
+                target_dir,
+                naming,
                 has_text=bool(draft.content.strip()),
                 uploads=uploads,
             )
@@ -412,10 +419,9 @@ def _persist_idea_drafts(  # noqa: E501  # slop-allow: per-row save/validate/wri
             errors = format_validation_errors(exc, row=row_index)
             return [], [], None, errors
         write_artifact_bundle(
-            artifacts_dir,
-            idea_id,
+            target_dir,
+            naming,
             text_content=draft.content,
-            text_filename="idea.md",
             uploads=uploads,
         )
         try:

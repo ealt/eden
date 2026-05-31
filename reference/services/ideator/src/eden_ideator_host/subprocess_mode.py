@@ -23,6 +23,11 @@ from pathlib import Path
 
 from eden_contracts import Idea, IdeationTask
 from eden_service_common import Subprocess, parse_json_line, spawn
+from eden_service_common.artifacts import (
+    entity_artifact_dir,
+    idea_naming,
+    write_artifact_bundle,
+)
 from eden_storage import IdeaSubmission, Store
 
 log = logging.getLogger(__name__)
@@ -271,7 +276,13 @@ def _persist_ideas(
             raise ProtocolViolation(f"idea missing priority: {record!r}")
         if not isinstance(parents, list) or not parents:
             raise ProtocolViolation(f"idea missing parent_commits: {record!r}")
-        if isinstance(content, str) and content:
+        # Gate on content.strip(): the shared writer (issue #168) strips and
+        # rejects whitespace-only text with ValueError, which is NOT a
+        # ProtocolViolation and would leave the task stuck claimed. Treating
+        # whitespace-only as "no content" falls through to the artifacts_uri
+        # requirement below (→ ProtocolViolation → status="error") and matches
+        # the web-UI writer, which also treats whitespace as empty.
+        if isinstance(content, str) and content.strip():
             artifacts_uri = _write_content(
                 artifacts_dir=artifacts_dir,
                 idea_id=idea_id,
@@ -300,12 +311,18 @@ def _persist_ideas(
 def _write_content(
     *, artifacts_dir: Path, idea_id: str, content: str
 ) -> str:
-    """Write content.md and return its file:// URI."""
-    target_dir = artifacts_dir / "ideas" / idea_id
-    target_dir.mkdir(parents=True, exist_ok=True)
-    target = target_dir / "content.md"
-    target.write_text(content, encoding="utf-8")
-    return target.resolve().as_uri()
+    """Write ``ideas/<idea_id>/content.md`` and return its file:// URI.
+
+    Routes through the shared :mod:`eden_service_common.artifacts` helper
+    (issue #168) so the hierarchical layout lives in one place across the
+    web-UI routes, this host, and the standalone CLI mirror.
+    """
+    target_dir = entity_artifact_dir(
+        artifacts_dir, producer="ideator", entity_id=idea_id
+    )
+    return write_artifact_bundle(
+        target_dir, idea_naming(), text_content=content, uploads=[]
+    )
 
 
 def handle_ideation_task(

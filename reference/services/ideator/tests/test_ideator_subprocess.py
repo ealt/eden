@@ -125,6 +125,57 @@ def test_dispatch_collects_ideas(tmp_path: Path) -> None:
     assert len(submission.idea_ids) == 2
     ideas = [store.read_idea(pid) for pid in submission.idea_ids]
     assert all(p.state == "ready" for p in ideas)
+    # Issue #168: content lands at ideas/<idea_id>/content.md on disk.
+    for p in ideas:
+        assert p.artifacts_uri.endswith(f"/ideas/{p.idea_id}/content.md")
+        assert (artifacts / "ideas" / p.idea_id / "content.md").is_file()
+
+
+def test_whitespace_only_content_errors_not_stuck(tmp_path: Path) -> None:
+    """Whitespace-only content + no artifacts_uri must submit status=error.
+
+    Issue #168 regression: the shared writer strips and rejects whitespace-only
+    text with ValueError (not ProtocolViolation). If _persist_ideas let that
+    through it would be uncaught and leave the task stuck claimed. The host must
+    treat whitespace-only as "no content" → ProtocolViolation → error.
+    """
+    worker = _write_worker(
+        tmp_path,
+        """
+        import json, sys
+        print(json.dumps({"event": "ready"}), flush=True)
+        line = sys.stdin.readline()
+        dispatch = json.loads(line)
+        task_id = dispatch["task_id"]
+        print(json.dumps({"event": "idea", "task_id": task_id,
+                          "slug": f"{task_id}-p0", "priority": 1.0,
+                          "parent_commits": ["a" * 40],
+                          "content": "   \\n\\t  "}), flush=True)
+        print(json.dumps({"event": "ideation-done", "task_id": task_id}), flush=True)
+        """,
+    )
+    store, _ = _seed_store_and_repo(tmp_path)
+    store.create_ideation_task("ideation-1")
+    artifacts = tmp_path / "artifacts"
+    config = _config(command=f"python3 {worker}", cwd=tmp_path)
+    sub = start_ideator_subprocess(config)
+    ideation_task = store.list_tasks(kind="ideation", state="pending")[0]
+    assert isinstance(ideation_task, IdeationTask)
+    # Must NOT raise — the ValueError-vs-ProtocolViolation gap is closed.
+    handle_ideation_task(
+        store=store,
+        task=ideation_task,
+        worker_id="ideator-1",
+        ideator=sub,
+        experiment_id=EXPERIMENT_ID,
+        objective={"expr": "score", "direction": "maximize"},
+        evaluation_schema={"score": "real"},
+        artifacts_dir=artifacts,
+    )
+    sub.stop()
+    submission = store.read_submission("ideation-1")
+    assert isinstance(submission, IdeaSubmission)
+    assert submission.status == "error"
 
 
 def test_ideation_error_terminator(tmp_path: Path) -> None:

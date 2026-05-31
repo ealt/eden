@@ -116,9 +116,9 @@ MUST carry the same `task_id` as the dispatch.
 
 If `content` is present, the host writes it to
 `<artifacts_dir>/ideas/<idea_id>/content.md` and uses the
-resulting `file://` URI as the idea's `artifacts_uri`. If
-`content` is absent, the subprocess MUST set `artifacts_uri`
-explicitly.
+resulting `file://` URI as the idea's `artifacts_uri` (the
+entity-hierarchical layout — see §10). If `content` is absent,
+the subprocess MUST set `artifacts_uri` explicitly.
 
 An `ideation-error` terminator submits a chapter-3 `IdeaSubmission`
 with `status="error"`.
@@ -595,3 +595,51 @@ implementations may expose a different read substrate
 (e.g. a SQLite database file, a gRPC stream) or none at
 all. The env var contract is what user code targets; the
 backing technology is operator-chosen.
+
+## 10. Reference artifact layout (issue #168)
+
+The reference deployment groups artifacts under `<artifacts_dir>`
+(surfaced as `/var/lib/eden/artifacts/` inside containers) by the
+durable entity that owns them and the role that produced them:
+
+```text
+artifacts/
+  ideas/<idea_id>/                    # ideator-produced
+    content.md                        #   text-only idea
+    <sanitized-upload>                #   single uploaded file
+    bundle.tar.gz                     #   text + uploads / multi-file
+  variants/<variant_id>/
+    executor/                         # executor-produced
+      exec-<uuid>.{md,<ext>,tar.gz}
+    evaluator/                        # evaluator-produced
+      eval-<uuid>.{md,<ext>,tar.gz}
+```
+
+The top-level directories use the **artifact noun** (`ideas` /
+`variants`); the variant sub-directories use the **producing-role
+noun** (`executor` / `evaluator`) because a variant aggregates
+artifacts from two sources. The ideator's `ideas/<idea_id>/` directory
+is write-once, so its leaf files take clean fixed names (`content.md`,
+the upload's own name, or `bundle.tar.gz`). The `executor/` and
+`evaluator/` directories are keyed only by the stable `variant_id` and
+**accumulate** across (re)submissions, so each submission mints a fresh
+`exec-<uuid>` / `eval-<uuid>` stem — no two submissions for one variant
+ever target the same path (chapter 8 §5.4 no-overwrite).
+
+Within a `.tar.gz` bundle, the text headline entry is role-coherent
+(`content.md` for ideas, `evaluation.md` for evaluations, `variant.md`
+for executor artifacts) regardless of the tarball's own stem-derived
+filename.
+
+In subprocess mode the **only** bytes the host itself writes are the
+ideator's `ideas/<idea_id>/content.md` (§2.3); the per-task executor and
+evaluator subprocesses supply their own `artifacts_uri` (§3, §4) and
+choose where to write. The `variants/<variant_id>/{executor,evaluator}/`
+convention is what the reference web-UI upload writers target and what a
+future subprocess byte-writer SHOULD follow.
+
+This layout is a **reference-binding detail**, not a normative protocol
+requirement: chapter 8 §5.1 keeps the artifact-store naming scheme
+"implementation-defined" and chapter 2 §1.5 keeps `artifacts_uri` an
+opaque deployment-local URI. Conforming alternative implementations may
+lay out artifacts however they like.

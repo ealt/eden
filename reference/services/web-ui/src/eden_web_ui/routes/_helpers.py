@@ -25,7 +25,7 @@ _CONTENT_MAX_BYTES = 1 << 20  # 1 MiB
 # when an idea-side bundle is rendered. Mirrors the convention written
 # by :func:`eden_web_ui.artifacts.write_artifact_bundle` for ideator
 # submissions.
-IDEA_BUNDLE_HEADLINE = "idea.md"
+IDEA_BUNDLE_HEADLINE = "content.md"
 EVALUATION_BUNDLE_HEADLINE = "evaluation.md"
 VARIANT_BUNDLE_HEADLINE = "variant.md"
 
@@ -135,7 +135,7 @@ def _read_inline_artifact(
     - Files larger than 1 MiB return ``None``.
 
     Issue #120: when the resolved file is a ``.tar.gz`` bundle and
-    ``bundle_headline`` names an entry inside it (e.g. ``idea.md``),
+    ``bundle_headline`` names an entry inside it (e.g. ``content.md``),
     that entry's text is returned instead — so the operator's
     bundled markdown still renders inline as the headline of the
     submission. Returns ``None`` for bundles without that headline
@@ -186,7 +186,7 @@ def read_idea_content(
 ) -> str | None:
     """Return the content text iff the artifact is safely confined.
 
-    For ``.tar.gz`` bundles, returns the ``idea.md`` headline entry
+    For ``.tar.gz`` bundles, returns the ``content.md`` headline entry
     if present; otherwise ``None`` (the manifest table still
     renders, supplied by :func:`read_idea_manifest`).
     """

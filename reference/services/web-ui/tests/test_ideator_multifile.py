@@ -6,9 +6,8 @@ Covers:
   artifact-serving route, with the manifest table rendered on the
   evaluator/executor draft views.
 - single upload (no text) produces a direct file under the original
-  extension; ``content`` is no longer required when a file is
-  attached.
-- text-only continues to write ``<id>.md`` (back-compat).
+  name; ``content`` is no longer required when a file is attached.
+- text-only writes ``ideas/<idea_id>/content.md`` (issue #168).
 - per-row uploads land on the correct idea (row-0 vs row-1 isolation).
 - duplicate-filename uploads surface as a per-row form error rather
   than a 500.
@@ -62,7 +61,9 @@ class TestSingleFileOnly:
         ideas = store.list_ideas(state="ready")
         assert len(ideas) == 1
         parsed = urlparse(ideas[0].artifacts_uri)
-        assert parsed.path.endswith(".pdf")
+        # Issue #168: single upload keeps its original name under ideas/<id>/.
+        assert "/ideas/" in parsed.path
+        assert parsed.path.endswith("/design.pdf")
         assert Path(parsed.path).read_bytes() == b"%PDF-1.4 fake"
 
 
@@ -94,20 +95,22 @@ class TestTextPlusUploadsBundle:
         assert resp.status_code == 200, resp.text
         ideas = store.list_ideas(state="ready")
         assert len(ideas) == 1
-        assert ideas[0].artifacts_uri.endswith(".tar.gz")
+        # Issue #168: idea bundles land at ideas/<idea_id>/bundle.tar.gz.
+        assert ideas[0].artifacts_uri.endswith("/bundle.tar.gz")
+        assert "/ideas/" in ideas[0].artifacts_uri
 
         # Bundle is reachable via the serving route, and the
-        # manifest's idea.md headline + svg entry can be streamed.
+        # manifest's content.md headline + svg entry can be streamed.
         uri = ideas[0].artifacts_uri
         manifest_resp = signed_in_client.get(
             f"/artifacts?uri={quote(uri, safe='')}&entry=manifest.json"
         )
         assert manifest_resp.status_code == 200
-        assert "idea.md" in manifest_resp.text
+        assert "content.md" in manifest_resp.text
         assert "arch.svg" in manifest_resp.text
 
         headline = signed_in_client.get(
-            f"/artifacts?uri={quote(uri, safe='')}&entry=idea.md"
+            f"/artifacts?uri={quote(uri, safe='')}&entry=content.md"
         )
         assert headline.status_code == 200
         assert "design" in headline.text

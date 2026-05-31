@@ -293,11 +293,12 @@ def _now_iso() -> str:
 
 # ------------------------------------------------------ artifact bundling (issue #120)
 
-# Mirror of eden_web_ui.artifacts: single-file vs .tar.gz bundle
-# selection. Duplicated here because the CLI is shipped as a
-# standalone script (system python3 shebang, not via uv run) so it
-# can't reliably import eden_web_ui at runtime. Keep the two in
-# lockstep when extending the manifest shape.
+# Hand-mirror of eden_service_common.artifacts: the hierarchical layout
+# (issue #168) + single-file vs .tar.gz bundle selection. Duplicated here
+# because the CLI is shipped as a standalone script (system python3 shebang,
+# not via uv run) so it can't reliably import any workspace package at
+# runtime. Keep this in lockstep with eden_service_common.artifacts when
+# extending the manifest shape, the layout, or the filename policy.
 _BUNDLE_MANIFEST_VERSION = 1
 _BUNDLE_MANIFEST_NAME = "manifest.json"
 
@@ -309,35 +310,75 @@ def _safe_basename(name: str) -> str:
     return base
 
 
+def _single_upload_name(src: Path, single_stem: str | None) -> str:
+    """Basename for the single-upload branch (mirrors ArtifactNaming)."""
+    safe = _safe_basename(src.name)
+    if single_stem is None:
+        return safe  # idea policy: keep the upload's own name
+    return f"{single_stem}{Path(safe).suffix}"  # eval/exec: <stem><ext>
+
+
+def _write_exclusive(final: Path, data: bytes) -> None:
+    """Atomically materialize ``data`` at ``final``, refusing to clobber.
+
+    Mirrors ``eden_service_common.artifacts._materialize_exclusive``: write to a
+    temp sibling then ``os.link`` it into place (atomic; raises
+    ``FileExistsError`` if ``final`` already exists), so the chapter-8 §5.4
+    no-overwrite guarantee holds for the CLI writer too — not just the shared
+    helper. The temp is always dropped.
+    """
+    tmp = final.with_name(final.name + ".tmp")
+    tmp.write_bytes(data)
+    try:
+        os.link(tmp, final)
+    finally:
+        try:
+            os.unlink(tmp)
+        except FileNotFoundError:
+            pass
+
+
 def _write_artifact_for_role(
     env: dict[str, str],
-    artifact_id: str,
     *,
+    relative_dir: str,
+    text_only_name: str,
+    single_stem: str | None,
+    bundle_name: str,
+    headline: str,
     text_content: str | None,
-    text_filename: str,
     file_paths: list[Path],
 ) -> str:
     """Write artifact bytes under the shared substrate and return its file:// URI.
 
     Writes the bytes to the host side of the bind-mount
-    (``${EDEN_EXPERIMENT_DATA_ROOT}/artifacts/``) but stamps the
+    (``${EDEN_EXPERIMENT_DATA_ROOT}/artifacts/<relative_dir>/``) but stamps the
     wire URI with the container-internal path
-    (``/var/lib/eden/artifacts/<name>``) so containerized consumers
-    (web-ui ``/artifacts``, scripted workers) resolve the same
-    canonical reference — see issue #132. The CLI's own read-back
-    translates the URI back to the host via
-    ``_translate_artifacts_uri_to_host``.
+    (``/var/lib/eden/artifacts/<relative_dir>/<name>``) so containerized
+    consumers (web-ui ``/artifacts``, scripted workers) resolve the same
+    canonical reference — see issue #132. The CLI's own read-back translates the
+    URI back to the host via ``_translate_artifacts_uri_to_host`` (which walks
+    the full nested relative path, not just the basename).
 
-    Branches mirror ``eden_web_ui.artifacts.write_artifact_bundle``:
-    text-only → ``<id>.md``; one file no text → ``<id>.<ext>``;
-    mixed text+files OR multi-file → ``<id>.tar.gz`` with a
-    ``manifest.json`` at the root.
+    ``relative_dir`` is the entity dir under ``artifacts/`` (issue #168 layout,
+    e.g. ``ideas/<idea_id>`` or ``variants/<variant_id>/evaluator``); the
+    remaining args are the §D.2 filename policy. Branches mirror
+    ``eden_service_common.artifacts.write_artifact_bundle``: text-only →
+    ``text_only_name``; one file no text → ``_single_upload_name(...)``; mixed
+    text+files OR multi-file → ``bundle_name`` (``.tar.gz``) with a
+    ``manifest.json`` at the root and the text entry at ``headline``.
     """
-    host_dir = _host_artifacts_dir(env)
+    host_dir = _host_artifacts_dir(env) / relative_dir
     host_dir.mkdir(parents=True, exist_ok=True)
     stripped = text_content.strip() if text_content else None
     has_text = bool(stripped)
     n_files = len(file_paths)
+
+    def _stamp(name: str) -> str:
+        # Full nested relative path under the container artifacts dir, NOT the
+        # basename — the hierarchical layout (issue #168) means the entity dir
+        # is part of the canonical URI.
+        return f"file://{CONTAINER_ARTIFACTS_DIR / relative_dir / name}"
 
     if not has_text and n_files == 0:
         sys.exit(
@@ -345,23 +386,21 @@ def _write_artifact_for_role(
         )
 
     if has_text and n_files == 0:
-        host_path = host_dir / f"{artifact_id}.md"
         assert stripped is not None
-        host_path.write_text(stripped, encoding="utf-8")
-        return f"file://{CONTAINER_ARTIFACTS_DIR / host_path.name}"
+        _write_exclusive(host_dir / text_only_name, stripped.encode("utf-8"))
+        return _stamp(text_only_name)
 
     if not has_text and n_files == 1:
         src = file_paths[0]
-        ext = src.suffix
-        host_path = host_dir / f"{artifact_id}{ext}"
-        host_path.write_bytes(src.read_bytes())
-        return f"file://{CONTAINER_ARTIFACTS_DIR / host_path.name}"
+        name = _single_upload_name(src, single_stem)
+        _write_exclusive(host_dir / name, src.read_bytes())
+        return _stamp(name)
 
     # Bundle path: tar.gz with manifest.json
     sanitized = [_safe_basename(p.name) for p in file_paths]
     names: list[str] = []
     if has_text:
-        names.append(text_filename)
+        names.append(headline)
     names.extend(sanitized)
     seen: set[str] = set()
     for n in names:
@@ -378,9 +417,9 @@ def _write_artifact_for_role(
     if has_text:
         assert stripped is not None
         text_bytes = stripped.encode("utf-8")
-        payloads.append((text_filename, text_bytes))
+        payloads.append((headline, text_bytes))
         entries.append({
-            "path": text_filename,
+            "path": headline,
             "size": len(text_bytes),
             "content_type": "text/markdown; charset=utf-8",
         })
@@ -397,12 +436,21 @@ def _write_artifact_for_role(
     manifest = {"version": _BUNDLE_MANIFEST_VERSION, "entries": entries}
     manifest_bytes = json.dumps(manifest, indent=2).encode("utf-8")
 
-    host_path = host_dir / f"{artifact_id}.tar.gz"
-    with tarfile.open(host_path, mode="w:gz") as tar:
+    host_path = host_dir / bundle_name
+    tmp_path = host_path.with_name(host_path.name + ".tmp")
+    with tarfile.open(tmp_path, mode="w:gz") as tar:
         _add_tar_entry(tar, _BUNDLE_MANIFEST_NAME, manifest_bytes)
         for name, data in payloads:
             _add_tar_entry(tar, name, data)
-    return f"file://{CONTAINER_ARTIFACTS_DIR / host_path.name}"
+    # Exclusive finalize (mirrors the shared helper's no-overwrite guarantee).
+    try:
+        os.link(tmp_path, host_path)
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except FileNotFoundError:
+            pass
+    return _stamp(bundle_name)
 
 
 def _add_tar_entry(tar: tarfile.TarFile, name: str, data: bytes) -> None:
@@ -721,9 +769,12 @@ def cmd_ideation_submit(env: dict[str, str], args: argparse.Namespace) -> None:
                 sys.exit(f"error: --content_files entry not found: {fp}")
         artifacts_uri = _write_artifact_for_role(
             env,
-            idea_id,
+            relative_dir=f"ideas/{idea_id}",
+            text_only_name="content.md",
+            single_stem=None,
+            bundle_name="bundle.tar.gz",
+            headline="content.md",
             text_content=raw.get("content"),
-            text_filename="idea.md",
             file_paths=file_paths,
         )
         idea = {
@@ -955,12 +1006,15 @@ def cmd_evaluation_submit(env: dict[str, str], args: argparse.Namespace) -> None
         for fp in file_paths:
             if not fp.is_file():
                 sys.exit(f"error: --content-file not found: {fp}")
-        artifact_id = f"eval-{uuid.uuid4().hex}"
+        stem = f"eval-{uuid.uuid4().hex}"
         payload["artifacts_uri"] = _write_artifact_for_role(
             env,
-            artifact_id,
+            relative_dir=f"variants/{variant_id}/evaluator",
+            text_only_name=f"{stem}.md",
+            single_stem=stem,
+            bundle_name=f"{stem}.tar.gz",
+            headline="evaluation.md",
             text_content=args.content,
-            text_filename="evaluation.md",
             file_paths=file_paths,
         )
 

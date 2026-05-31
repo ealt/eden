@@ -44,7 +44,12 @@ from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from starlette.datastructures import UploadFile
 
-from ..artifacts import UploadedFile, write_artifact_bundle
+from ..artifacts import (
+    UploadedFile,
+    entity_artifact_dir,
+    submission_naming,
+    write_artifact_bundle,
+)
 from ..forms import parse_evaluate_form
 from ._helpers import (
     EligibilityResolver,
@@ -402,6 +407,7 @@ async def submit(
     draft, errors, form_state = _parse_evaluator_submit_form(
         form,
         request=request,
+        variant_id=variant_id,
         uploaded=await _collect_uploads(form, field_name="artifact_files"),
     )
     if draft is None or errors:
@@ -435,6 +441,7 @@ def _parse_evaluator_submit_form(
     form: Any,
     *,
     request: Request,
+    variant_id: str,
     uploaded: list[UploadedFile],
 ) -> tuple[Any, Any, dict[str, Any]]:
     """Read the evaluator submit form and produce ``(draft, errors, form_state)``.
@@ -470,6 +477,7 @@ def _parse_evaluator_submit_form(
 
     written_uri, bundle_error = _maybe_bundle_evaluator_artifact(
         request=request,
+        variant_id=variant_id,
         artifacts_uri_raw=artifacts_uri_raw,
         artifact_text_raw=artifact_text_raw,
         uploaded=uploaded,
@@ -489,6 +497,7 @@ def _parse_evaluator_submit_form(
 def _maybe_bundle_evaluator_artifact(
     *,
     request: Request,
+    variant_id: str,
     artifacts_uri_raw: str,
     artifact_text_raw: str,
     uploaded: list[UploadedFile],
@@ -509,12 +518,22 @@ def _maybe_bundle_evaluator_artifact(
         return None, None
     if not (artifact_text_raw.strip() or uploaded):
         return None, None
+    # Issue #168: evaluator artifacts land under
+    # variants/<variant_id>/evaluator/, keyed by the stable variant_id; the
+    # per-submission eval-<uuid> stem keeps resubmissions distinct (§D.2).
+    target_dir = entity_artifact_dir(
+        request.app.state.artifacts_dir,
+        producer="evaluator",
+        entity_id=variant_id,
+    )
+    naming = submission_naming(
+        f"eval-{uuid.uuid4().hex}", headline="evaluation.md"
+    )
     try:
         uri = write_artifact_bundle(
-            request.app.state.artifacts_dir,
-            f"eval-{uuid.uuid4().hex}",
+            target_dir,
+            naming,
             text_content=artifact_text_raw,
-            text_filename="evaluation.md",
             uploads=uploaded,
         )
     except ValueError as exc:

@@ -39,7 +39,12 @@ from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from starlette.datastructures import UploadFile
 
-from ..artifacts import UploadedFile, write_artifact_bundle
+from ..artifacts import (
+    UploadedFile,
+    entity_artifact_dir,
+    submission_naming,
+    write_artifact_bundle,
+)
 from ..forms import FormErrors, parse_implement_form
 from ._helpers import (
     EligibilityResolver,
@@ -571,6 +576,7 @@ async def submit(  # noqa: PLR0911 — flow has many distinct outcome arms by de
     draft, errors, form_state = _parse_submit_form(
         form,
         request=request,
+        variant_id=variant_id,
         uploaded=await _collect_uploads(form, field_name="artifact_files"),
     )
     if draft is None:
@@ -709,6 +715,7 @@ def _parse_submit_form(
     form: Any,
     *,
     request: Request,
+    variant_id: str,
     uploaded: list[UploadedFile],
 ) -> tuple[Any, Any, dict[str, str]]:
     """Parse the implement-form fields. Returns ``(draft, errors, form_state)``.
@@ -741,6 +748,7 @@ def _parse_submit_form(
 
     written_uri, bundle_error = _maybe_bundle_executor_artifact(
         request=request,
+        variant_id=variant_id,
         artifacts_uri_raw=artifacts_uri_raw,
         artifact_text_raw=artifact_text_raw,
         uploaded=uploaded,
@@ -758,6 +766,7 @@ def _parse_submit_form(
 def _maybe_bundle_executor_artifact(
     *,
     request: Request,
+    variant_id: str,
     artifacts_uri_raw: str,
     artifact_text_raw: str,
     uploaded: list[UploadedFile],
@@ -779,12 +788,22 @@ def _maybe_bundle_executor_artifact(
         return None, None
     if not (artifact_text_raw.strip() or uploaded):
         return None, None
+    # Issue #168: executor artifacts land under
+    # variants/<variant_id>/executor/, keyed by the stable variant_id; the
+    # per-submission exec-<uuid> stem keeps resubmissions distinct (§D.2).
+    target_dir = entity_artifact_dir(
+        request.app.state.artifacts_dir,
+        producer="executor",
+        entity_id=variant_id,
+    )
+    naming = submission_naming(
+        f"exec-{uuid.uuid4().hex}", headline="variant.md"
+    )
     try:
         uri = write_artifact_bundle(
-            request.app.state.artifacts_dir,
-            f"variant-artifact-{uuid.uuid4().hex}",
+            target_dir,
+            naming,
             text_content=artifact_text_raw,
-            text_filename="variant.md",
             uploads=uploaded,
         )
     except ValueError as exc:
