@@ -117,7 +117,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument("--ideation-startup-deadline", type=float, default=30.0)
-    # --ideation-task-deadline retired (issue #157): now the experiment-config ideation_task_deadline field.
+    # --ideation-task-deadline retired (#157): now experiment-config ideation_task_deadline field.
     parser.add_argument("--ideation-shutdown-deadline", type=float, default=10.0)
     parser.add_argument("--ideation-env-file", default=None)
     parser.add_argument("--poll-interval", type=float, default=0.1)
