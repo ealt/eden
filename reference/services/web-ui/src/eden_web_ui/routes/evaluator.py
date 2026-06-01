@@ -57,6 +57,7 @@ from ._helpers import (
     build_artifact_links,
     build_list_links,
     csrf_ok,
+    form_experiment_guard,
     get_session,
     is_htmx_request,
     parse_list_view,
@@ -414,6 +415,9 @@ async def submit(
     store = active.store
     config = active.config
     assert config is not None  # need_config=True populates it
+    mismatch = form_experiment_guard(form, active.experiment_id)
+    if mismatch is not None:
+        return mismatch
     try:
         variant = store.read_variant(variant_id)
         idea: Idea = store.read_idea(variant.idea_id)

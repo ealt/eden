@@ -35,6 +35,7 @@ from .routes import evaluator as evaluator_routes
 from .routes import executor as executor_routes
 from .routes import ideator as ideator_routes
 from .routes import index as index_routes
+from .routes._helpers import switcher_context
 from .routes.admin import control as admin_control_routes
 from .sessions import SessionCodec
 from .store_factory import StaticStoreFactory, StoreFactory
@@ -143,7 +144,7 @@ def make_app(
     )
     templates = Jinja2Templates(
         directory=str(_TEMPLATES_DIR),
-        context_processors=[_experiment_context],
+        context_processors=[_experiment_context, switcher_context],
     )
     templates.env.globals["executor_enabled"] = repo is not None
     templates.env.globals["admin_enabled"] = store_factory.admin_enabled
@@ -151,6 +152,7 @@ def make_app(
 
     app.state.store_factory = store_factory
     app.state.experiment_id = experiment_id
+    app.state.experiments_cache = {}
     app.state.experiment_config = experiment_config
     app.state.experiment_config_dir = experiment_config_dir
     app.state.experiment_config_cache = {}

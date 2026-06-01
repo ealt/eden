@@ -52,6 +52,7 @@ from ._helpers import (
     build_artifact_links,
     build_list_links,
     csrf_ok,
+    form_experiment_guard,
     get_session,
     is_htmx_request,
     parse_list_view,
@@ -582,6 +583,9 @@ async def submit(  # noqa: PLR0911 — flow has many distinct outcome arms by de
         return active
     store = active.store
     experiment_id = active.experiment_id
+    mismatch = form_experiment_guard(form, experiment_id)
+    if mismatch is not None:
+        return mismatch
     repo = request.app.state.repo
     try:
         task = cast("ExecutionTask", store.read_task(task_id))

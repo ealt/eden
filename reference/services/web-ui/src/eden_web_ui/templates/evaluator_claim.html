@@ -105,6 +105,7 @@
     {% endif %}
     <form action="/evaluator/{{ task_id }}/submit" method="post" enctype="multipart/form-data">
         <input type="hidden" name="csrf_token" value="{{ session.csrf }}">
+        <input type="hidden" name="form_experiment_id" value="{{ experiment_id }}">
         <fieldset>
             <legend>status</legend>
             <label>

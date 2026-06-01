@@ -46,6 +46,7 @@ from ..artifacts import (
 from ..forms import FormErrors, IdeaDraft, format_validation_errors, parse_idea_rows
 from ._helpers import (
     csrf_ok,
+    form_experiment_guard,
     get_session,
     htmx_aware_redirect,
     is_htmx_request,
@@ -501,6 +502,10 @@ async def submit_idea(task_id: str, request: Request) -> HTMLResponse | Redirect
     config = active.config
     assert config is not None  # need_config=True populates it
     experiment_id = active.experiment_id
+
+    mismatch = form_experiment_guard(form, experiment_id)
+    if mismatch is not None:
+        return mismatch
 
     if status == "error":
         return _submit_idea_error_status(

@@ -13,6 +13,7 @@ credential / config failures, or an "experiment not seeded" page).
 
 from __future__ import annotations
 
+import time
 import urllib.parse
 from dataclasses import dataclass
 from pathlib import Path
@@ -272,6 +273,35 @@ def dashboard_redirect(error: str, *, exp: str | None = None) -> RedirectRespons
     return RedirectResponse(url=f"{_DASHBOARD_PATH}?{query}", status_code=303)
 
 
+def switched_mid_form_redirect(frm: str, to: str) -> RedirectResponse:
+    """Redirect after a discarded submission whose form was rendered against
+    a different experiment than the one now active (issue #145 §3.6)."""
+    query = urllib.parse.urlencode(
+        {"error": "switched-mid-form", "from": frm, "to": to}
+    )
+    return RedirectResponse(url=f"{_DASHBOARD_PATH}?{query}", status_code=303)
+
+
+def form_experiment_guard(
+    form: Any, active_experiment_id: str
+) -> RedirectResponse | None:
+    """Reject a submission whose ``form_experiment_id`` no longer matches.
+
+    Every mutating form carries a hidden ``form_experiment_id`` recording
+    the experiment it was rendered against. If the operator switched
+    experiments between render and submit, the value disagrees with the
+    now-active experiment; rather than silently writing to the wrong
+    experiment we discard the submission and redirect with a clear banner
+    (issue #145 §3.6). Returns ``None`` when the form predates the field
+    (absent) or matches — absent is treated as "no mismatch" so older
+    cached pages degrade to today's behavior rather than hard-failing.
+    """
+    submitted = form.get("form_experiment_id")
+    if isinstance(submitted, str) and submitted and submitted != active_experiment_id:
+        return switched_mid_form_redirect(submitted, active_experiment_id)
+    return None
+
+
 def _stale_selection_redirect(request: Request) -> RedirectResponse:
     """Redirect to the dashboard AND clear the stale session selection."""
     response = dashboard_redirect("stale-selection")
@@ -350,6 +380,57 @@ def resolve_active_context(
         admin_store=admin_store,
         config=config,
     )
+
+
+# ---------------------------------------------------------------------------
+# Top-nav experiment switcher (issue #145 §3.7)
+# ---------------------------------------------------------------------------
+
+_SWITCHER_TTL_SECONDS = 5.0
+
+
+def _cached_experiment_ids(request: Request) -> list[str]:
+    """Return registered experiment ids, cached for 5s per process (§3.7).
+
+    The switcher dropdown renders on every page, so an uncached
+    ``list_experiments`` would hit the control plane once per request. A
+    short in-process TTL collapses that to at most one call per 5s; a
+    stale 5s window is invisible to operators. On a control-plane error
+    the last good list is served (empty on first failure) so a transient
+    blip doesn't blank the switcher.
+    """
+    control_plane = request.app.state.control_plane
+    cache: dict[str, Any] = request.app.state.experiments_cache
+    now_monotonic = time.monotonic()
+    if cache.get("expiry", 0.0) > now_monotonic:
+        return cache["ids"]
+    try:
+        ids = [e.experiment_id for e in control_plane.list_experiments()]
+    except Exception:  # noqa: BLE001 — serve stale on any read failure
+        ids = cache.get("ids", [])
+    cache["expiry"] = now_monotonic + _SWITCHER_TTL_SECONDS
+    cache["ids"] = ids
+    return ids
+
+
+def switcher_context(request: Request) -> dict[str, Any]:
+    """Template context processor for the top-nav experiment switcher.
+
+    Active only when a control plane is configured AND the request
+    carries a session (signed in). Provides the registered-experiment
+    list, the operator's current selection, and the session CSRF token
+    for the per-experiment ``select`` POST forms.
+    """
+    if request.app.state.control_plane is None:
+        return {"switcher_experiments": None}
+    session = get_session(request)
+    if session is None:
+        return {"switcher_experiments": None}
+    return {
+        "switcher_experiments": _cached_experiment_ids(request),
+        "switcher_selected": session.selected_experiment_id,
+        "switcher_csrf": session.csrf,
+    }
 
 
 def _resolve_inside_jail(

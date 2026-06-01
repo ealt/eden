@@ -219,3 +219,67 @@ def test_context_happy_path_returns_context(tmp_path: Any) -> None:
     assert result.experiment_id == OTHER_ID
     assert result.store is factory.for_experiment(OTHER_ID)
     assert result.config is not None
+
+
+# ---------------------------------------------------------------------------
+# form_experiment_guard (issue #145 §3.6)
+# ---------------------------------------------------------------------------
+
+
+def test_form_guard_matching_returns_none() -> None:
+    from eden_web_ui.routes._helpers import form_experiment_guard
+
+    assert form_experiment_guard({"form_experiment_id": "exp-1"}, "exp-1") is None
+
+
+def test_form_guard_absent_field_returns_none() -> None:
+    from eden_web_ui.routes._helpers import form_experiment_guard
+
+    assert form_experiment_guard({}, "exp-1") is None
+
+
+def test_form_guard_mismatch_redirects_with_from_and_to() -> None:
+    from eden_web_ui.routes._helpers import form_experiment_guard
+    from fastapi.responses import RedirectResponse
+
+    result = form_experiment_guard({"form_experiment_id": "exp-x"}, "exp-y")
+    assert isinstance(result, RedirectResponse)
+    loc = result.headers["location"]
+    assert "switched-mid-form" in loc
+    assert "from=exp-x" in loc
+    assert "to=exp-y" in loc
+
+
+# ---------------------------------------------------------------------------
+# Store follows the active selection (the core #145 behavior)
+# ---------------------------------------------------------------------------
+
+
+class _MultiFakeFactory:
+    def __init__(self, stores: dict[str, _FakeStore]) -> None:
+        self._stores = stores
+        self.admin_enabled = True
+
+    def for_experiment(self, experiment_id: str, *, role: str = "worker") -> Any:
+        return self._stores[experiment_id]
+
+    def close(self) -> None:  # pragma: no cover - lifespan shutdown
+        pass
+
+
+def test_context_store_follows_selection(tmp_path: Any) -> None:
+    from eden_web_ui.routes._helpers import ActiveContext
+
+    default_store, other_store = _FakeStore(), _FakeStore()
+    factory = _MultiFakeFactory({EXPERIMENT_ID: default_store, OTHER_ID: other_store})
+    app = _build_app(
+        control_plane=_FakeControlPlane(), store_factory=factory, tmp_path=tmp_path
+    )
+    result = resolve_active_context(_request(app, selected=OTHER_ID))
+    assert isinstance(result, ActiveContext)
+    assert result.experiment_id == OTHER_ID
+    assert result.store is other_store
+    # No selection → the deployment default's store.
+    result_default = resolve_active_context(_request(app, selected=None))
+    assert isinstance(result_default, ActiveContext)
+    assert result_default.store is default_store
