@@ -1,0 +1,5 @@
+No further findings.
+
+The round-2 change closes the remaining gap. In [reference/compose/healthcheck/smoke-logging.sh](/Users/ericalt/Documents/eden-worktrees/impl-issue-110-loki-grafana-overlay/reference/compose/healthcheck/smoke-logging.sh:196), the new Phase 5 guard ties the hardcoded selector back to the provisioned dashboard’s actual `allValue` settings, so the smoke is now checking the real Grafana state rather than an assumed query shape. In [Phase 6](/Users/ericalt/Documents/eden-worktrees/impl-issue-110-loki-grafana-overlay/reference/compose/healthcheck/smoke-logging.sh:310), the `{service="postgres", experiment_id=~".*", level=~".*"}` assertion is the right proof: it specifically exercises a label-less infra stream under the dashboard-default matcher semantics, so it will fail if `experiment_id`/`level` revert to value-list behavior and start excluding infra stdout again.
+
+Overall assessment: the original issues are addressed, the regression coverage is now aligned with the actual dashboard behavior, and I don’t see any remaining plan-adherence, correctness, integration, or robustness concerns in the re-reviewed changes.

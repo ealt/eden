@@ -1,0 +1,89 @@
+// Grafana Alloy pipeline for the EDEN log-search overlay (issue #110).
+//
+// Tails the issue-#109 per-service JSONL bind-mount and ships every
+// line to Loki, lifting service / level / experiment_id to Loki
+// labels. NO docker socket is needed — this reads files only (the
+// socket-requiring infra-stdout path lives in the separate
+// compose.logging-infra.yaml overlay).
+//
+// IMPLICIT CONTRACT WITH eden_service_common/logging.py:
+//   The stage.json / stage.labels blocks below depend on the JSON
+//   field names emitted by reference/services/_common/src/
+//   eden_service_common/logging.py: `ts`, `level`, `service`,
+//   `experiment_id`. That logger ALWAYS emits all four on every
+//   record (they are set unconditionally in _JsonFormatter.format),
+//   so no path-derived fallback is required. If a future
+//   logging-schema change renames or drops one of these fields, the
+//   corresponding Loki label silently stops populating — ingestion
+//   still works (stage.json drops missing fields), but search by that
+//   label quietly breaks. The smoke-logging.sh LogQL assertion
+//   queries {service="orchestrator"}, so a `service`-label regression
+//   fails the smoke. Keep this header in sync with logging.py.
+//
+// Pipeline shape (the standard Alloy file-tail idiom):
+//   local.file_match  -> discovers files matching the glob
+//   loki.source.file  -> tails the discovered files
+//   loki.process      -> parses JSON, sets timestamp + labels
+//   loki.write        -> pushes to Loki's /loki/api/v1/push
+
+// Discover the per-service JSONL files under the read-only logs
+// bind-mount. Match only `*.jsonl` (NOT the rotated `*.jsonl.1` …
+// `.5` backups) so rotated content is not re-ingested. `**` recurses
+// into each per-service subdirectory (logs/<service>/<service>.jsonl).
+local.file_match "eden" {
+  path_targets = [{__path__ = "/var/lib/eden/logs/**/*.jsonl"}]
+  // Re-scan for newly-created service log files (a service that
+  // starts after Alloy does) every 30s.
+  sync_period = "30s"
+}
+
+loki.source.file "eden" {
+  targets    = local.file_match.eden.targets
+  forward_to = [loki.process.eden.receiver]
+}
+
+loki.process "eden" {
+  forward_to = [loki.write.default.receiver]
+
+  // Extract the structured fields from each JSON-line record. Keys on
+  // the left are entries in Alloy's extracted-data map; values on the
+  // right are JMESPath expressions into the JSON object.
+  stage.json {
+    expressions = {
+      level         = "level",
+      service       = "service",
+      experiment_id = "experiment_id",
+      ts            = "ts",
+    }
+  }
+
+  // Use the record's own timestamp as the Loki entry time rather than
+  // the ingestion time. logging.py emits RFC3339 with microsecond
+  // precision and a trailing `Z`, e.g. 2026-05-29T12:34:56.789012Z —
+  // RFC3339Nano parses that exactly.
+  stage.timestamp {
+    source = "ts"
+    format = "RFC3339Nano"
+  }
+
+  // Lift the extracted fields to Loki labels. All three are
+  // low-cardinality (a handful of services, four log levels, one
+  // experiment_id per single-experiment deployment), so they are safe
+  // as labels — Loki's index stays small.
+  stage.labels {
+    values = {
+      service       = "service",
+      level         = "level",
+      experiment_id = "experiment_id",
+    }
+  }
+}
+
+loki.write "default" {
+  endpoint {
+    // In-network Loki service (compose.logging.yaml). The stable
+    // /loki/api/v1/push API; Alloy v1.x targets the Loki 3.x push
+    // contract, so no Promtail/Loki version-lockstep applies.
+    url = "http://loki:3100/loki/api/v1/push"
+  }
+}

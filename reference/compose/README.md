@@ -67,6 +67,16 @@ the chapter-01 §13 durability invariant:
 | `eden-repo-init-staging` | `eden-repo-init`                    | bootstrap-only; setup-experiment `docker volume rm`s on reseed |
 | `eden-worktrees`         | `executor-host`/`evaluator-host` (subprocess overlay) | per-task scratch worktrees; per-host startup `git worktree remove --force` already assumes they don't survive restart |
 
+The opt-in log-search overlay (`compose.logging.yaml`, below) adds two
+more host bind-mount dirs under the data root — `<DATA_ROOT>/loki/`
+(Loki index + chunks) and `<DATA_ROOT>/alloy/` (Alloy file-tail
+positions). Both are **DERIVED / observability** storage, NOT
+protocol-owned durable state (chapter 01 §13): they are a queryable
+projection of `logs/`, rebuild by re-ingesting, and are NOT covered by
+the §13 durability invariant. `setup-experiment.sh` creates them
+unconditionally (they stay empty until the overlay runs); the same
+`rm -rf ${EDEN_EXPERIMENT_DATA_ROOT}` reset wipes them.
+
 **Postgres backs the EDEN task store, not Forgejo.** Forgejo uses its
 own embedded SQLite. Pointing Forgejo at our Postgres would couple the
 git host's recovery story to the task store schema; production
@@ -88,6 +98,39 @@ claim does the work via `Store.claim`'s atomicity guarantee. The
 executor module is for human override / debugging. Operators
 who want only one or the other can use compose `profiles:` (a
 future enhancement).
+
+## Log search overlay (`compose.logging.yaml`)
+
+Opt-in overlay (issue #110) adding an in-stack log-search UI: **Loki**
+(log store + LogQL), **Grafana Alloy** (log shipper), and **Grafana**
+(search UI, pre-provisioned with the Loki datasource + an *EDEN explore*
+dashboard). Alloy tails the issue-#109 per-service JSONL bind-mount
+(`${EDEN_EXPERIMENT_DATA_ROOT}/logs`) read-only and ships every line to
+Loki — **no docker socket** in the default overlay.
+
+```bash
+# Layer on top of any stack you'd normally bring up:
+docker compose -f compose.yaml -f compose.logging.yaml --env-file .env up -d --wait
+# Grafana → http://localhost:3000 (user `admin`, pw = EDEN_GRAFANA_ADMIN_PASSWORD).
+```
+
+No extra setup-experiment flag is needed (it always generates the
+Grafana password + creates the `loki/`+`alloy/` data-root subdirs). Loki
+and Alloy are internal-only; Grafana's host port is overridable with
+`GRAFANA_HOST_PORT`. Pinned images: `grafana/loki:3.7.2`,
+`grafana/alloy:v1.16.1`, `grafana/grafana:12.4.3`.
+
+**Optional infra-stdout capture** (`compose.logging-infra.yaml`): a
+second overlay, layered on top, that ALSO ships Postgres + Forgejo
+container stdout (not captured by the JSONL tail). It mounts the host
+docker socket read-only, so — per the privilege-isolation discipline —
+it is a separate overlay and requires the `:?`-guarded
+`EDEN_LOGGING_DOCKER_GID` (the in-container socket gid; see that file's
+header for the probe). Validate the whole overlay with
+`bash healthcheck/smoke-logging.sh`.
+
+Full operator walkthrough + LogQL examples: [`docs/observability.md`
+§2.8](../../docs/observability.md#28-log-search-ui-loki--alloy--grafana).
 
 ## Prerequisites
 

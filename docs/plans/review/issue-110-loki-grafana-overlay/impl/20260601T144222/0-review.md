@@ -1,0 +1,19 @@
+1. `Risk` — [reference/compose/logging/grafana/dashboards/eden-explore.json](/Users/ericalt/Documents/eden-worktrees/impl-issue-110-loki-grafana-overlay/reference/compose/logging/grafana/dashboards/eden-explore.json:41), [reference/compose/logging/alloy-config-infra.alloy](/Users/ericalt/Documents/eden-worktrees/impl-issue-110-loki-grafana-overlay/reference/compose/logging/alloy-config-infra.alloy:77)  
+   The optional infra overlay ingests Postgres/Forgejo stdout with only a `service` label, but the shipped dashboard panel always filters on `experiment_id` and `level` too. Those labels do not exist on the docker-stdout streams, so selecting `postgres` or `forgejo` in the starter dashboard yields no results even though Loki ingestion works. Fix by either making infra streams dashboard-compatible (for example, add the labels the panel requires, with an explicit sentinel for non-structured `level`) or by splitting the dashboard/query model so infra stdout uses a separate panel/query that does not require EDEN-service JSON labels. At minimum, document that infra-overlay logs are only queryable via Explore/direct LogQL today.
+
+2. `Risk` — [reference/compose/healthcheck/smoke-logging.sh](/Users/ericalt/Documents/eden-worktrees/impl-issue-110-loki-grafana-overlay/reference/compose/healthcheck/smoke-logging.sh:227)  
+   The live infra-overlay check only proves `{service="postgres"}` arrives. The overlay’s contract is “Postgres + Forgejo stdout,” but CI would still stay green if Forgejo fell out of the relabel rule or docker-source path. Fix by asserting both `postgres` and `forgejo` appear, or at least checking both service labels are present after the infra overlay is enabled.
+
+3. `Nit` — [reference/compose/logging/alloy-config.alloy](/Users/ericalt/Documents/eden-worktrees/impl-issue-110-loki-grafana-overlay/reference/compose/logging/alloy-config.alloy:33), [reference/compose/logging/alloy-config-infra.alloy](/Users/ericalt/Documents/eden-worktrees/impl-issue-110-loki-grafana-overlay/reference/compose/logging/alloy-config-infra.alloy:20)  
+   The EDEN file-tail pipeline is duplicated verbatim across the two Alloy configs with only a “keep in sync” comment. That is structural drift waiting to happen, especially because the logging-field contract is already implicit. Fix by factoring the shared file-tail pipeline into one source of truth if Alloy’s config composition allows it; otherwise strengthen coverage so both configs are exercised against the same label expectations.
+
+**Open Questions / Assumptions**
+
+- I’m treating the brief’s deliberate deviations as acceptable. The healthcheck fallback, current image tags, §2.8 renumbering, dropped path-fallback label, and roadmap omission all look defensible.
+- If the intended UX is “infra stdout only needs to be visible in Explore, not in the starter dashboard,” finding 1 should be downgraded and the docs/dashboard copy should say that explicitly.
+
+**Overall Assessment**
+
+Plan adherence is otherwise solid: the overlay/config/doc/smoke pieces are all present, the Compose merge behavior is correct, the Loki/Grafana/Alloy wiring is coherent, and the setup/CI integration matches the chunk design. The main gap is integration at the UI layer for the optional infra overlay, plus a smoke that only covers half of that path.
+
+Authoritative spot checks used: [Alloy `local.file_match`](https://grafana.com/docs/alloy/latest/reference/components/local/local.file_match/), [Alloy `loki.source.docker`](https://grafana.com/docs/alloy/latest/reference/components/loki/loki.source.docker/), [Alloy `loki.process` / `stage.labels`](https://grafana.com/docs/alloy/latest/reference/components/loki.process/), [Loki retention](https://grafana.com/docs/loki/latest/operations/storage/retention/), [Grafana provisioning](https://grafana.com/docs/grafana/latest/administration/provisioning/).

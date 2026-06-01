@@ -1,0 +1,164 @@
+# Issue #110 — in-stack log search UI overlay (Loki + Alloy + Grafana).
+#
+# Opt-in. Layered on top of compose.yaml (and composes cleanly with any
+# other overlay set, since it adds three new services and touches none
+# of the existing ones):
+#
+#   cd reference/compose
+#   docker compose -f compose.yaml -f compose.logging.yaml \
+#                  --env-file .env up -d --wait
+#
+#   # with subprocess workers (real per-task log volume):
+#   docker compose -f compose.yaml -f compose.subprocess.yaml \
+#                  -f compose.logging.yaml --env-file .env up -d --wait
+#
+# Fills rung L3 of the log-persistence ladder in docs/observability.md
+# §2.5: search EDEN's logs across services + time windows from one UI
+# instead of a multi-window `docker compose logs` session.
+#
+# Architecture (see docs/plans/issue-110-loki-grafana-overlay.md):
+#   alloy   tails the issue-#109 per-service JSONL bind-mount
+#           (${EDEN_EXPERIMENT_DATA_ROOT}/logs) read-only and ships
+#           every line to Loki. NO docker socket (the socket-requiring
+#           infra-stdout path is the separate compose.logging-infra.yaml
+#           overlay).
+#   loki    stores + indexes the lines; internal-only (no host port).
+#   grafana the search UI; the only host-exposed surface.
+#
+# Image tags are pinned (never :latest) and were validated against a
+# live bring-up at impl time (May 2026 current-stable lines): Loki
+# 3.7.2, Alloy v1.16.1, Grafana 12.4.3. Alloy v1.x pushes over the
+# stable Loki 3.x /loki/api/v1/push API, so no Promtail/Loki
+# version-lockstep applies.
+#
+# Healthcheck note: grafana/loki:3.x is a distroless image (no shell,
+# no wget/curl) and grafana/alloy ships no in-container HTTP client, so
+# neither can carry a CMD HTTP healthcheck. Only grafana (which has
+# curl) gets one; loki + alloy use plain start-ordering
+# (`service_started`). smoke-logging.sh validates loki readiness +
+# ingestion directly by exec-ing curl through the grafana container
+# (which can reach loki:3100 on the compose network).
+
+name: eden-reference
+
+services:
+  loki:
+    image: grafana/loki:3.7.2
+    container_name: eden-loki
+    restart: unless-stopped
+    # YAML anchors (`*eden-logging`) are defined in compose.yaml and do
+    # NOT cross the multi-file merge, so the 50m x 5 docker-driver
+    # rotation is inlined here for parity with the base stack.
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+    command: ["-config.file=/etc/loki/loki-config.yaml"]
+    volumes:
+      # DERIVED / non-protocol-owned storage (chapter 01 §13): Loki's
+      # index + chunks are a queryable PROJECTION of the logs/ JSONL
+      # bind-mount, not durable experiment state. Losing this loses
+      # search history but no experiment state, and it rebuilds by
+      # re-ingesting whatever remains under logs/. Therefore NOT
+      # covered by the §13 durability invariant and NOT exercised by
+      # the durability smoke. setup-experiment.sh creates this dir
+      # (chmod 0777; Loki runs as uid 10001). Co-located under the data
+      # root so `rm -rf ${EDEN_EXPERIMENT_DATA_ROOT}` is the single
+      # cleanup path; switch to a named volume for strict ephemerality.
+      - ${EDEN_EXPERIMENT_DATA_ROOT:?EDEN_EXPERIMENT_DATA_ROOT must be set (run setup-experiment)}/loki:/loki
+      - ./logging/loki-config.yaml:/etc/loki/loki-config.yaml:ro
+    # Internal-only: reached by alloy + grafana over the compose
+    # network at http://loki:3100. No host port.
+
+  alloy:
+    image: grafana/alloy:v1.16.1
+    container_name: eden-alloy
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+    # `run` is the required subcommand. --storage.path is the rw
+    # bind-mount holding the file-tail positions (Alloy's equivalent of
+    # Promtail's positions.yaml) so a restart resumes rather than
+    # re-ingesting from the top. --disable-reporting suppresses Alloy's
+    # default anonymous usage phone-home — a local reference stack must
+    # not make silent outbound calls.
+    command:
+      - run
+      - /etc/alloy/config.alloy
+      - --storage.path=/var/lib/alloy/data
+      - --server.http.listen-addr=0.0.0.0:12345
+      - --disable-reporting
+    depends_on:
+      # loki is distroless (no healthcheck possible); start-ordering
+      # only. Alloy's loki.write retries until loki accepts pushes, so
+      # a brief not-yet-ready window is harmless.
+      loki:
+        condition: service_started
+    volumes:
+      # Read-only tail of the issue-#109 per-service JSONL bind-mount.
+      - ${EDEN_EXPERIMENT_DATA_ROOT:?}/logs:/var/lib/eden/logs:ro
+      - ./logging/alloy-config.alloy:/etc/alloy/config.alloy:ro
+      # rw position/state storage (DERIVED; same classification as
+      # loki/ above). setup-experiment.sh creates this dir (chmod 0777).
+      - ${EDEN_EXPERIMENT_DATA_ROOT:?}/alloy:/var/lib/alloy/data
+    # Alloy's HTTP server (debug UI + /-/ready) is on :12345; not
+    # host-exposed by default. Add a `ports: ["12345:12345"]` mapping
+    # locally to inspect the component graph at http://localhost:12345.
+
+  grafana:
+    image: grafana/grafana:12.4.3
+    container_name: eden-grafana
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+    depends_on:
+      loki:
+        condition: service_started
+    environment:
+      # Generated admin password (setup-experiment.sh writes
+      # EDEN_GRAFANA_ADMIN_PASSWORD to .env); overrides the default
+      # admin/admin. Sign in as user `admin`.
+      GF_SECURITY_ADMIN_PASSWORD: ${EDEN_GRAFANA_ADMIN_PASSWORD:?EDEN_GRAFANA_ADMIN_PASSWORD must be set (run setup-experiment)}
+      # Anonymous viewer access is OFF by default so the posture
+      # matches the rest of the admin-token-gated stack. Flip to "true"
+      # (and set GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer) for a pure local
+      # demo where sign-in friction isn't wanted.
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      # Suppress Grafana's outbound phone-home, same posture as Loki's
+      # analytics.reporting_enabled: false + Alloy's --disable-reporting.
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES: "false"
+    volumes:
+      # Pre-provisioned datasource + dashboard provider, read-only.
+      - ./logging/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./logging/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      # No durable storage: Grafana's own DB (dashboards, users) is
+      # fully reconstructed from provisioning on every start, so it
+      # gets no bind-mount (keeps Grafana stateless, avoids a fourth
+      # uid/permission surface). Nothing operator-created needs to
+      # survive — the dashboard + datasource are repo-tracked.
+    ports:
+      # The only host-exposed surface. 3000 is Grafana's well-known
+      # port (operators expect it); GRAFANA_HOST_PORT overrides it on
+      # the rare local collision.
+      - "${GRAFANA_HOST_PORT:-3000}:3000"
+    healthcheck:
+      # CMD argv form (no shell). grafana/grafana ships curl at
+      # /usr/bin/curl. /api/health returns 200 + {"database":"ok",...}
+      # once Grafana is serving; note a malformed provisioning file
+      # still returns ok here, which is why smoke-logging.sh asserts
+      # the datasource is actually present via /api/datasources.
+      test: ["CMD", "curl", "-fsS", "http://localhost:3000/api/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 15s

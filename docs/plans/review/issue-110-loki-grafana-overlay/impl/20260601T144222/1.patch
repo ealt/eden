@@ -1,0 +1,26 @@
+--- docs/plans/review/issue-110-loki-grafana-overlay/impl/20260601T144222/0.md	2026-06-01 14:42:49
++++ docs/plans/review/issue-110-loki-grafana-overlay/impl/20260601T144222/1.md	2026-06-01 14:57:27
+@@ -52,3 +52,23 @@
+ ## Review Status
+ 
+ Round 0 — awaiting initial review.
++
++---
++
++## Round 1 — fixes applied
++
++**Finding 1 (Risk) — infra streams excluded from the starter dashboard. ADDRESSED.**
++Root cause confirmed: the panel selector `{experiment_id=~"$experiment_id", service=~"$service", level=~"$level"}` requires the `experiment_id` + `level` labels, which the infra-overlay docker-stdout streams (postgres/forgejo) lack, so the default "All" view excluded them (verified live: with the old value-list All, `label_values(experiment_id)` returns only EDEN ids, so `experiment_id=~"(id)"` drops label-less streams). This also violated the project's "observability must not hide data by default" principle.
++Fix: set template-variable `allValue` so the default view does not exclude label-less streams — `service` → `.+` (the load-bearing non-empty matcher Loki requires; every stream has `service`), `experiment_id` + `level` → `.*` (match streams missing the label). Validated live: the exact default selector `{experiment_id=~".*", service=~".+", level=~".*"}` returns BOTH orchestrator (50) and postgres (13) lines. Loki accepts it (the `.+` on service is the non-empty anchor; an all-`.*` selector is rejected). Documented the behavior in `observability.md` §2.8. Regression-guarded in `smoke-logging.sh` (Phase 5 asserts the default selector returns EDEN lines; Phase 6 asserts it also surfaces infra streams).
++
++**Finding 2 (Risk) — smoke only proved `{service="postgres"}`. ADDRESSED.**
++`smoke-logging.sh` Phase 6 now also polls + asserts `{service="forgejo"}` ≥ 1 (verified live: forgejo emits startup stdout even at log level Warn — 5–9 lines). A relabel-rule / docker-source regression that drops forgejo now fails the smoke.
++
++**Finding 3 (Nit) — file-tail pipeline duplicated across the two Alloy configs. ADDRESSED via coverage (duplication kept, deliberately).**
++The duplication is retained: Alloy's clean composition story for a *single bind-mounted config file* is weaker than the cost of the ~40-line duplication, and the default overlay must keep a socket-free standalone config. Instead, per Codex's alternative ("strengthen coverage so both configs are exercised against the same label expectations"), `smoke-logging.sh` Phase 6 now re-asserts `{service="orchestrator"}` still returns *under the infra config* — so drift in the duplicated file-tail half of `alloy-config-infra.alloy` can no longer stay green. The "keep in sync" header comment is retained.
++
++**Validation:** `smoke-logging.sh` re-run end-to-end — PASS (postgres 5, forgejo 5, EDEN-under-infra OK, dashboard default selector surfaces both). markdownlint / rename-discipline / shellcheck / `bash -n` clean.
++
++## Review Status
++
++Round 1 — awaiting re-review.

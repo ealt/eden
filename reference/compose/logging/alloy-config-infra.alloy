@@ -1,0 +1,101 @@
+// Grafana Alloy pipeline for the EDEN log-search overlay, EXTENDED to
+// also capture Postgres + Forgejo container STDOUT (issue #110, §3.4).
+//
+// Used ONLY by compose.logging-infra.yaml, which mounts the host
+// docker socket into Alloy. The default compose.logging.yaml points
+// Alloy at alloy-config.alloy (file-tail only, NO socket) — keep the
+// file-tail half of this config in sync with that file.
+//
+// Two pipelines feed one loki.write:
+//   1. file-tail   — the EDEN services' #109 JSONL (same as the base
+//                    alloy-config.alloy).
+//   2. docker-stdout — postgres + forgejo container stdout (NOT
+//                    captured by the JSONL tail; those infra services
+//                    log to stdout only).
+
+// ---------------------------------------------------------------
+// Pipeline 1: EDEN service JSONL file tail (mirrors alloy-config.alloy)
+// ---------------------------------------------------------------
+
+local.file_match "eden" {
+  path_targets = [{__path__ = "/var/lib/eden/logs/**/*.jsonl"}]
+  sync_period  = "30s"
+}
+
+loki.source.file "eden" {
+  targets    = local.file_match.eden.targets
+  forward_to = [loki.process.eden.receiver]
+}
+
+loki.process "eden" {
+  forward_to = [loki.write.default.receiver]
+
+  stage.json {
+    expressions = {
+      level         = "level",
+      service       = "service",
+      experiment_id = "experiment_id",
+      ts            = "ts",
+    }
+  }
+
+  stage.timestamp {
+    source = "ts"
+    format = "RFC3339Nano"
+  }
+
+  stage.labels {
+    values = {
+      service       = "service",
+      level         = "level",
+      experiment_id = "experiment_id",
+    }
+  }
+}
+
+// ---------------------------------------------------------------
+// Pipeline 2: Postgres + Forgejo container stdout (docker socket)
+// ---------------------------------------------------------------
+
+discovery.docker "infra" {
+  host = "unix:///var/run/docker.sock"
+}
+
+discovery.relabel "infra" {
+  targets = discovery.docker.infra.targets
+
+  // Keep only the two infra containers; everything else (the EDEN
+  // services, alloy/loki/grafana themselves) is dropped — the EDEN
+  // services are already captured by pipeline 1, and capturing the
+  // logging stack's own stdout would create a feedback loop.
+  rule {
+    source_labels = ["__meta_docker_container_name"]
+    regex         = "/(eden-postgres|eden-forgejo)"
+    action        = "keep"
+  }
+
+  // Derive a `service` label (postgres / forgejo) from the container
+  // name so infra lines share the same label namespace as the EDEN
+  // service lines from pipeline 1.
+  rule {
+    source_labels = ["__meta_docker_container_name"]
+    regex         = "/eden-(.*)"
+    target_label  = "service"
+  }
+}
+
+loki.source.docker "infra" {
+  host       = "unix:///var/run/docker.sock"
+  targets    = discovery.relabel.infra.output
+  forward_to = [loki.write.default.receiver]
+}
+
+// ---------------------------------------------------------------
+// Shared sink
+// ---------------------------------------------------------------
+
+loki.write "default" {
+  endpoint {
+    url = "http://loki:3100/loki/api/v1/push"
+  }
+}

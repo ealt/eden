@@ -1,0 +1,83 @@
+# Loki configuration for the EDEN log-search overlay (issue #110).
+#
+# Single-binary / monolithic mode: one process runs the distributor,
+# ingester, querier, and compactor. This is the supported topology for
+# a local single-tenant demo; production multi-tenant deployments split
+# these into separate targets (out of scope here — L4 on the ladder in
+# docs/observability.md §2.5).
+#
+# Storage: filesystem object store + tsdb index, both rooted under
+# /loki (the ${EDEN_EXPERIMENT_DATA_ROOT}/loki bind-mount declared in
+# compose.logging.yaml). This directory is classified DERIVED /
+# non-protocol-owned (chapter 01 §13): it is a queryable projection of
+# the logs/ JSONL bind-mount, NOT durable experiment state. Losing it
+# loses search history but no experiment state — it rebuilds by
+# re-ingesting whatever logs remain under logs/.
+#
+# auth_enabled: false — single-tenant local demo. Loki then reads a
+# fixed `fake` tenant for every request; Alloy and Grafana need no
+# X-Scope-OrgID header.
+
+auth_enabled: false
+
+server:
+  http_listen_port: 3100
+  grpc_listen_port: 9095
+  # Keep Loki quiet; its own request logs would otherwise dominate the
+  # container stdout the operator tails during a demo.
+  log_level: warn
+
+common:
+  instance_addr: 127.0.0.1
+  path_prefix: /loki
+  storage:
+    filesystem:
+      chunks_directory: /loki/chunks
+      rules_directory: /loki/rules
+  replication_factor: 1
+  ring:
+    kvstore:
+      store: inmemory
+
+schema_config:
+  configs:
+    - from: 2024-01-01
+      store: tsdb
+      object_store: filesystem
+      schema: v13
+      index:
+        prefix: index_
+        period: 24h
+
+storage_config:
+  tsdb_shipper:
+    active_index_directory: /loki/tsdb-index
+    cache_location: /loki/tsdb-cache
+  filesystem:
+    directory: /loki/chunks
+
+# Bound disk growth on a long-lived demo. The compactor deletes chunks
+# older than retention_period; without this a never-quiescing
+# experiment would fill ${EDEN_EXPERIMENT_DATA_ROOT}/loki/ unbounded
+# (risk noted in the plan §10). 168h = 7 days; raise it if you want a
+# longer search window and have the disk.
+limits_config:
+  retention_period: 168h
+  # Reject log lines whose timestamp is implausibly old/new rather than
+  # silently bucketing them; the EDEN JSONL stamps real ts values so
+  # this only catches genuine clock problems.
+  reject_old_samples: true
+  reject_old_samples_max_age: 168h
+
+compactor:
+  working_directory: /loki/compactor
+  # delete is required for retention_period above to actually drop
+  # chunks (default 'disabled' keeps them forever).
+  retention_enabled: true
+  delete_request_store: filesystem
+
+# Disable the anonymous usage-statistics phone-home. A local reference
+# stack must not make silent outbound calls (same posture as Alloy's
+# --disable-reporting in compose.logging.yaml).
+analytics:
+  reporting_enabled: false
