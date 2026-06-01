@@ -14,6 +14,7 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
+from conftest import _one_experiment_factory
 from eden_contracts import ExperimentConfig
 from eden_control_plane import (
     ControlPlaneClient,
@@ -110,8 +111,7 @@ def signed_in_client(
     cp_client: ControlPlaneClient,
 ) -> Iterator[TestClient]:
     app = make_web_ui_app(
-        store=store,
-        admin_store=store,
+        store_factory=_one_experiment_factory(store, admin_store=store),
         experiment_id=EXPERIMENT_ID,
         experiment_config=_config(),
         worker_id=WORKER_ID,
@@ -167,7 +167,7 @@ def test_dashboard_redirects_unauthenticated(
 ) -> None:
     """No session cookie → /signin redirect."""
     app = make_web_ui_app(
-        store=store,
+        store_factory=_one_experiment_factory(store),
         experiment_id=EXPERIMENT_ID,
         experiment_config=_config(),
         worker_id=WORKER_ID,
@@ -358,7 +358,7 @@ def test_routes_hidden_when_control_plane_unset(
 ) -> None:
     """When `control_plane=None`, `/admin/experiments/` is 404."""
     app = make_web_ui_app(
-        store=store,
+        store_factory=_one_experiment_factory(store),
         experiment_id=EXPERIMENT_ID,
         experiment_config=_config(),
         worker_id=WORKER_ID,

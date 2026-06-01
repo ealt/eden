@@ -24,13 +24,28 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import RedirectResponse, Response
 
-from .routes._helpers import get_session
+from .routes._helpers import ActiveContext, get_session, resolve_active_context
 
 ADMINS_GROUP_ID = "admins"
 
 
 def _is_admin_path(path: str) -> bool:
     return path == "/admin" or path.startswith("/admin/")
+
+
+# Deployment-scoped admin pages operate against the control plane, not a
+# per-experiment store (the cross-experiment dashboard + the deployment
+# worker/group registries). They are also the redirect target for
+# active-experiment resolution failures, so they MUST NOT be subject to
+# per-experiment resolution themselves — otherwise a stale/unreachable
+# selection would redirect the dashboard to itself in a loop. Their
+# admins-group gate runs against the deployment-default experiment,
+# preserving the pre-#145 behavior.
+_DEPLOYMENT_SCOPED_ADMIN_PREFIXES = ("/admin/experiments", "/admin/control")
+
+
+def _is_deployment_scoped_admin_path(path: str) -> bool:
+    return any(path.startswith(prefix) for prefix in _DEPLOYMENT_SCOPED_ADMIN_PREFIXES)
 
 
 def _forbidden_response(request: Request) -> Response:
@@ -73,11 +88,17 @@ class AdminGateMiddleware(BaseHTTPMiddleware):
     1. Non-``/admin`` paths pass through untouched.
     2. Missing or invalid session → 303 redirect to ``/signin`` (matches
        the per-handler behavior we are otherwise replacing).
-    3. ``Store.resolve_worker_in_group(worker_id, "admins")`` raises →
+    3. The active experiment cannot be resolved (stale selection,
+       control-plane / task-store unreachable, or a missing credential)
+       → the dashboard redirect / unseeded page that
+       ``resolve_active_context`` returns. The admins-group membership
+       check runs against the ACTIVE experiment's worker store, so the
+       gate follows the operator's experiment selection (issue #145).
+    4. ``Store.resolve_worker_in_group(worker_id, "admins")`` raises →
        502 ``_error.html`` (same shape as the chunk-9e dashboard read
        failures; the operator refreshes to retry).
-    4. Membership returns ``False`` → 403 ``_error.html``.
-    5. Membership returns ``True`` → request proceeds.
+    5. Membership returns ``False`` → 403 ``_error.html``.
+    6. Membership returns ``True`` → request proceeds.
 
     The membership check adds one extra wire round-trip per
     ``/admin/*`` page load when the store is a ``StoreClient``; that
@@ -97,7 +118,22 @@ class AdminGateMiddleware(BaseHTTPMiddleware):
         session = get_session(request)
         if session is None:
             return RedirectResponse(url="/signin", status_code=303)
-        store = request.app.state.store
+        if _is_deployment_scoped_admin_path(request.url.path):
+            # Gate the deployment-scoped pages against the default
+            # experiment's store; they don't follow the active selection.
+            store = request.app.state.store_factory.for_experiment(
+                request.app.state.experiment_id, role="worker"
+            )
+            assert store is not None  # worker role always returns a store
+        else:
+            active = resolve_active_context(request)
+            if not isinstance(active, ActiveContext):
+                # A dashboard redirect (stale / unreachable / credential)
+                # or the unseeded-experiment page — surface it directly.
+                # Both short-circuit the membership check, which has no
+                # store to run against in those states.
+                return active
+            store = active.store
         try:
             in_admins = store.resolve_worker_in_group(
                 session.worker_id, ADMINS_GROUP_ID

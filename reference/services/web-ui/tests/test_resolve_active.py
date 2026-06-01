@@ -70,12 +70,12 @@ def _build_app(
 ) -> FastAPI:
     artifacts = tmp_path / "artifacts"
     artifacts.mkdir(exist_ok=True)
-    store = StaticStoreFactory(
+    default_factory = StaticStoreFactory(
         experiment_id=EXPERIMENT_ID,
         store=_FakeStore(),  # type: ignore[arg-type]
     )
     app = make_app(
-        store=_FakeStore(),  # type: ignore[arg-type]
+        store_factory=default_factory if store_factory is None else store_factory,
         experiment_id=EXPERIMENT_ID,
         experiment_config=_config(),
         worker_id=WORKER_ID,
@@ -84,7 +84,6 @@ def _build_app(
         artifacts_dir=artifacts,
         secure_cookies=False,
         control_plane=control_plane,
-        store_factory=store if store_factory is None else store_factory,
     )
     # Override with the test doubles (make_app wires real types).
     app.state.control_plane = control_plane

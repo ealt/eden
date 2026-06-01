@@ -294,8 +294,6 @@ class _WebUIRuntime:
 
     config: ExperimentConfig
     store_factory: StoreFactory
-    store: Store
-    admin_store: Store | None
     repo: GitRepo | None
     control_plane: ControlPlaneClient | None
 
@@ -421,8 +419,6 @@ def _build_runtime(
     return _WebUIRuntime(
         config=config,
         store_factory=store_factory,
-        store=store,
-        admin_store=admin_store,
         repo=repo,
         control_plane=control_plane,
     )
@@ -441,8 +437,6 @@ def main(argv: list[str] | None = None) -> int:
         return runtime
 
     app = make_app(
-        store=runtime.store,
-        admin_store=runtime.admin_store,
         store_factory=runtime.store_factory,
         experiment_id=args.experiment_id,
         experiment_config=runtime.config,

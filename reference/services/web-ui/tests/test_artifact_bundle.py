@@ -22,13 +22,18 @@ class TestBundleEntryServingSecurity:
     def _setup_signed_in(self, store, artifacts_dir):
         from datetime import UTC, datetime
 
-        from conftest import EXPERIMENT_ID, SESSION_SECRET, WORKER_ID, _config
+        from conftest import (
+            EXPERIMENT_ID,
+            SESSION_SECRET,
+            WORKER_ID,
+            _config,
+            _one_experiment_factory,
+        )
         from eden_web_ui import make_app
         from fastapi.testclient import TestClient
 
         app = make_app(
-            store=store,
-            admin_store=store,
+            store_factory=_one_experiment_factory(store, admin_store=store),
             experiment_id=EXPERIMENT_ID,
             experiment_config=_config(),
             worker_id=WORKER_ID,

@@ -17,7 +17,6 @@ from typing import Any
 from eden_contracts import ExperimentConfig
 from eden_control_plane import ControlPlaneClient
 from eden_git import GitRepo
-from eden_storage import Store
 from eden_storage.errors import NotFound as StorageNotFound
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse
@@ -95,7 +94,7 @@ def _register_routers(
 
 def make_app(
     *,
-    store: Store,
+    store_factory: StoreFactory | StaticStoreFactory,
     experiment_id: str,
     experiment_config: ExperimentConfig,
     worker_id: str,
@@ -107,36 +106,25 @@ def make_app(
     repo: GitRepo | None = None,
     clone_url: str | None = None,
     base_commit_sha: str | None = None,
-    admin_store: Store | None = None,
     control_plane: ControlPlaneClient | None = None,
-    store_factory: StoreFactory | StaticStoreFactory | None = None,
     experiment_config_dir: Path | None = None,
 ) -> FastAPI:
     """Construct the FastAPI app.
 
     ``now`` is injected so tests can pin time deterministically.
     ``repo`` gates the executor module (None → routes unregistered).
-    ``admin_store`` is a separate ``Store`` bearing the deployment
-    admin credential for admin-gated wire ops; ``None`` → mutation
-    controls render disabled and POSTs 303 to ``?error=admin-disabled``
-    (plan §D.3 four-posture matrix).
 
     Issue #145: per-experiment routing goes through ``store_factory``.
-    When the CLI builds a live :class:`StoreFactory` it passes it here;
-    when omitted (the single-experiment / test path) a
-    :class:`StaticStoreFactory` is built from ``store`` + ``admin_store``
-    so every route resolves to the one deployment experiment. The legacy
-    ``app.state.store`` / ``admin_store`` attributes remain populated for
-    backward compatibility until the test-fixture sweep (plan W3).
-    ``experiment_config_dir`` enables per-experiment config loading in
-    control-plane mode (plan Decision 6).
+    The CLI builds a live :class:`StoreFactory`; tests build a
+    :class:`StaticStoreFactory` (one pre-built store for the single
+    deployment experiment). When the factory's admin view is ``None``
+    (no admin token configured), mutation controls render disabled and
+    admin POSTs 303 to ``?error=admin-disabled`` (plan §D.3 four-posture
+    matrix). ``experiment_config`` is the deployment-default config (and
+    the single-experiment config source); ``experiment_config_dir``
+    enables per-experiment config loading in control-plane mode (plan
+    Decision 6).
     """
-    if store_factory is None:
-        store_factory = StaticStoreFactory(
-            experiment_id=experiment_id,
-            store=store,
-            admin_store=admin_store,
-        )
 
     @asynccontextmanager
     async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
@@ -161,8 +149,6 @@ def make_app(
     templates.env.globals["admin_enabled"] = store_factory.admin_enabled
     templates.env.globals["control_plane_enabled"] = control_plane is not None
 
-    app.state.store = store
-    app.state.admin_store = admin_store
     app.state.store_factory = store_factory
     app.state.experiment_id = experiment_id
     app.state.experiment_config = experiment_config

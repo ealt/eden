@@ -111,8 +111,8 @@ def test_live_factory_shares_one_httpx_client() -> None:
     # Vended clients ride on the shared transport and do not own it.
     assert view_a is not None
     assert view_b is not None
-    assert view_a._client is client  # type: ignore[attr-defined]
-    assert view_b._client is client  # type: ignore[attr-defined]
+    assert view_a._client is client
+    assert view_b._client is client
 
 
 def test_live_factory_close_closes_shared_client() -> None:
