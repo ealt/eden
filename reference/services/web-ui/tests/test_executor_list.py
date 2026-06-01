@@ -139,6 +139,79 @@ class TestSort:
         assert "<script>" not in body
         assert body.index("high") < body.index("low")
 
+    def test_dir_without_valid_sort_keeps_priority_desc(
+        self, exec_client: TestClient, store: InMemoryStore
+    ) -> None:
+        # codex r0: `dir` must not be honored unless `sort` is an explicit
+        # valid choice. `?dir=asc` (and `?sort=garbage&dir=asc`) must stay
+        # at the §D.2 default (priority DESC), not flip to priority ASC.
+        client = _signed_in(exec_client)
+        seed_implement_task(store, slug="low", base_sha=BASE_SHA, priority=1.0)
+        seed_implement_task(store, slug="high", base_sha=BASE_SHA, priority=9.0)
+        for qs in ("?dir=asc", "?sort=garbage&dir=asc"):
+            resp = client.get(f"/executor/{qs}")
+            body = resp.text
+            assert body.index("high") < body.index("low"), qs
+
+
+class TestListViewParsing:
+    """Direct unit coverage of the allow-listed query-param parser."""
+
+    def test_dir_ignored_without_explicit_sort(self) -> None:
+        from eden_web_ui.routes._helpers import parse_list_view
+        from starlette.datastructures import QueryParams
+
+        for qs in ("dir=asc", "sort=garbage&dir=asc", "sort=garbage"):
+            view = parse_list_view(QueryParams(qs))
+            assert view.sort == "priority"
+            assert view.direction == "desc", qs
+
+    def test_explicit_slug_asc_honored(self) -> None:
+        from eden_web_ui.routes._helpers import parse_list_view
+        from starlette.datastructures import QueryParams
+
+        view = parse_list_view(QueryParams("sort=slug&dir=asc"))
+        assert (view.sort, view.direction) == ("slug", "asc")
+
+    def test_explicit_priority_asc_honored(self) -> None:
+        from eden_web_ui.routes._helpers import parse_list_view
+        from starlette.datastructures import QueryParams
+
+        view = parse_list_view(QueryParams("sort=priority&dir=asc"))
+        assert (view.sort, view.direction) == ("priority", "asc")
+
+
+class TestEligibilityResolverMemo:
+    """codex r0: a group-probe transport failure is cached tri-state so N
+    same-group rows cost one DAG walk + one warning increment."""
+
+    def test_failing_group_probe_walks_once(self) -> None:
+        from eden_web_ui.routes._helpers import EligibilityResolver
+
+        class _Store:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def read_worker(self, _wid: str) -> object:
+                return object()
+
+            def resolve_worker_in_group(self, _wid: str, _gid: str) -> bool:
+                self.calls += 1
+                raise RuntimeError("transport blip")
+
+        class _Target:
+            kind = "group"
+            id = "g-x"
+
+        store = _Store()
+        resolver = EligibilityResolver(store, "ui-w")
+        first = resolver.resolve(_Target())
+        second = resolver.resolve(_Target())
+        assert first == (False, True)
+        assert second == (False, True)
+        assert store.calls == 1
+        assert resolver.unresolved_count == 1
+
 
 class TestEligibilityFilter:
     def test_untargeted_is_eligible_with_claim_form(
@@ -347,6 +420,31 @@ class TestRegistrationLadder:
         assert "not registered for this experiment" in body
         # eligible=1 default → all rows ineligible → hidden.
         assert "alpha" not in body
+
+    def test_unregistered_targeted_row_tooltip_says_not_registered(
+        self, exec_client: TestClient, store: InMemoryStore
+    ) -> None:
+        # codex r0: a worker-targeted task viewed by an *unregistered*
+        # worker must show the registration-first reason ("not registered"),
+        # NOT "you are not in its target" inferred from row.target presence.
+        client = _signed_in(exec_client)
+        seed_implement_task(
+            store,
+            slug="alpha",
+            base_sha=BASE_SHA,
+            target=TaskTarget(kind="worker", id="other-w"),
+        )
+        from eden_storage.errors import NotFound
+
+        def _missing(_: str) -> object:
+            raise NotFound("not registered")
+
+        store.read_worker = _missing  # type: ignore[method-assign]
+        resp = client.get("/executor/?eligible=0")
+        body = resp.text
+        assert "alpha" in body
+        assert "You are not registered for this experiment." in body
+        assert "you are not in its target" not in body
 
     def test_registration_transport_failure_marks_unknown(
         self, exec_client: TestClient, store: InMemoryStore

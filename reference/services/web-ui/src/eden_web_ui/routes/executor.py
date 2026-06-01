@@ -47,6 +47,7 @@ from ._helpers import (
     build_artifact_links,
     build_list_links,
     csrf_ok,
+    disabled_claim_reason,
     get_session,
     is_htmx_request,
     parse_list_view,
@@ -470,9 +471,15 @@ def _build_executor_pending_rows(
                 "slug": idea.slug if idea is not None else None,
                 "priority": idea.priority if idea is not None else None,
                 "created_by": idea.created_by if idea is not None else None,
+                "parent_commits": (
+                    list(idea.parent_commits) if idea is not None else []
+                ),
                 "target": task.target,
                 "eligible": eligible,
                 "eligibility_unknown": eligibility_unknown,
+                "eligibility_reason": disabled_claim_reason(
+                    resolver, eligible=eligible, unknown=eligibility_unknown
+                ),
                 "artifact_links": artifact_links,
                 "lineage_link": f"/admin/tasks/{task.task_id}/",
                 "read_failed": read_failed_row,

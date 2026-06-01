@@ -316,6 +316,31 @@ class TestRegistrationLadder:
         assert "not registered for this experiment" in resp.text
         assert "alpha" not in _pending_html(resp.text)
 
+    def test_unregistered_targeted_row_tooltip_says_not_registered(
+        self, client: TestClient, store: InMemoryStore
+    ) -> None:
+        # codex r0/r1 symmetry: an unregistered worker viewing a
+        # worker-targeted evaluation task must see the registration-first
+        # reason, not "you are not in its target".
+        _signed_in(client)
+        seed_evaluate_task(
+            store,
+            slug="alpha",
+            variant_id="va",
+            target=TaskTarget(kind="worker", id="other-w"),
+        )
+        from eden_storage.errors import NotFound
+
+        def _missing(_: str) -> object:
+            raise NotFound("not registered")
+
+        store.read_worker = _missing  # type: ignore[method-assign]
+        resp = client.get("/evaluator/?eligible=0")
+        body = resp.text
+        assert "alpha" in body
+        assert "You are not registered for this experiment." in body
+        assert "you are not in its target" not in body
+
     def test_registration_transport_failure_marks_unknown(
         self, client: TestClient, store: InMemoryStore
     ) -> None:

@@ -289,11 +289,17 @@ def parse_list_view(query_params: Any) -> ListView:
     is ever carried forward (§D.2). ``query_params`` is the Starlette
     ``request.query_params`` multidict (``.get`` returns ``str | None``).
     """
-    sort = query_params.get("sort")
-    if sort not in SORT_KEYS:
-        sort = "priority"
-    direction = query_params.get("dir")
-    if direction not in SORT_DIRECTIONS:
+    raw_sort = query_params.get("sort")
+    sort = raw_sort if raw_sort in SORT_KEYS else "priority"
+    # ``dir`` is only honored when the sort key itself was an explicit,
+    # valid choice — the header links always set the pair together. An
+    # absent/invalid ``sort`` resets the direction to that column's
+    # default, so ``?dir=asc`` (or ``?sort=garbage&dir=asc``) yields the
+    # §D.2 default ``(priority DESC)`` rather than a stray ``priority ASC``.
+    raw_dir = query_params.get("dir")
+    if raw_sort in SORT_KEYS and raw_dir in SORT_DIRECTIONS:
+        direction = raw_dir
+    else:
         direction = _default_direction(sort)
     target_filter = query_params.get("target")
     if target_filter not in TARGET_FILTERS:
@@ -381,7 +387,11 @@ class EligibilityResolver:
     def __init__(self, store: Any, worker_id: str) -> None:
         self._store = store
         self._worker_id = worker_id
-        self._group_cache: dict[str, bool] = {}
+        # group_id -> (eligible, unknown). Caches the transport-unknown
+        # outcome too, so N rows targeting the same group cost one DAG
+        # walk and one warning increment even on the unhealthy path
+        # (decision §2.3 — memoization matters most when probes fail).
+        self._group_cache: dict[str, tuple[bool, bool]] = {}
         self.registered = False
         self.registration_unknown = False
         #: Count of rows whose eligibility could not be resolved due to a
@@ -427,19 +437,43 @@ class EligibilityResolver:
 
         A transport-shaped failure is the only ``unknown`` path; a real
         ``False`` from ``resolve_worker_in_group`` (unknown worker /
-        dangling group ref) is a legitimate "not a member".
+        dangling group ref) is a legitimate "not a member". The full
+        tri-state outcome is cached per ``group_id`` — including the
+        unknown case — so the counter is bumped at most once per group.
         """
-        if group_id in self._group_cache:
-            return self._group_cache[group_id], False
+        cached = self._group_cache.get(group_id)
+        if cached is not None:
+            return cached
         try:
             result = self._store.resolve_worker_in_group(
                 self._worker_id, group_id
             )
         except Exception:  # noqa: BLE001 — transport / auth-shaped
             self.unresolved_count += 1
-            return False, True
-        self._group_cache[group_id] = result
-        return result, False
+            outcome = (False, True)
+        else:
+            outcome = (result, False)
+        self._group_cache[group_id] = outcome
+        return outcome
+
+
+def disabled_claim_reason(
+    resolver: EligibilityResolver, *, eligible: bool, unknown: bool
+) -> str | None:
+    """Classify *why* a row's claim button is disabled, for the tooltip.
+
+    Returns ``None`` for claimable / unknown-eligibility rows (the
+    template handles those copy paths separately). For a definitively
+    ineligible row, distinguishes the registration-first ladder outcome
+    (§D.4): ``"unregistered"`` when the worker is not registered at all,
+    else ``"target"`` (registered but outside the task's target). Picking
+    the tooltip from the resolved outcome — not from ``row.target``
+    presence — avoids telling an unregistered worker "you are not in its
+    target" when the real reason is non-registration.
+    """
+    if eligible or unknown:
+        return None
+    return "unregistered" if not resolver.registered else "target"
 
 
 def build_artifact_links(

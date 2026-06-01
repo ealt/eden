@@ -31,12 +31,10 @@
         <input type="hidden" name="csrf_token" value="{{ session.csrf }}">
         <button type="submit">claim</button>
     </form>
-{% else %}
-    {% if row.target %}
+{% elif row.eligibility_reason == 'target' %}
     <button type="button" disabled title="This task is targeted at {{ row.target.kind }}:{{ row.target.id }}; you are not in its target.">claim</button>
-    {% else %}
+{% else %}
     <button type="button" disabled title="You are not registered for this experiment.">claim</button>
-    {% endif %}
 {% endif %}
 {% endmacro %}
 
@@ -67,6 +65,11 @@
             {% if row.idea_id %}<li>idea: <a href="/admin/ideas/{{ row.idea_id }}/"><code>{{ row.idea_id }}</code></a></li>{% endif %}
             {% if role == 'evaluator' and row.variant_id %}
             <li>variant: <a href="/admin/variants/{{ row.variant_id }}/"><code>{{ row.variant_id }}</code></a>{% if row.variant and row.variant.branch %} &mdash; branch <code>{{ row.variant.branch }}</code>{% endif %}</li>
+            {% endif %}
+            {% if row.parent_commits %}
+            <li>parent commits (cross-reference; not yet a repo-browser link &mdash; <a href="https://github.com/ealt/eden/issues/250">#250</a>):
+                {% for sha in row.parent_commits %}<code>{{ sha[:12] }}</code>{% if not loop.last %}, {% endif %}{% endfor %}
+            </li>
             {% endif %}
         </ul>
         <div class="artifacts">artifacts: {{ _artifact_links(row.artifact_links) }}</div>

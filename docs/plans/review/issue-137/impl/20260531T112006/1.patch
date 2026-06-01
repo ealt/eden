@@ -1,0 +1,54 @@
+--- docs/plans/review/issue-137/impl/20260531T112006/0.md	2026-05-31 11:20:30
++++ docs/plans/review/issue-137/impl/20260531T112006/1.md	2026-05-31 11:30:53
+@@ -33,3 +33,51 @@
+ 
+ ## Review Status
+ Round 0 — awaiting initial review.
++
++---
++
++## Round 1 — addressed codex round-0 feedback
++
++**1. Bug (parse_list_view honored `dir` without a valid `sort`) — FIXED.**
++`parse_list_view` now only honors `dir` when `sort` is an explicit valid
++key; otherwise `direction = _default_direction(sort)`. `?dir=asc` and
++`?sort=garbage&dir=asc` now yield the §D.2 default (priority DESC).
++Tests: `TestListViewParsing` (3 direct unit cases) +
++`TestSort::test_dir_without_valid_sort_keeps_priority_desc` (route-level).
++
++**2. Risk (group memoization skipped the transport-unknown case) — FIXED.**
++`EligibilityResolver._group_cache` now stores the full tri-state
++`(eligible, unknown)` outcome, including transport failures, so N rows
++against the same group cost one DAG walk + one warning increment.
++Test: `TestEligibilityResolverMemo::test_failing_group_probe_walks_once`
++asserts `store.calls == 1` and `unresolved_count == 1` across two probes.
++
++**3. Risk (tooltip inferred reason from `row.target` presence) — FIXED.**
++New `disabled_claim_reason(resolver, *, eligible, unknown)` classifies the
++registration-first ladder outcome (`"unregistered"` vs `"target"`); both
++row-builders attach `eligibility_reason`, and `_claim_cell` selects the
++tooltip from it. An unregistered worker viewing a worker-targeted task now
++sees "You are not registered for this experiment.", not "you are not in its
++target." Test:
++`TestRegistrationLadder::test_unregistered_targeted_row_tooltip_says_not_registered`.
++
++**4. Risk (§D.1/§D.3 deviation: parent-commit text + main-row affordance) —
++parent-commit text FIXED; expand-affordance kept as the no-JS two-row
++`<details>`.**
++- The expansion now renders the parent-commit SHAs as cross-reference text
++  for both roles (`row.parent_commits`: `idea.parent_commits` for the
++  executor, `variant.parent_commits` for the evaluator), abbreviated to 12
++  chars, with an inline note that linking them to a repo browser is deferred
++  to #250 (per §D.3's deliberate deferral).
++- On the "dedicated main-row expand affordance": §D.3 specifies "toggles a
++  `<details>` block spanning the row (same primitive the current preview
++  uses — repurposed)" AND "No JS required for the baseline." A toggle living
++  in a main-row column that controls a *row-spanning* block is not
++  expressible in native HTML without JS (a `<details>`'s `<summary>` and its
++  content must be siblings inside the same element). The implemented
++  two-row pattern — a full-width `<tr class="expand-row"><td colspan="5">`
++  containing the `<details>` whose `<summary>` carries the native disclosure
++  triangle (▸/▾) — is the faithful no-JS realization: the affordance is the
++  native triangle, the block spans the row, and multiple rows can be open at
++  once. This is an implementation-detail choice fully inside §D.3's stated
++  constraints, not a scope change; flagging here rather than re-litigating.
