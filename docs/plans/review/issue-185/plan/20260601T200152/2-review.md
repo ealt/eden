@@ -1,0 +1,5 @@
+Converged. I don’t see any remaining substantive concern in the updated plan.
+
+The last inconsistency is fixed: the top-level deliverables section now matches the detailed CI wiring and includes all three trigger surfaces (`spec/**`, `conformance/**`, and `scripts/**`) ([issue-185-spec-must-coverage.md](/Users/ericalt/Documents/eden-worktrees/plan-issue-185-spec-must-coverage/docs/plans/issue-185-spec-must-coverage.md:27), [issue-185-spec-must-coverage.md](/Users/ericalt/Documents/eden-worktrees/plan-issue-185-spec-must-coverage/docs/plans/issue-185-spec-must-coverage.md:163)). The earlier load-bearing issues are also resolved in the document text: `meta` is defined and scoped, 00/01/10/11 classification is called out explicitly, the stable key uses a non-truncating normalizer rather than `_trim_paragraph`, the ratchet message distinguishes reworded MUSTs from genuine new gaps, and the close-out instructions now match the planful shape required by [`AGENTS.md`](/Users/ericalt/Documents/eden-worktrees/plan-issue-185-spec-must-coverage/AGENTS.md:25).
+
+At this point I’d treat the plan as ready for implementation.

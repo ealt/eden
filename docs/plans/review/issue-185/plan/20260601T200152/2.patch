@@ -1,0 +1,11 @@
+--- docs/plans/review/issue-185/plan/20260601T200152/1.md	2026-06-01 21:04:01
++++ docs/plans/issue-185-spec-must-coverage.md	2026-06-01 21:05:55
+@@ -24,7 +24,7 @@
+ 
+ - A `--check` mode on `conformance-coverage.py` that regenerates in-memory and fails if the committed doc is stale (drift gate).
+ - A `--check-ratchet` mode + a committed baseline of *allowed-uncovered* MUSTs (with per-entry classification + justification) that fails if a **new** uncovered MUST appears beyond the baseline (growth ratchet).
+-- A CI job that runs both gates, triggered on `spec/**` **and** `conformance/**` changes.
++- A CI job that runs both gates, triggered on `spec/**`, `conformance/**`, **and** `scripts/**` changes (all three buckets matter — §8.4).
+ - The regenerated, current `docs/conformance-coverage.md`.
+ - Docs: the AGENTS.md Commands-table entry, a CONTRIBUTING.md pointer refresh, and the gate's self-description in the generated doc's intro.
+ 
