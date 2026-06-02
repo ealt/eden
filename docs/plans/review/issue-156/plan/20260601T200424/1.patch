@@ -1,0 +1,516 @@
+--- docs/plans/review/issue-156/plan/20260601T200424/0.md	2026-06-01 20:04:24
++++ docs/plans/issue-156-experiment-durability-conformance.md	2026-06-01 21:09:54
+@@ -24,22 +24,35 @@
+ re-snapshot → assert-identical*, plus 4–6 scenarios that exercise the invariant
+ across the wire-observable protocol-owned state classes.
+ 
+-### 1.1 The unit-level model already exists — this is its wire-level projection
++### 1.1 The unit-level model partly exists — this is its wire-level projection
+ 
+ [`test_restart_safety.py`](../../reference/packages/eden-storage/tests/test_restart_safety.py)
+-is the proven model. It closes a `SqliteStore` mid-experiment, reopens it against
+-the same file, and asserts:
++is the proven model for *most* of the state classes. It closes a `SqliteStore`
++mid-experiment, reopens it against the same file, and asserts (left column), which
++this chunk re-projects through the chapter-7 wire surface (right column):
+ 
+-| Unit-test assertion | Wire-observable projection (this chunk) |
++| Unit-test assertion (store-API level) | Wire-observable projection (this chunk) |
+ |---|---|
+ | `test_tasks_ideas_variants_and_events_survive` | tasks / ideas / variants / events survive crash-restart, read back through chapter-7 GETs |
+-| `test_claim_token_survives_reopen_and_authorizes_submit` | a `claimed` task stays claimed; the persisted credential authorizes a fresh `submit` post-restart |
++| `test_claim_token_survives_reopen_and_authorizes_submit` | a `claimed` task stays claimed; the persisted claim authorizes a fresh `submit` post-restart |
+ | `test_event_order_total_and_preserved` / `test_event_id_counter_resumes_across_reopen` | the event log replays identically from cursor 0 and the counter resumes (new events append after the preserved prefix) |
+-| `register_worker` persistence + `credential_hash` survival | worker / group registry survives; a previously-issued worker bearer still authenticates |
+ 
+-The conformance scenarios are these same assertions driven **only** through the
+-chapter-7 HTTP binding, with the restart performed out-of-band by the adapter.
++**One scenario is NOT a re-projection of an existing unit test — it is a new
++wire-level assertion this chunk introduces.** The restart-safety suite proves the
++*claim token* survives reopen and authorizes a store-API `submit`, and
++[`test_workers.py`](../../reference/packages/eden-storage/tests/test_workers.py)
++proves `register_worker` persists labels — but **neither proves that a worker's
++registration credential (`credential_hash`) survives reopen and that the
++previously-issued bearer still authenticates through the chapter-7 §13 auth
++middleware**. Scenario 3 (§9) is therefore a genuinely new assertion at *both*
++levels — surfaced here so it is not mis-sold as "already proven." If the impl
++finds the credential-hash-survival path is in fact untested at the unit level
++too, filing a parallel `eden-storage` unit test is a reasonable same-chunk add
++(not load-bearing for the conformance assertion, which stands on its own).
+ 
++The other scenarios are the existing store-API assertions driven **only** through
++the chapter-7 HTTP binding, with the restart performed out-of-band by the adapter.
++
+ ### 1.2 The IUT-contract restriction bounds what is assertable (chapter 9 §6)
+ 
+ Per [`spec/v0/09-conformance.md`](../../spec/v0/09-conformance.md) §6, the
+@@ -86,13 +99,14 @@
+    deferred to operations smokes. The conformance level asserts the §13
+    projection the chapter-7 binding can observe.
+ 
+-2. **`crash_restart` is an *optional* adapter capability, skip-if-absent.**
+-   Mirrors the control-plane optionality pattern
++2. **`crash_restart` is an *optional* adapter capability, skip-if-absent —
++   which forces durability to be a *parallel optional level*, not mandatory v1
++   (see decision 5).** Mirrors the control-plane / checkpoint optionality pattern
+    ([`scenarios/conftest.py`](../../conformance/scenarios/conftest.py)
+-   `control_plane_base_url` → `pytest.skip`). An IUT whose adapter does not
+-   implement the capability skips the durability group rather than failing it —
+-   the capability is a test-harness convenience, not a normative wire contract.
+-   (Decision to surface: see §3 D.1 for the Protocol shape.)
++   `control_plane_base_url` → `pytest.skip`; the checkpoint receiver fixture). An
++   IUT whose adapter does not implement the capability skips the durability group.
++   The capability is a test-harness lifecycle convenience, not a normative wire
++   contract. (Protocol shape: §3 D.1.)
+ 
+ 3. **The reference adapter switches from `:memory:` to a per-instance
+    file-backed SQLite.** A restart cannot recover in-memory state, so the
+@@ -110,28 +124,48 @@
+    durability scenarios assert *verbatim preservation*, which is a distinct (and
+    in places stricter) contract than the checkpoint round-trip. See §3 D.6.
+ 
+-5. **Seed via direct wire writes; keep the group at v1.** The §5 placeholder
+-   sits in the **v1** table, so the durability group stays v1 (every v1 IUT must
+-   pass it — maximal coverage). Representative state is seeded through v1 wire
+-   surfaces (tasks, claims, workers, groups, events, dispatch_mode,
+-   experiment-state). Ideas/variants are seeded through their direct
+-   `POST /ideas` / `POST /variants` endpoints (the same endpoints the parallel
+-   v1+checkpoints round-trip group already drives) to make the snapshot
+-   representative; the assertion keys off §13 (state survives), not off role
+-   semantics. **Surfaced for codex** in case it reads idea/variant seeding as
+-   role-level — fallback is to drop idea/variant from the strict-v1 scenarios
+-   and keep them in a v1+roles-tagged scenario (§9 notes the split point).
++5. **Durability becomes a new *parallel optional level*, `v1+durability` — NOT
++   mandatory v1.** This reverses an earlier draft that kept the group in the v1
++   table. The two facts are irreconcilable: a group cannot be both "mandatory for
++   every v1 IUT" *and* "skipped when the adapter can't restart" (decision 2) — a
++   thin "point at an already-running IUT" adapter, which chapter 9 §6 explicitly
++   blesses, genuinely cannot crash-restart its subject, so it would skip the
++   whole group and still "pass" v1, defeating the gap this chunk closes. The
++   resolution is the precedent the spec already set for `v1+checkpoints` and
++   `v1+multi-experiment`: a **parallel level** an IUT MAY claim, gated on an
++   optional capability, where skip-if-unsupported is correct and expected.
++   `v1+durability` extends the v1 vocabulary with 01-concepts §13; the §13 MUST
++   *itself* still binds every conforming deployment (it is a universal
++   deployment MUST), but conformance-suite *verification* of it requires the
++   out-of-band restart hook, so the suite offers it as a claimable level — the
++   same shape as chapter 9 §3's acknowledgement that the §1.3 atomicity MUST
++   binds but is not black-box-certified. This moves the §5 placeholder row out of
++   the v1 table into a new `v1+durability` sub-table and adds the level to
++   §1/§3/§4/§7 (see §5 spec impact). **This is the load-bearing scope decision;
++   prominently surfaced for operator review.**
+ 
+-6. **The chunk also discharges (or trims) the lifecycle row's unbacked
+-   restart claim.** Chapter 9 §5's v1+roles "Experiment lifecycle" row already
+-   lists "State survives store restart" in its scope — but
++6. **Seed via direct wire writes.** Representative state is seeded through wire
++   surfaces (tasks, claims, workers, groups, events, experiment-state).
++   Ideas/variants are seeded through their direct `POST /ideas` / `POST /variants`
++   endpoints (the same endpoints the parallel v1+checkpoints round-trip group
++   already drives). `dispatch_mode` is **excluded** from the snapshot: chapter 7
++   makes `GET /v0/experiments/{E}/dispatch_mode` a **MAY** ("v0 does not require
++   it"), so a conforming IUT need not expose the read surface and the durability
++   snapshot cannot assert it universally (§3 D.5). `GET /state` IS required (ops
++   table, `read_experiment_state`), so terminated-experiment-state durability is
++   assertable.
++
++7. **The chunk also trims the lifecycle row's unbacked restart claim.** Chapter
++   9 §5's v1+roles "Experiment lifecycle" row already lists "State survives store
++   restart" in its scope — but
+    [`test_experiment_lifecycle.py`](../../conformance/scenarios/test_experiment_lifecycle.py)
+    contains **no** restart assertion (verified: no `restart`/`reopen`/`survive`
+    token in the file). That is a pre-existing scope-claim drift. This chunk
+-   resolves it: a "terminated-experiment durability" durability scenario backs
+-   the survival claim, and the lifecycle row's "State survives store restart"
+-   clause is **trimmed** (consolidating all restart-durability assertions under
+-   the durability group as the single source of truth). See §5, §9.
++   resolves it: the terminated-experiment durability scenario (now under
++   `v1+durability`) backs the survival claim, and the lifecycle row's "State
++   survives store restart" clause is **trimmed** so the v1+roles row no longer
++   over-promises — the backing assertion lives in the optional `v1+durability`
++   level as the single source of truth. See §5, §9.
+ 
+ ## 3. Design
+ 
+@@ -261,14 +295,19 @@
+ 
+ ```python
+ def capture_wire_state(client: WireClient) -> dict[str, Any]:
+-    """Snapshot every wire-observable protocol-owned state class.
++    """Snapshot every REQUIRED wire-observable protocol-owned state class.
+ 
+-    Reads (all chapter-7 GETs): /tasks (+ each task's claim), /ideas,
+-    /variants, /workers, /groups, /events (from cursor 0), /dispatch_mode,
++    Reads (all chapter-7 GETs that v0 REQUIRES): /tasks (+ each task's
++    claim), /ideas, /variants, /workers, /groups, /events (from cursor 0),
+     experiment /state. Returns a dict keyed by class, with lists sorted by
+     id so the comparison is order-independent where the spec does not
+     mandate order, and order-preserving for /events (which the spec DOES
+     order — chapter 05 §2.2).
++
++    NOTE: dispatch_mode is deliberately NOT read — chapter 7 makes
++    GET /dispatch_mode a MAY ("v0 does not require it"), so it is not a
++    universal read surface and cannot be part of an assertion that must
++    hold for any conforming IUT.
+     """
+ ```
+ 
+@@ -276,6 +315,12 @@
+ for the capstone scenario, and targeted per-class equality for the focused
+ scenarios. Care points the helper must encode (surfaced for review):
+ 
++- **Read only REQUIRED surfaces.** Every GET the snapshot issues must be a
++  v0-mandated endpoint, else the assertion is not universal. `GET /dispatch_mode`
++  is MAY (excluded above); `GET /state`, `/tasks`, `/ideas`, `/variants`,
++  `/workers`, `/groups`, `/events` are all required (ops table / §6.2 / §8). If a
++  future read surface the snapshot wants is MAY-level, gate that read behind a
++  capability probe rather than assuming it.
+ - **Event log is order-significant**; everything else compares as id-keyed sets
+   (the wire does not promise list order on `/tasks` etc.).
+ - **No normalization.** Unlike the checkpoint round-trip helper, the durability
+@@ -290,7 +335,7 @@
+ The single most important contrast to keep straight, because a reviewer who
+ pattern-matches to the checkpoint round-trip group will get it backwards:
+ 
+-| | v1+checkpoints round-trip | v1 durability (this chunk) |
++| | v1+checkpoints round-trip | v1+durability (this chunk) |
+ |---|---|---|
+ | Claimed task | normalized → `pending` (§8) | **preserved** — stays `claimed`, same claimant + expiry |
+ | Worker credential | **reissued** (new token on import, §9) | **preserved** — same `credential_hash`; old bearer still valid |
+@@ -303,16 +348,27 @@
+ *remove* the normalization would silently weaken the durability assertion — call
+ this out in the scenario docstrings.
+ 
+-### D.7 Conformance level placement
++### D.7 Conformance level placement — `v1+durability` (parallel, optional)
+ 
+-The durability group is **v1** (§2 decision 5): it sits in the §5 v1 table and
+-every v1 IUT must pass it. The seed path stays within v1 wire surfaces; the
+-idea/variant seeding (used to make the snapshot representative) rides the same
+-direct-POST endpoints the parallel v1+checkpoints group already exercises. The
+-plan flags (§9) the one scenario that leans hardest on idea/variant seeding so
+-codex can rule on whether it should be v1 or carry a `pytest.mark` for a
+-roles-gated subset.
++The durability group is a **new parallel optional level, `v1+durability`** (§2
++decision 5), NOT mandatory v1. It sits in its own §5 sub-table (alongside the
++v1+checkpoints / v1+multi-experiment sub-tables) and is claimable by IUTs whose
++adapter exposes the `crash_restart` capability; IUTs without it simply don't
++claim the level and the scenarios skip (decision 2). This is the only coherent
++placement given an out-of-band capability is required to drive the scenarios at
++all — the same reason checkpoints and multi-experiment are parallel levels rather
++than folded into mandatory v1.
+ 
++The level **extends** the v1 vocabulary (it reads the v1 task-store / event-log /
++registry surfaces) and adds 01-concepts §13 as its keying invariant. The seed
++path uses wire surfaces only; idea/variant seeding rides the same direct-POST
++endpoints the v1+checkpoints round-trip group already exercises — and because the
++level is no longer claiming "mandatory v1," the earlier v1-vs-v1+roles worry about
++idea/variant seeding dissolves: `v1+durability` may freely read/seed any required
++v0 wire surface. The §13 MUST itself remains a universal deployment obligation
++(every conforming deployment MUST satisfy it); the level is just the suite's
++*verification* of its wire-observable projection for IUTs that expose the hook.
++
+ ## 4. Scope
+ 
+ **In scope:**
+@@ -326,13 +382,15 @@
+ - 4–6 durability scenarios in
+   [`conformance/scenarios/test_experiment_durability.py`](../../conformance/scenarios/test_experiment_durability.py),
+   replacing the single skipped placeholder (§9).
+-- Spec edits: chapter 9 §5 durability-row prose (scope to the wire-observable
+-  projection under process restart, defer the rest); chapter 9 §3 vocabulary-list
+-  fix (add 01-concepts §13); chapter 9 §6 informative note on the optional
++- Spec edits (chapter 9): add the `v1+durability` parallel level to §1, §3, §4;
++  move the "Experiment durability" placeholder row out of the v1 §5 table into a
++  new `v1+durability` §5 sub-table with authored scope (wire-observable projection
++  under process restart, deferring the rest); §6 informative note on the optional
+   restart capability; trim the lifecycle row's unbacked "State survives store
+-  restart" clause (§5).
+-- `check_citations` continues to pass (the durability group's §5 row already
+-  cites 01 §13, which carries a MUST — §6 verifies this).
++  restart" clause; §7 reference-posture line ("v1+durability after this chunk").
++- `check_citations` continues to pass (the durability group's §5 row — in its new
++  sub-table — still cites 01 §13, which carries a MUST; the group↔citation mapping
++  is unchanged by which sub-table the row lives in — §7 verifies this).
+ - CHANGELOG `[Unreleased]` entry + `docs/roadmap.md` pointer at impl-completion.
+ 
+ **Out of scope (deferred — file as GH issues per the CLAUDE.md deferral rule if a
+@@ -354,57 +412,81 @@
+   correctness scenario, not a latency one.
+ - **Multi-experiment / control-plane lease durability across restart.** A
+   v1+multi-experiment concern (chapter 11 lease state); if worth asserting, it is
+-  a parallel-level durability scenario, not part of the v1 group. Note for a
+-  possible follow-up.
++  a separate cross-level durability scenario, not part of `v1+durability`. Note
++  for a possible follow-up.
+ 
+ ## 5. Spec / contract impact
+ 
+ All edits are in [`spec/v0/09-conformance.md`](../../spec/v0/09-conformance.md)
+ plus a one-clause trim; **no JSON-schema, Pydantic-model, or wire-binding field
+ changes** (the chapter-7 surface is unchanged — durability is asserted entirely
+-through existing GETs + an out-of-band restart).
++through existing REQUIRED GETs + an out-of-band restart). The dominant edit is
++adding the new `v1+durability` parallel level, which touches the same sections
++the prior parallel levels (`v1+checkpoints`, `v1+multi-experiment`) touched.
+ 
+-1. **§5 durability-row prose (rewrite the placeholder row).** Replace the
+-   "deferred to a follow-up chunk" text with the now-authored scope, scoped to
+-   the wire-observable projection under process restart, explicitly deferring
+-   host-restart / substrate-loss / git-side artifacts. Model the wording on the
+-   v1+roles+integrator row (line 36 / lines 91–92), which already scopes a group
+-   to "the wire-observable projection of …, the [off-wire bits] are not asserted
+-   by a wire-only suite." Citation stays `01-concepts.md §13`.
+-
+-2. **§3 assertion-vocabulary list (add 01-concepts §13).** §3 currently says
+-   "Every assertion in the v1 suite is keyed off a normative MUST in 02 / 04 /
+-   05 / 07 / 08." The durability group keys off **01-concepts §13**, which is not
+-   in that list — a latent inconsistency the moment the scenarios land. Amend the
+-   sentence to name 01-concepts §13 as the one v1 assertion source outside the
+-   task-store/wire chapters, with a half-line explaining why (the *aggregate*
+-   invariant lives in concepts; its *per-store components* live in 08 §3, which
+-   IS already in the vocabulary). This is the spec-consistency fix the
+-   CLAUDE.md inter-chapter-restatement discipline calls for.
++1. **§1 + §4 — declare the `v1+durability` level.** §1 lists the levels the suite
++   ships ("v1, v1+roles, v1+roles+integrator, v1+checkpoints, v1+multi-experiment")
++   and states they may be claimed independently; add `v1+durability` as another
++   parallel level, claimable by IUTs that expose the restart hook, and note its
++   §13 keying. §4 ("Conformance levels") gains a `v1+durability` bullet describing
++   its coverage (wire-observable projection of §13 under process restart) — modeled
++   on the existing `v1+checkpoints` / `v1+multi-experiment` bullets, including the
++   "MUSTs that depend on off-wire artifacts (git-side, artifact bytes, host
++   restart) are NOT asserted" carve-out (mirroring the v1+roles+integrator §4 line
++   and the v1+checkpoints off-wire note).
+ 
+-3. **§6 informative adapter prose (one paragraph).** Document the optional
+-   `crash_restart` capability: an IUT MAY implement it for the durability
+-   scenarios; IUTs that don't cause the group to skip. Frame it as a lifecycle
+-   primitive of the same kind as start/stop, with all *assertions* remaining
+-   chapter-7 reads (§1.3). **This is an informative addition consistent with §6,
+-   NOT a change to the §6 IUT-contract boundary** (the "chapter-7 binding is the
+-   only contract we *assert* against" statement is untouched). Per the task's
+-   stop conditions, a §6 *boundary* change would require surfacing to the
+-   operator before finalizing — this edit is deliberately *not* that; flagged
+-   here so review can confirm the distinction holds.
++2. **§3 assertion vocabulary — add 01-concepts §13 under the new level.** §3
++   currently says "Every assertion in the v1 suite is keyed off a normative MUST
++   in 02 / 04 / 05 / 07 / 08" and then extends per level. Add a clause: "The
++   v1+durability suite extends this to include [`01-concepts.md`](01-concepts.md)
++   §13" — parallel to how the checkpoint / multi-experiment clauses extend the
++   vocabulary to chapters 10 / 11. A half-line notes the *aggregate* invariant
++   lives in concepts while its *per-store components* live in 08 §3 (already in
++   the v1 vocabulary). This closes the latent inconsistency (durability keys off a
++   chapter not otherwise in the assertion-source list) the moment the scenarios
++   land.
+ 
+-4. **§5 lifecycle-row trim (consolidation).** Remove "State survives store
++3. **§5 — move the placeholder row into a new `v1+durability` sub-table with
++   authored scope.** Remove the "deferred to a follow-up chunk" placeholder row
++   from the v1 table; add a `v1+durability scenario group` sub-table (parallel to
++   the v1+checkpoints / v1+multi-experiment sub-tables) whose "Experiment
++   durability" row carries the now-authored scope, scoped to the wire-observable
++   projection under process restart and explicitly deferring host-restart /
++   substrate-loss / git-side artifacts. Model the wording on the
++   v1+roles+integrator row's "the wire-observable projection of …; the [off-wire
++   bits] are not asserted by a wire-only suite." Citation stays `01-concepts.md
++   §13` (so `check_citations` still resolves the group).
++
++4. **§6 informative adapter prose (one paragraph).** Document the optional
++   `crash_restart` capability: an IUT MAY implement it to claim `v1+durability`;
++   IUTs that don't cause the group to skip (same shape as the checkpoint /
++   control-plane optionality). Frame it as a lifecycle primitive of the same kind
++   as start/stop, with all *assertions* remaining chapter-7 reads (§1.3). **This
++   is an informative addition consistent with §6, NOT a change to the §6
++   IUT-contract boundary** (the "chapter-7 binding is the only contract we
++   *assert* against" statement is untouched). Per the task's stop conditions, a §6
++   *boundary* change would require surfacing to the operator before finalizing —
++   this edit is deliberately *not* that; flagged here so review can confirm the
++   distinction holds.
++
++5. **§7 reference posture — add the level.** Add "v1+durability after this chunk"
++   to the reference-impl level-progression sentence, parallel to the existing
++   "v1+checkpoints after chunk 12b" line. CI's `conformance` job runs the
++   reference adapter, which exposes `crash_restart`, so the level is exercised.
++
++6. **§5 lifecycle-row trim (consolidation).** Remove "State survives store
+    restart" from the v1+roles "Experiment lifecycle" row scope (it is currently
+-   unbacked — §2 decision 6). The terminated-experiment durability scenario in
+-   this chunk's group is the single backing assertion; cross-reference it in the
+-   durability row rather than duplicating the claim in two §5 rows (the
+-   inter-chapter/​intra-chapter restatement-drift trap).
++   unbacked — §2 decision 7). The terminated-experiment durability scenario (now
++   under `v1+durability`) is the single backing assertion; do not duplicate the
++   claim across two §5 rows (the restatement-drift trap).
+ 
+-**Spec-amendment stop-condition check:** none of edits 1–4 changes the chapter 9
+-§6 IUT-contract boundary (the chapter-7-only-contract rule). Edit 3 *adds to* the
+-informative adapter surface, consistent with §6. If review concludes edit 3 reads
+-as a §6 boundary change, **stop and surface to the operator** before finalizing
+-(per the task's stop conditions).
++**Spec-amendment stop-condition check:** none of edits 1–6 changes the chapter 9
++§6 IUT-contract boundary (the chapter-7-only-contract rule). Edits 1–5 add a
++parallel level using the exact pattern the spec already established for
++v1+checkpoints / v1+multi-experiment; edit 4 *adds to* the informative adapter
++surface, consistent with §6. If review concludes edit 4 reads as a §6 boundary
++change, **stop and surface to the operator** before finalizing (per the task's
++stop conditions).
+ 
+ ## 6. Naming map
+ 
+@@ -442,12 +524,17 @@
+   code change** — the existing placeholder already establishes the group↔citation
+   mapping; we add real tests under the same group.
+ - **No new `CONFORMANCE_GROUP`** — the "Experiment durability" group already
+-  exists in §5; we populate it.
+-- **Level**: v1 (§3 D.7). CI's `conformance` job already runs the v1 group; the
+-  new scenarios run automatically. The skip on the placeholder is removed.
++  exists in §5; we populate it. The group's §5 row moves from the v1 table to the
++  new `v1+durability` sub-table, but `check_citations` maps each scenario file to
++  its group by the `CONFORMANCE_GROUP` constant + cited section, independent of
++  which §5 sub-table the row lives in, so the mapping is unaffected.
++- **Level**: `v1+durability` (parallel, optional — §3 D.7). CI's `conformance`
++  job runs the reference adapter, which exposes `crash_restart`, so the scenarios
++  run for the reference impl; the placeholder skip is removed.
+ - **The `_meta/test_self_validation.py`** harness-teeth check is unaffected (the
+   misbehaving adapter does not implement `crash_restart`, so it skips the
+-  durability group cleanly — confirm in validation).
++  durability group cleanly — confirm in validation). Any other adapter without
++  the capability skips the level, which is the intended `v1+durability` semantics.
+ 
+ ## 8. Migration / cleanup
+ 
+@@ -459,7 +546,7 @@
+ - **Rewrite** the reference adapter's `:memory:` store URL to file-backed
+   (§3 D.2); delete the "conformance does not test durability" docstring line that
+   this chunk falsifies.
+-- **Trim** the lifecycle row's unbacked restart clause (§5 edit 4) rather than
++- **Trim** the lifecycle row's unbacked restart clause (§5 edit 6) rather than
+   leaving a duplicate claim.
+ - **No** dual-mode `:memory:`/file adapter fork unless the §3 D.2 perf gate
+   forces the subclass alternative — and if it does, that is a deliberate split,
+@@ -490,37 +577,43 @@
+    prefix (counter resumed). Wire-level `test_event_order_total_and_preserved` +
+    `test_event_id_counter_resumes_across_reopen`.
+ 
+-3. **Worker/group registry durability + credential survival.** Register an extra
+-   worker and group beyond the default set. Crash-restart. Assert `/workers`,
+-   `/groups` intact; and the pre-restart-issued worker bearer still authenticates a claim
+-   post-restart (persisted `credential_hash`). Wire-level worker-persistence +
+-   credential-hash survival.
++3. **Worker/group registry durability + credential survival** *(new assertion —
++   not a re-projection of an existing unit test, §1.1)*. Register an extra worker
++   and group beyond the default set. Crash-restart. Assert `/workers`, `/groups`
++   intact; **and the pre-restart-issued worker bearer still authenticates a claim
++   post-restart** — exercising that the `credential_hash` survives reopen *and*
++   the chapter-7 §13 auth middleware re-validates the old bearer against it. The
++   registry-persistence half mirrors the unit suite; the bearer-survival-through-
++   the-wire half is the genuinely new contract this scenario introduces.
+ 
+ 4. **Idea / variant durability.** Seed an idea (→ `ready`) and a `starting`
+    variant carrying a `commit_sha`. Crash-restart. Assert idea state / slug /
+    `parent_commits` / `artifacts_uri` and variant status / `commit_sha` /
+    `idea_id` survive. Wire-level `test_tasks_ideas_variants_and_events_survive`.
+-   **This is the scenario that leans on direct `POST /ideas` / `POST /variants`
+-   seeding (§2 decision 5 / §3 D.7) — the v1-vs-v1+roles boundary call; surfaced
+-   for codex.**
++   Seeds via the direct `POST /ideas` / `POST /variants` endpoints the
++   v1+checkpoints round-trip group already drives — fine at `v1+durability`, which
++   extends the v1 read/seed surface (§3 D.7).
+ 
+-5. **Experiment-state + dispatch_mode durability.** PATCH a non-default
+-   `dispatch_mode`; terminate the experiment. Crash-restart. Assert
+-   `/dispatch_mode` persists; experiment `/state` still `terminated`; a
+-   `create_task` against the terminated experiment is rejected with
+-   `409 eden://error/illegal-transition`. **This scenario discharges the
+-   lifecycle row's trimmed "State survives store restart" clause** (§5 edit 4).
++5. **Terminated-experiment-state durability.** Terminate the experiment. Crash-
++   restart. Assert experiment `/state` (the required `read_experiment_state`
++   endpoint) is still `terminated`; a `create_task` against the terminated
++   experiment is rejected with `409 eden://error/illegal-transition`. **This
++   scenario discharges the lifecycle row's trimmed "State survives store restart"
++   clause** (§5 edit 6). *`dispatch_mode` durability is deliberately NOT asserted
++   here — `GET /dispatch_mode` is MAY, so it is not a universal read surface (§2
++   decision 6 / §3 D.5).*
+ 
+ 6. **Full representative-state snapshot/replay** *(capstone)*. Drive a
+    representative mix (workers, groups, tasks in mixed states incl. one claimed,
+-   an idea + variant, events, a dispatch_mode patch). `capture_wire_state(pre)`,
++   an idea + variant, events; terminated or running). `capture_wire_state(pre)`,
+    crash-restart, `capture_wire_state(post)`, assert deep equality (verbatim — no
+-   normalization, §3 D.6). This is the aggregate §13 assertion; scenarios 1–5 are
+-   the focused per-class projections that localize a failure.
++   normalization, §3 D.6). Reads only required surfaces (no `dispatch_mode`). This
++   is the aggregate §13 assertion; scenarios 1–5 are the focused per-class
++   projections that localize a failure.
+ 
+-(6 scenarios; the issue's "4–6". If codex rules scenario 4 must be v1+roles, the
+-group still ships 5 strict-v1 scenarios and scenario 4 carries the role-level
+-tag — coverage of the §5 row is preserved either way.)
++(6 scenarios; the issue's "4–6". All sit at the single `v1+durability` level — no
++v1-vs-v1+roles split is needed now that the level is parallel/optional rather than
++mandatory v1.)
+ 
+ ## 10. Files to touch
+ 
+@@ -542,9 +635,10 @@
+ 
+ **Spec:**
+ 
+-- [`spec/v0/09-conformance.md`](../../spec/v0/09-conformance.md) — §5 durability
+-  row rewrite; §3 vocabulary-list fix; §6 informative restart-capability note;
+-  §5 lifecycle-row trim (§5 edits 1–4).
++- [`spec/v0/09-conformance.md`](../../spec/v0/09-conformance.md) — add the
++  `v1+durability` level to §1/§3/§4; move + author the §5 durability row into a new
++  sub-table; §6 informative restart-capability note; §7 reference-posture line;
++  §5 lifecycle-row trim (§5 edits 1–6).
+ 
+ **Docs:**
+ 
+@@ -580,17 +674,30 @@
+   claimed→pending normalization + credential reissue, silently weakening the
+   durability assertion. The scenario docstrings must state "verbatim, no
+   normalization."
++- **New-level coherence is the load-bearing decision (§2 decision 5 / §3 D.7).**
++  Durability is `v1+durability` (parallel, optional), NOT mandatory v1 — because
++  skip-if-no-restart-hook and mandatory-v1 are irreconcilable. Implementers must
++  thread the level consistently through §1/§3/§4/§5/§7 of chapter 9; a half-done
++  edit that leaves the row in the v1 table reintroduces the incoherence codex
++  round-0 flagged. **Surfaced prominently for operator review.**
++- **Only required read surfaces in the snapshot (§3 D.5).** `GET /dispatch_mode`
++  is MAY — excluded. Any future addition to `capture_wire_state` must confirm the
++  endpoint is v0-required before adding it, else the assertion stops being
++  universal. The §11 canary: scenario 5 reads `/state` (required), not
++  `/dispatch_mode`.
+ - **§3 vocabulary inconsistency is silent (§5 edit 2).** `check_citations`
+   passes with a 01 §13 citation regardless of §3's prose, so a missed §3 fix
+   would not fail CI — only a human reading §3 would catch the drift. Do not skip
+   edit 2 on the grounds that "the gate is green."
+-- **§6 boundary stop-condition (§5 edit 3).** If review reads the restart-capability
++- **Credential-survival is a NEW assertion (§1.1 / §9 scenario 3).** Don't assume
++  the unit suite already proves bearer-reuse-through-the-wire; it doesn't. Treat
++  scenario 3's auth-after-restart leg as a first-class new contract — and verify
++  the reference impl actually re-validates the persisted `credential_hash` (if it
++  regenerated tokens on reopen, this scenario would catch a real durability bug,
++  which is the point).
++- **§6 boundary stop-condition (§5 edit 4).** If review reads the restart-capability
+   note as a §6 IUT-contract boundary change, **stop and surface to the operator**
+   before finalizing (task stop condition).
+-- **v1 vs v1+roles for scenario 4 (§3 D.7 / §9).** Idea/variant seeding may read
+-  as role-level to codex; the fallback (role-tag scenario 4) preserves §5
+-  coverage either way, but the level claim must be internally consistent —
+-  don't ship a "v1" group whose seeding silently needs roles.
+ - **xdist interaction.** Each durability scenario spawns its own restartable IUT
+   with its own temp SQLite file; under `-n auto` the files must be per-worker /
+   per-scenario unique (the adapter owns `mkdtemp`, so they are). Confirm no
+@@ -627,8 +734,9 @@
+ 
+ **Wave 3 — spec + docs.**
+ 
+-- §5 durability-row rewrite; §3 vocabulary fix; §6 restart-capability note; §5
+-  lifecycle-row trim; glossary line if warranted.
++- Add the `v1+durability` level to §1/§3/§4; move + author the §5 durability row
++  into its new sub-table; §6 restart-capability note; §7 reference-posture line;
++  §5 lifecycle-row trim; glossary line if warranted (§5 edits 1–6).
+ 
+ *Gate:* `python3 scripts/spec-xref-check.py`, `markdownlint-cli2`,
+ `python3 scripts/check-rename-discipline.py`.

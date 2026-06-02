@@ -1,0 +1,247 @@
+--- docs/plans/review/issue-156/plan/20260601T200424/1.md	2026-06-01 21:10:02
++++ docs/plans/issue-156-experiment-durability-conformance.md	2026-06-01 21:15:18
+@@ -202,6 +202,21 @@
+ informative prose gains one paragraph documenting the optional capability (§5
+ spec impact).
+ 
++**Fixture-ownership decision (decided, not deferred).** The base `iut` fixture
++([`plugin.py`](../../conformance/src/conformance/harness/plugin.py) ~L216) keeps
++its `adapter` instance *local* and yields only an `IutHandle` — downstream
++fixtures never see the adapter object, so they cannot call `crash_restart()` on
++it. Rather than widen the shared base fixtures (which every scenario depends on),
++the durability fixture **owns its own adapter lifecycle**, patterned exactly on
++the existing [`receiver_iut`](../../conformance/scenarios/conftest.py) fixture:
++it instantiates `iut_adapter_factory()` itself, calls `start(...)`, seeds its own
++default workers, holds the adapter reference so it can call `crash_restart()`,
++and tears the adapter down in its own `finally`. This keeps the change **off** the
++shared `iut` / `wire_client` / `default_workers` path entirely — `plugin.py` is
++NOT touched. (The rejected alternative — exposing the adapter through the base
++`iut` fixture — would touch a session-critical fixture used by all ~56 scenarios
++for no benefit the self-owned fixture doesn't already give.)
++
+ ### D.2 Persistent substrate for the reference adapter
+ 
+ The reference adapter
+@@ -219,29 +234,52 @@
+ dual-mode branching — every scenario gets a durable store; restart is "kill +
+ re-spawn against the same file."
+ 
+-Rationale and the tradeoff to weigh in review:
++Rationale and the tradeoff to weigh in review. Now that durability is an
++*optional* level (not mandatory v1), the "is it worth changing the substrate for
++the whole suite?" question carries more weight — so the rationale below is the
++decisive part, not a footnote:
+ 
+-- **Pro:** one code path; no per-scenario mode flag; mirrors how
+-  `eden-storage`'s own parametrized conformance tests run against `SqliteStore`
+-  (a file) rather than memory.
+-- **Con:** every one of the ~56 existing scenario files now uses a file-backed
+-  store instead of `:memory:`. For the tiny per-scenario datasets the SQLite
+-  cost is negligible, but this perturbs the whole suite's behavior, so it MUST
++- **The decisive reason is the IUT-agnostic fixture-ownership model (D.1/D.4).**
++  The durability fixture drives whatever adapter `--iut-adapter` selects (so a
++  third-party IUT's durability is tested the same way). For the reference adapter
++  to be drivable, the `ReferenceAdapter` *class itself* must natively support
++  `crash_restart` against a persistent store — the fixture cannot special-case
++  "if this is the reference adapter, swap in a durable subclass" without breaking
++  the works-for-any-adapter property. A per-instance "durable mode" flag is not
++  available either: `start()`'s signature is part of the `IutAdapter` Protocol and
++  the factory just calls the class. So making `ReferenceAdapter` uniformly
++  file-backed is the change that keeps the fixture IUT-agnostic with a single code
++  path.
++- **Cost is a measured-negligible perf delta.** Every existing scenario then uses
++  a temp SQLite file instead of `:memory:`. For the tiny per-scenario datasets
++  this is near-free, and it mirrors how `eden-storage`'s own parametrized
++  conformance tests already run against a file-backed `SqliteStore`. It MUST still
+   be validated: measure `uv run pytest -q conformance/ -n auto` wall-clock
+-  before/after; if the regression is material, fall back to the alternative.
+-- **Alternative (durable-only subclass):** keep `:memory:` as the default
+-  `ReferenceAdapter`; add a `DurableReferenceAdapter(ReferenceAdapter)` that
+-  overrides the store URL and implements `crash_restart`, selected by the
+-  durability scenarios via a dedicated fixture. Downside: a non-reference IUT
+-  pointed at via `--iut-adapter` only gets the durability scenarios if *its*
+-  adapter implements `crash_restart` anyway, so the subclass split only helps
+-  the reference adapter — and it reintroduces dual-mode. **Recommend
+-  always-file-backed; surface the subclass option for the operator.**
++  before/after.
++- **Fallback if the perf gate regresses — durable-only subclass.** Keep `:memory:`
++  default; add `DurableReferenceAdapter(ReferenceAdapter)` overriding the store
++  URL + implementing `crash_restart`, and give the durability fixture a small
++  reference-aware indirection (use `DurableReferenceAdapter` when the configured
++  adapter *is* `ReferenceAdapter`, else the configured adapter as-is). This
++  reintroduces dual-mode and a reference special-case, which is exactly why it is
++  the fallback, not the default — but it bounds the substrate change to the
++  optional level if the whole-suite delta proves material.
+ 
+ The `:memory:`-for-speed comment in the adapter docstring is a v0 choice with no
+ external users; per the CLAUDE.md no-backwards-compat-shims posture we rewrite it
+ rather than preserve a memory/file fork.
+ 
++**Companion control-plane subprocess on restart.** `ReferenceAdapter.start()`
++also spawns a `ControlPlaneSubprocess` and returns its URL on the handle. A naive
++`crash_restart` that just re-runs the whole `start()` path would either leak a
++second control-plane process or rotate `control_plane_base_url` needlessly. The
++durability scenarios do not exercise chapter 11, so `crash_restart` **restarts
++only the task-store-server** (SIGKILL + re-spawn against the same store file) and
++**preserves the existing control-plane subprocess + its URL** on the fresh handle.
++The re-spawn path is therefore a *factored subset* of `start()` (the
++task-store-server spawn + port-read + stderr-drain), not a full `start()` re-call
++— refactor `start()` so that subset is a private helper both paths share.
++
+ ### D.3 Crash semantics — SIGKILL, not graceful terminate
+ 
+ `stop()` today does graceful `terminate()` → `kill()` escalation. The restart
+@@ -261,29 +299,37 @@
+ ### D.4 Port-change rebind + worker-bearer carry-over
+ 
+ `crash_restart()` re-spawns with `--port 0`, so the new IUT binds a **fresh
+-ephemeral port**; the returned `IutHandle.base_url` changes. The scenario's
+-`WireClient` is bound to the old URL and must be rebuilt against the new handle.
+-The trap: the worker bearers the `default_workers` autouse fixture registered
+-live on the *old* client, and re-registration post-restart is idempotent and
+-returns **no** token on the second call (the worker already exists), so the new
+-client cannot recover the bearer by re-registering.
++ephemeral port**; the returned `IutHandle.base_url` changes. The fixture's
++pre-restart `WireClient` is bound to the old URL and must be rebuilt against the
++new handle. The trap: the worker bearers were registered on the *old* client, and
++re-registration post-restart is idempotent and returns **no** token on the second
++call (the worker already exists), so the new client cannot recover the bearer by
++re-registering.
+ 
+-The mechanism already exists:
++Because the durability fixture **owns its own adapter and client** (D.1), it also
++seeds its own workers on that client (calling `register_default_workers` on its
++own `WireClient`, not relying on the autouse `default_workers`, which binds to the
++*base* `wire_client` the durability fixture doesn't use). The carry-over mechanism
++already exists:
+ [`WireClient.copy_worker_bearers_from(other)`](../../conformance/src/conformance/harness/wire_client.py).
+-The crash-restart fixture:
++The fixture:
+ 
+-1. captures the pre-restart `WireClient` (carrying the registered bearers),
+-2. calls `adapter.crash_restart()` → new handle,
+-3. constructs a new `WireClient` against the new `base_url` + same
+-   `experiment_id` + same `extra_headers` (admin bearer — `admin_token`
+-   unchanged across restart),
+-4. `new_client.copy_worker_bearers_from(old_client)` so `as_worker=<wid>` calls
++1. starts its own adapter, builds `old_client`, seeds default workers on it
++   (capturing the issued bearers),
++2. (the scenario seeds its representative state on `old_client` and snapshots it),
++3. calls `adapter.crash_restart()` → new handle,
++4. constructs `new_client` against the new `base_url` + same `experiment_id` +
++   same `extra_headers` (admin bearer — `admin_token` unchanged across restart),
++5. `new_client.copy_worker_bearers_from(old_client)` so `as_worker=<wid>` calls
+    keep authenticating (the server's persisted `credential_hash` still matches
+    the plaintext bearer the old client held),
+-5. yields `(old_snapshot_client, new_client)` to the scenario.
++6. yields the `(old_client, new_client)` pair (or just `new_client` plus the
++   pre-restart snapshot) to the scenario.
+ 
+ This is the wire-level analogue of the unit test's "persisted token authorizes a
+-fresh submit on the reopened store."
++fresh submit on the reopened store." Note step 5 is exactly what scenario 3's
++credential-survival assertion (§9) exercises as a first-class check rather than
++mere test plumbing.
+ 
+ ### D.5 State-capture / replay model
+ 
+@@ -424,16 +470,32 @@
+ adding the new `v1+durability` parallel level, which touches the same sections
+ the prior parallel levels (`v1+checkpoints`, `v1+multi-experiment`) touched.
+ 
+-1. **§1 + §4 — declare the `v1+durability` level.** §1 lists the levels the suite
+-   ships ("v1, v1+roles, v1+roles+integrator, v1+checkpoints, v1+multi-experiment")
+-   and states they may be claimed independently; add `v1+durability` as another
+-   parallel level, claimable by IUTs that expose the restart hook, and note its
+-   §13 keying. §4 ("Conformance levels") gains a `v1+durability` bullet describing
+-   its coverage (wire-observable projection of §13 under process restart) — modeled
+-   on the existing `v1+checkpoints` / `v1+multi-experiment` bullets, including the
+-   "MUSTs that depend on off-wire artifacts (git-side, artifact bytes, host
+-   restart) are NOT asserted" carve-out (mirroring the v1+roles+integrator §4 line
+-   and the v1+checkpoints off-wire note).
++1. **§1 + §4 — declare the `v1+durability` level, with care about the
++   "verifies-not-imposes" framing.** This is the wording trap to get right:
++   §1's existing parallel-level sentence uses *"Implementations that … claim the
++   `v1+X` level **implement** the MUSTs from chapter Y"* — correct for checkpoints
++   / multi-experiment because those add genuinely *new* contract surfaces an IUT
++   only owns if it claims them. **Durability is different: 01-concepts §13 already
++   binds every conforming deployment regardless of any claim.** So the new prose
++   MUST NOT say "implementations that claim v1+durability implement §13" (that
++   would read as "§13 is optional unless claimed"). It MUST say the level
++   **verifies / certifies the wire-observable projection of the §13 obligation**
++   that already binds all deployments. Concretely:
++   - §1 line ~7: extend the level enumeration to include `v1+durability`, but
++     phrase its clause as "…the `v1+durability` level **verifies** the
++     wire-observable projection of the [`01-concepts.md`](01-concepts.md) §13
++     durability invariant (which binds every deployment independently of the
++     claim)."
++   - §1 line ~9 ("The checkpoint and multi-experiment levels are parallel…"):
++     extend the parallel-levels sentence and the example claim strings ("v1+…
++     conformant") to include `v1+durability`.
++   - §4 ("Conformance levels"): add a `v1+durability` bullet modeled on the
++     `v1+checkpoints` / `v1+multi-experiment` bullets — coverage = wire-observable
++     projection of §13 under process restart — but with the same "verifies an
++     already-universal MUST" framing, plus the "MUSTs that depend on off-wire
++     artifacts (git-side, artifact bytes, host/substrate restart) are NOT asserted"
++     carve-out (mirroring the v1+roles+integrator §4 line and the v1+checkpoints
++     off-wire note).
+ 
+ 2. **§3 assertion vocabulary — add 01-concepts §13 under the new level.** §3
+    currently says "Every assertion in the v1 suite is keyed off a normative MUST
+@@ -469,9 +531,11 @@
+    this edit is deliberately *not* that; flagged here so review can confirm the
+    distinction holds.
+ 
+-5. **§7 reference posture — add the level.** Add "v1+durability after this chunk"
+-   to the reference-impl level-progression sentence, parallel to the existing
+-   "v1+checkpoints after chunk 12b" line. CI's `conformance` job runs the
++5. **§7 reference posture — add the level to the exact linear sentence.** §7's
++   level-progression sentence reads "…**v1** at the time chapter 9 first lands;
++   **v1+roles** after chunk 11c; … **v1+multi-experiment** after chunk 12c." Append
++   "; **v1+durability** after this chunk" to that same sentence (not a new
++   paragraph — keep the linear list intact). CI's `conformance` job runs the
+    reference adapter, which exposes `crash_restart`, so the level is exercised.
+ 
+ 6. **§5 lifecycle-row trim (consolidation).** Remove "State survives store
+@@ -622,14 +686,19 @@
+ - [`conformance/src/conformance/harness/adapter.py`](../../conformance/src/conformance/harness/adapter.py)
+   — add the `RestartableIutAdapter` Protocol (§3 D.1).
+ - [`conformance/src/conformance/adapters/reference/adapter.py`](../../conformance/src/conformance/adapters/reference/adapter.py)
+-  — file-backed store + temp-dir lifecycle; `crash_restart()` (SIGKILL +
+-  re-spawn + fresh handle); reuse `_read_port_announcement` /
+-  `_start_stderr_drain`; update docstring (§3 D.2–D.4).
+-- [`conformance/src/conformance/harness/_durability.py`](../../conformance/src/conformance/harness/_durability.py)
+-  *(new — or add to `_seed.py`)* — `capture_wire_state()` (§3 D.5).
++  — file-backed store + temp-dir lifecycle; factor the task-store-server spawn
++  into a private helper shared by `start()` and `crash_restart()`; `crash_restart()`
++  SIGKILLs + re-spawns only the task-store-server and **preserves** the existing
++  control-plane subprocess + URL on the fresh handle (§3 D.2–D.4); update docstring.
++- [`conformance/src/conformance/harness/_durability.py`](../../conformance/src/conformance/harness/_durability.py)
++  *(new — or add to `_seed.py`)* — `capture_wire_state()` (required surfaces only;
++  no `dispatch_mode`) (§3 D.5).
+ - [`conformance/scenarios/conftest.py`](../../conformance/scenarios/conftest.py)
+-  — `crash_restart` / `durable_clients` fixture: skip-if-unsupported,
+-  bearer carry-over via `copy_worker_bearers_from` (§3 D.4).
++  — `durable_clients` fixture that **owns its own adapter** (patterned on
++  `receiver_iut`), seeds its own workers, skip-if-unsupported, and does the
++  port-rebind + bearer carry-over via `copy_worker_bearers_from` (§3 D.1/D.4).
++  **`plugin.py` is NOT touched** — the self-owned fixture avoids widening the
++  shared base fixtures (§3 D.1).
+ - [`conformance/scenarios/test_experiment_durability.py`](../../conformance/scenarios/test_experiment_durability.py)
+   — replace the placeholder with scenarios 1–6 (§9).
+ 
+@@ -670,6 +739,14 @@
+ - **SIGKILL vs graceful (§3 D.3).** If the re-spawn path accidentally routes
+   through the graceful `stop()` first, the scenario tests the wrong thing.
+   `crash_restart` must `proc.kill()` directly.
++- **Companion control-plane subprocess (§3 D.2).** `ReferenceAdapter.start()` also
++  spawns a `ControlPlaneSubprocess` and returns its URL. A `crash_restart` that
++  naively re-runs the whole `start()` path leaks a second control-plane process or
++  needlessly rotates `control_plane_base_url`. Restart **only** the
++  task-store-server; preserve the control-plane subprocess + URL on the fresh
++  handle (durability scenarios don't touch chapter 11). Factor the task-store-server
++  spawn into a helper both paths share so the control-plane spawn lives only in
++  `start()`.
+ - **Durability ≠ checkpoint (§3 D.6).** Copy-pasting checkpoint helpers drags in
+   claimed→pending normalization + credential reissue, silently weakening the
+   durability assertion. The scenario docstrings must state "verbatim, no

@@ -1,0 +1,65 @@
+--- docs/plans/review/issue-156/plan/20260601T200424/2.md	2026-06-01 21:15:29
++++ docs/plans/issue-156-experiment-durability-conformance.md	2026-06-01 23:38:21
+@@ -211,11 +211,32 @@
+ the existing [`receiver_iut`](../../conformance/scenarios/conftest.py) fixture:
+ it instantiates `iut_adapter_factory()` itself, calls `start(...)`, seeds its own
+ default workers, holds the adapter reference so it can call `crash_restart()`,
+-and tears the adapter down in its own `finally`. This keeps the change **off** the
+-shared `iut` / `wire_client` / `default_workers` path entirely — `plugin.py` is
+-NOT touched. (The rejected alternative — exposing the adapter through the base
+-`iut` fixture — would touch a session-critical fixture used by all ~56 scenarios
+-for no benefit the self-owned fixture doesn't already give.)
++and tears the adapter down in its own `finally`. (The rejected alternative —
++exposing the adapter through the base `iut` fixture — would touch a
++session-critical fixture used by all ~56 scenarios for no benefit the self-owned
++fixture doesn't already give.)
++
++**The autouse-`default_workers` trap (must be handled, or the "off the base
++path" claim is false).** `default_workers`
++([`plugin.py`](../../conformance/src/conformance/harness/plugin.py) ~L257) is an
++**autouse** fixture that depends on `wire_client` → `iut`. Autouse means *every*
++test function pulls it in — so a durability test that only requests
++`durable_clients` would *still* spin up the base `iut` + `wire_client` +
++control-plane subprocess (unused, wasteful, and a second IUT racing the durable
++one), and the "plugin.py untouched / off the shared path" claim would be false.
++The fix is a **module-level autouse override** in
++`test_experiment_durability.py`: redefine `default_workers` as an autouse no-op
++that does **not** depend on `wire_client` (the `durable_clients` fixture does all
++worker seeding on its own client). A same-name fixture defined at module scope
++shadows the plugin's definition for that module only; because the override does
++not request `wire_client`, the base `iut`/`wire_client`/control-plane chain is
++never instantiated for durability tests. This keeps `plugin.py` genuinely
++untouched and the durability path genuinely off the shared base fixtures. (The
++override must itself be `autouse=True` so it actually replaces the plugin's
++autouse fixture in that module; a non-autouse same-name fixture would leave the
++plugin's autouse one in effect.) Confirm in validation that a durability test run
++spawns exactly one IUT per test (no stray base IUT) — e.g. assert via process
++count or a logging probe during the wave-1 smoke.
+ 
+ ### D.2 Persistent substrate for the reference adapter
+ 
+@@ -700,7 +721,9 @@
+   **`plugin.py` is NOT touched** — the self-owned fixture avoids widening the
+   shared base fixtures (§3 D.1).
+ - [`conformance/scenarios/test_experiment_durability.py`](../../conformance/scenarios/test_experiment_durability.py)
+-  — replace the placeholder with scenarios 1–6 (§9).
++  — replace the placeholder with scenarios 1–6 (§9); add a **module-level autouse
++  `default_workers` no-op override** that shadows the plugin's autouse fixture so
++  durability tests don't pull in the base `iut`/`wire_client` path (§3 D.1).
+ 
+ **Spec:**
+ 
+@@ -739,6 +762,13 @@
+ - **SIGKILL vs graceful (§3 D.3).** If the re-spawn path accidentally routes
+   through the graceful `stop()` first, the scenario tests the wrong thing.
+   `crash_restart` must `proc.kill()` directly.
++- **Autouse `default_workers` pulls in the base IUT (§3 D.1).** Without a
++  module-level autouse override in the durability test file, every durability test
++  silently spins up the unused base `iut`/`wire_client`/control-plane in addition
++  to its own durable IUT (autouse → wire_client → iut). Easy to miss because tests
++  still pass — just with a stray second IUT per test. The override must be
++  `autouse=True` and must NOT request `wire_client`. Validation: confirm exactly
++  one IUT per durability test.
+ - **Companion control-plane subprocess (§3 D.2).** `ReferenceAdapter.start()` also
+   spawns a `ControlPlaneSubprocess` and returns its URL. A `crash_restart` that
+   naively re-runs the whole `start()` path leaks a second control-plane process or
