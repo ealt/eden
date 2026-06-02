@@ -99,33 +99,9 @@ def ensure_baseline_variant(
         return  # already created; idempotent no-op (no event re-emit)
 
     metrics = config.baseline.metrics if config.baseline is not None else None
-    ts = _now_iso()
-    if metrics is None:
-        # Default path: created `starting`; evaluation_dispatch scores it.
-        variant = Variant(
-            variant_id=BASELINE_VARIANT_ID,
-            experiment_id=experiment_id,
-            kind="baseline",
-            status="starting",
-            parent_commits=[base_sha],
-            commit_sha=base_sha,
-            started_at=ts,
-        )
-        path = "default"
-    else:
-        # Override path: created directly `success` with config metrics.
-        variant = Variant(
-            variant_id=BASELINE_VARIANT_ID,
-            experiment_id=experiment_id,
-            kind="baseline",
-            status="success",
-            parent_commits=[base_sha],
-            commit_sha=base_sha,
-            evaluation=dict(metrics),
-            started_at=ts,
-            completed_at=ts,
-        )
-        path = "override"
+    variant, path = _build_baseline_variant(
+        experiment_id=experiment_id, base_sha=base_sha, metrics=metrics
+    )
 
     try:
         store.create_variant(variant)
@@ -154,6 +130,49 @@ def ensure_baseline_variant(
         experiment_id=experiment_id,
         path=path,
         commit_sha=base_sha,
+    )
+
+
+def _build_baseline_variant(
+    *,
+    experiment_id: str,
+    base_sha: str,
+    metrics: dict[str, object] | None,
+) -> tuple[Variant, str]:
+    """Build the baseline ``Variant`` for the default or override path.
+
+    Returns ``(variant, path_label)``. Default path (``metrics is None``):
+    created ``starting`` so the ``evaluation_dispatch`` decision scores it.
+    Override path: created directly ``success`` with the config-supplied
+    metrics, skipping evaluation (``02-data-model.md`` §9.4).
+    """
+    ts = _now_iso()
+    if metrics is None:
+        return (
+            Variant(
+                variant_id=BASELINE_VARIANT_ID,
+                experiment_id=experiment_id,
+                kind="baseline",
+                status="starting",
+                parent_commits=[base_sha],
+                commit_sha=base_sha,
+                started_at=ts,
+            ),
+            "default",
+        )
+    return (
+        Variant(
+            variant_id=BASELINE_VARIANT_ID,
+            experiment_id=experiment_id,
+            kind="baseline",
+            status="success",
+            parent_commits=[base_sha],
+            commit_sha=base_sha,
+            evaluation=dict(metrics),
+            started_at=ts,
+            completed_at=ts,
+        ),
+        "override",
     )
 
 
