@@ -15,7 +15,7 @@ from typing import Annotated, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, model_validator
 
-from ._common import DateTimeStr, NotNone, WorkerId
+from ._common import ActorId, DateTimeStr, ExperimentId, MemberId, NotNone, WorkerId
 
 TaskKind = Literal["ideation", "execution", "evaluation"]
 TaskState = Literal["pending", "claimed", "submitted", "completed", "failed"]
@@ -47,7 +47,7 @@ class TaskTarget(BaseModel):
     model_config = ConfigDict(strict=True, extra="allow")
 
     kind: TaskTargetKind
-    id: WorkerId
+    id: MemberId
 
 
 class IdeationPayload(BaseModel):
@@ -55,7 +55,7 @@ class IdeationPayload(BaseModel):
 
     model_config = ConfigDict(strict=True, extra="allow")
 
-    experiment_id: Annotated[str, Field(min_length=1)]
+    experiment_id: ExperimentId
 
 
 class ExecutionPayload(BaseModel):
@@ -82,7 +82,7 @@ class _TaskBase(BaseModel):
     task_id: Annotated[str, Field(min_length=1)]
     state: TaskState
     target: Annotated[TaskTarget | None, NotNone] = None
-    created_by: Annotated[str | None, NotNone, Field(min_length=1)] = None
+    created_by: Annotated[ActorId | None, NotNone] = None
     submitted_by: Annotated[WorkerId | None, NotNone] = None
     claim: Annotated[TaskClaim | None, NotNone] = None
     created_at: DateTimeStr

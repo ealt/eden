@@ -3,14 +3,14 @@
   "title": "EDEN wire — register-worker request",
   "description": "Request body for POST /v0/experiments/{E}/workers (07-wire-protocol.md §6.1). Admin-gated.",
   "type": "object",
-  "required": ["worker_id"],
   "additionalProperties": false,
   "properties": {
-    "worker_id": {
+    "name": {
       "type": "string",
+      "format": "display-name",
       "minLength": 1,
-      "maxLength": 64,
-      "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
+      "maxLength": 128,
+      "description": "OPTIONAL operator-supplied display label (spec/v0/02-data-model.md §1.7). The server mints the opaque worker_id; the caller never supplies it. Reserved worker names (`admin`, `system`, `internal`) are rejected."
     },
     "labels": {
       "type": "object",

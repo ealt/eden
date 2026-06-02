@@ -51,22 +51,22 @@ def _ideation_task_with_target(
 
 def test_target_worker_round_trips(make_store: Callable[..., Store]) -> None:
     store = make_store()
-    target = TaskTarget(kind="worker", id="eric")
+    target = TaskTarget(kind="worker", id="wkr_00000000000000000000000000")
     store.create_task(_ideation_task_with_target(store.experiment_id, target=target))
     fresh = store.read_task("t-target")
     assert fresh.target is not None
     assert fresh.target.kind == "worker"
-    assert fresh.target.id == "eric"
+    assert fresh.target.id == "wkr_00000000000000000000000000"
 
 
 def test_target_group_round_trips(make_store: Callable[..., Store]) -> None:
     store = make_store()
-    target = TaskTarget(kind="group", id="humans")
+    target = TaskTarget(kind="group", id="grp_00000000000000000000000000")
     store.create_task(_ideation_task_with_target(store.experiment_id, target=target))
     fresh = store.read_task("t-target")
     assert fresh.target is not None
     assert fresh.target.kind == "group"
-    assert fresh.target.id == "humans"
+    assert fresh.target.id == "grp_00000000000000000000000000"
 
 
 def test_target_absent_round_trips(make_store: Callable[..., Store]) -> None:
@@ -80,8 +80,8 @@ def test_target_absent_round_trips(make_store: Callable[..., Store]) -> None:
 @pytest.mark.parametrize(
     ("kind", "id_"),
     [
-        ("worker", "eric"),
-        ("group", "humans"),
+        ("worker", "wkr_00000000000000000000000000"),
+        ("group", "grp_00000000000000000000000000"),
     ],
 )
 def test_target_appears_in_list_tasks(

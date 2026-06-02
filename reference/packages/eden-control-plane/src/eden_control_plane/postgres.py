@@ -32,7 +32,6 @@ from typing import Any
 import psycopg
 from eden_contracts import Group, Worker
 from eden_storage.errors import (
-    AlreadyExists,
     CycleDetected,
     InvalidPrecondition,
     NotFound,
@@ -40,11 +39,16 @@ from eden_storage.errors import (
 from psycopg import sql
 
 from ._credentials import (
+    DEPLOYMENT_SCOPE_SENTINEL,
     check_credential_hash,
     constant_time_dummy_verify,
     generate_credential_token,
     hash_credential,
-    validate_registry_id,
+    mint_opaque_id,
+    validate_display_name,
+    validate_group_name,
+    validate_member_id,
+    validate_worker_name,
 )
 from .errors import (
     LeaseExpired,
@@ -61,12 +65,15 @@ _DDL: list[str] = [
     """
     CREATE TABLE IF NOT EXISTS control_plane_experiments (
         experiment_id text PRIMARY KEY,
+        name text,
         config_uri text NOT NULL,
         created_at timestamptz NOT NULL,
         last_known_state text NOT NULL
             CHECK (last_known_state IN ('running', 'terminated'))
     )
     """,
+    "CREATE INDEX IF NOT EXISTS idx_experiments_name "
+    "ON control_plane_experiments (name)",
     """
     CREATE TABLE IF NOT EXISTS control_plane_leases (
         experiment_id text PRIMARY KEY
@@ -85,19 +92,25 @@ _DDL: list[str] = [
     """
     CREATE TABLE IF NOT EXISTS control_plane_workers (
         worker_id text PRIMARY KEY,
+        name text,
         registered_at timestamptz NOT NULL,
         registered_by text,
         labels jsonb,
         credential_hash text NOT NULL
     )
     """,
+    "CREATE INDEX IF NOT EXISTS idx_workers_name "
+    "ON control_plane_workers (name)",
     """
     CREATE TABLE IF NOT EXISTS control_plane_groups (
         group_id text PRIMARY KEY,
+        name text,
         created_at timestamptz NOT NULL,
         created_by text
     )
     """,
+    "CREATE INDEX IF NOT EXISTS idx_groups_name "
+    "ON control_plane_groups (name)",
     """
     CREATE TABLE IF NOT EXISTS control_plane_group_members (
         group_id text NOT NULL
@@ -223,16 +236,17 @@ class PostgresControlPlaneStore:
     def _row_to_entry(
         self, row: tuple[Any, ...], lease: ExperimentLease | None
     ) -> RegisteredExperiment:
-        experiment_id, config_uri, created_at, last_known_state = row
-        return RegisteredExperiment.model_validate(
-            {
-                "experiment_id": experiment_id,
-                "config_uri": config_uri,
-                "created_at": _fmt(created_at),
-                "last_known_state": last_known_state,
-                "lease": lease,
-            }
-        )
+        experiment_id, name, config_uri, created_at, last_known_state = row
+        data: dict[str, Any] = {
+            "experiment_id": experiment_id,
+            "config_uri": config_uri,
+            "created_at": _fmt(created_at),
+            "last_known_state": last_known_state,
+            "lease": lease,
+        }
+        if name is not None:
+            data["name"] = name
+        return RegisteredExperiment.model_validate(data)
 
     def _lease_for_experiment(
         self, cur: psycopg.Cursor[Any], experiment_id: str
@@ -261,32 +275,21 @@ class PostgresControlPlaneStore:
     # ------------------------------------------------------------------
 
     def register_experiment(
-        self, experiment_id: str, config_uri: str
+        self, config_uri: str, *, name: str | None = None
     ) -> tuple[RegisteredExperiment, bool]:
-        # Atomic insert-or-observe under `SERIALIZABLE` so concurrent
-        # callers observe exactly one `created=True`.
+        # Ids are system-minted, so every call creates a distinct
+        # entry — `created` is always True. Name validated before the
+        # transaction so an ill-formed name short-circuits cleanly.
+        validated_name = validate_display_name(name) if name is not None else None
+        experiment_id = mint_opaque_id("exp")
         with self._atomic(), self._conn.cursor() as cur:
             cur.execute(
-                "SELECT experiment_id, config_uri, created_at, last_known_state "
-                "FROM control_plane_experiments WHERE experiment_id = %s",
-                (experiment_id,),
-            )
-            existing = cur.fetchone()
-            if existing is not None:
-                if existing[1] != config_uri:
-                    raise AlreadyExists(
-                        f"experiment {experiment_id!r} is registered with a "
-                        f"different config_uri (stored {existing[1]!r}, "
-                        f"requested {config_uri!r})"
-                    )
-                lease = self._lease_for_experiment(cur, experiment_id)
-                return self._row_to_entry(existing, lease), False
-            cur.execute(
                 "INSERT INTO control_plane_experiments "
-                "(experiment_id, config_uri, created_at, last_known_state) "
-                "VALUES (%s, %s, %s, 'running') "
-                "RETURNING experiment_id, config_uri, created_at, last_known_state",
-                (experiment_id, config_uri, self._now()),
+                "(experiment_id, name, config_uri, created_at, last_known_state) "
+                "VALUES (%s, %s, %s, %s, 'running') "
+                "RETURNING experiment_id, name, config_uri, created_at, "
+                "          last_known_state",
+                (experiment_id, validated_name, config_uri, self._now()),
             )
             row = cur.fetchone()
             assert row is not None
@@ -327,7 +330,8 @@ class PostgresControlPlaneStore:
     def list_experiments(self) -> list[RegisteredExperiment]:
         with self._atomic(), self._conn.cursor() as cur:
             cur.execute(
-                "SELECT experiment_id, config_uri, created_at, last_known_state "
+                "SELECT experiment_id, name, config_uri, created_at, "
+                "last_known_state "
                 "FROM control_plane_experiments ORDER BY experiment_id"
             )
             rows = cur.fetchall()
@@ -342,7 +346,8 @@ class PostgresControlPlaneStore:
     ) -> RegisteredExperiment:
         with self._atomic(), self._conn.cursor() as cur:
             cur.execute(
-                "SELECT experiment_id, config_uri, created_at, last_known_state "
+                "SELECT experiment_id, name, config_uri, created_at, "
+                "last_known_state "
                 "FROM control_plane_experiments WHERE experiment_id = %s",
                 (experiment_id,),
             )
@@ -360,7 +365,8 @@ class PostgresControlPlaneStore:
                 "UPDATE control_plane_experiments "
                 "SET last_known_state = %s "
                 "WHERE experiment_id = %s "
-                "RETURNING experiment_id, config_uri, created_at, last_known_state",
+                "RETURNING experiment_id, name, config_uri, created_at, "
+                "          last_known_state",
                 (last_known_state, experiment_id),
             )
             row = cur.fetchone()
@@ -535,38 +541,26 @@ class PostgresControlPlaneStore:
 
     def register_worker(
         self,
-        worker_id: str,
+        name: str | None = None,
         *,
         labels: dict[str, str] | None = None,
         registered_by: str | None = None,
     ) -> tuple[Worker, str | None]:
-        validate_registry_id(worker_id, kind="worker")
+        # Ids are system-minted; every call mints a fresh worker +
+        # credential. Name validated before the transaction.
+        validated_name = validate_worker_name(name) if name is not None else None
+        worker_id = mint_opaque_id("wkr")
         with self._atomic(), self._conn.cursor() as cur:
-            cur.execute(
-                "SELECT registered_at, registered_by, labels FROM control_plane_workers "
-                "WHERE worker_id = %s",
-                (worker_id,),
-            )
-            existing = cur.fetchone()
-            if existing is not None:
-                return (self._build_worker(worker_id, existing), None)
-            cur.execute(
-                "SELECT 1 FROM control_plane_groups WHERE group_id = %s",
-                (worker_id,),
-            )
-            if cur.fetchone() is not None:
-                raise AlreadyExists(
-                    f"id {worker_id!r} is already registered as a group; "
-                    f"namespaces MUST be disjoint per chapter 02 §7.1"
-                )
             token = generate_credential_token()
             now = self._now()
             cur.execute(
                 "INSERT INTO control_plane_workers "
-                "(worker_id, registered_at, registered_by, labels, credential_hash) "
-                "VALUES (%s, %s, %s, %s, %s)",
+                "(worker_id, name, registered_at, registered_by, labels, "
+                "credential_hash) "
+                "VALUES (%s, %s, %s, %s, %s, %s)",
                 (
                     worker_id,
+                    validated_name,
                     now,
                     registered_by,
                     json.dumps(labels) if labels else None,
@@ -576,8 +570,9 @@ class PostgresControlPlaneStore:
             worker = Worker.model_validate(
                 {
                     "worker_id": worker_id,
-                    "experiment_id": "<deployment>",
+                    "experiment_id": DEPLOYMENT_SCOPE_SENTINEL,
                     "registered_at": _fmt(now),
+                    **({"name": validated_name} if validated_name else {}),
                     **({"registered_by": registered_by} if registered_by else {}),
                     **({"labels": dict(labels)} if labels else {}),
                 }
@@ -587,12 +582,14 @@ class PostgresControlPlaneStore:
     def _build_worker(
         self, worker_id: str, row: tuple[Any, ...]
     ) -> Worker:
-        registered_at, registered_by, labels = row
+        name, registered_at, registered_by, labels = row
         data: dict[str, Any] = {
             "worker_id": worker_id,
-            "experiment_id": "<deployment>",
+            "experiment_id": DEPLOYMENT_SCOPE_SENTINEL,
             "registered_at": _fmt(registered_at),
         }
+        if name is not None:
+            data["name"] = name
         if registered_by is not None:
             data["registered_by"] = registered_by
         if labels is not None:
@@ -633,7 +630,7 @@ class PostgresControlPlaneStore:
     def read_worker(self, worker_id: str) -> Worker:
         with self._atomic(), self._conn.cursor() as cur:
             cur.execute(
-                "SELECT registered_at, registered_by, labels "
+                "SELECT name, registered_at, registered_by, labels "
                 "FROM control_plane_workers WHERE worker_id = %s",
                 (worker_id,),
             )
@@ -642,12 +639,20 @@ class PostgresControlPlaneStore:
                 raise NotFound(f"worker {worker_id!r}")
             return self._build_worker(worker_id, row)
 
-    def list_workers(self) -> list[Worker]:
+    def list_workers(self, *, name: str | None = None) -> list[Worker]:
         with self._atomic(), self._conn.cursor() as cur:
-            cur.execute(
-                "SELECT worker_id, registered_at, registered_by, labels "
-                "FROM control_plane_workers ORDER BY worker_id"
-            )
+            if name is None:
+                cur.execute(
+                    "SELECT worker_id, name, registered_at, registered_by, labels "
+                    "FROM control_plane_workers ORDER BY worker_id"
+                )
+            else:
+                cur.execute(
+                    "SELECT worker_id, name, registered_at, registered_by, labels "
+                    "FROM control_plane_workers WHERE name = %s "
+                    "ORDER BY worker_id",
+                    (name,),
+                )
             return [
                 self._build_worker(row[0], row[1:])
                 for row in cur.fetchall()
@@ -659,31 +664,24 @@ class PostgresControlPlaneStore:
 
     def register_group(
         self,
-        group_id: str,
+        name: str | None = None,
         *,
         members: Iterable[str] | None = None,
+        created_by: str | None = None,
+        allow_reserved: bool = False,
     ) -> Group:
-        validate_registry_id(group_id, kind="group")
+        # Ids are system-minted; every call mints a fresh group. Name
+        # + member grammars validated before the transaction.
+        validated_name = (
+            validate_group_name(name, allow_reserved=allow_reserved)
+            if name is not None
+            else None
+        )
         members_list = list(members) if members is not None else []
         for m in members_list:
-            validate_registry_id(m, kind="member")
+            validate_member_id(m)
+        group_id = mint_opaque_id("grp")
         with self._atomic(), self._conn.cursor() as cur:
-            cur.execute(
-                "SELECT created_at FROM control_plane_groups WHERE group_id = %s",
-                (group_id,),
-            )
-            existing = cur.fetchone()
-            if existing is not None:
-                return self._load_group(cur, group_id, existing[0])
-            cur.execute(
-                "SELECT 1 FROM control_plane_workers WHERE worker_id = %s",
-                (group_id,),
-            )
-            if cur.fetchone() is not None:
-                raise AlreadyExists(
-                    f"id {group_id!r} is already registered as a worker; "
-                    f"namespaces MUST be disjoint per chapter 02 §7.1"
-                )
             for m in members_list:
                 if self._is_existing_group(cur, m) and self._would_close_cycle(
                     cur, m, group_id
@@ -693,9 +691,10 @@ class PostgresControlPlaneStore:
                     )
             now = self._now()
             cur.execute(
-                "INSERT INTO control_plane_groups (group_id, created_at) "
-                "VALUES (%s, %s)",
-                (group_id, now),
+                "INSERT INTO control_plane_groups "
+                "(group_id, name, created_at, created_by) "
+                "VALUES (%s, %s, %s, %s)",
+                (group_id, validated_name, now, created_by),
             )
             for m in members_list:
                 cur.execute(
@@ -703,7 +702,7 @@ class PostgresControlPlaneStore:
                     "(group_id, member_id) VALUES (%s, %s)",
                     (group_id, m),
                 )
-            return self._load_group(cur, group_id, now)
+            return self._load_group(cur, group_id)
 
     def _is_existing_group(
         self, cur: psycopg.Cursor[Any], group_id: str
@@ -743,32 +742,42 @@ class PostgresControlPlaneStore:
         self,
         cur: psycopg.Cursor[Any],
         group_id: str,
-        created_at: datetime,
     ) -> Group:
+        cur.execute(
+            "SELECT name, created_at, created_by FROM control_plane_groups "
+            "WHERE group_id = %s",
+            (group_id,),
+        )
+        head = cur.fetchone()
+        if head is None:
+            raise NotFound(f"group {group_id!r}")
+        name, created_at, created_by = head
         cur.execute(
             "SELECT member_id FROM control_plane_group_members "
             "WHERE group_id = %s ORDER BY member_id",
             (group_id,),
         )
         members = [row[0] for row in cur.fetchall()]
-        return Group.model_validate(
-            {
-                "group_id": group_id,
-                "experiment_id": "<deployment>",
-                "members": members,
-                "created_at": _fmt(created_at),
-            }
-        )
+        data: dict[str, Any] = {
+            "group_id": group_id,
+            "experiment_id": DEPLOYMENT_SCOPE_SENTINEL,
+            "members": members,
+            "created_at": _fmt(created_at),
+        }
+        if name is not None:
+            data["name"] = name
+        if created_by is not None:
+            data["created_by"] = created_by
+        return Group.model_validate(data)
 
     def add_to_group(self, group_id: str, member_id: str) -> Group:
-        validate_registry_id(member_id, kind="member")
+        validate_member_id(member_id)
         with self._atomic(), self._conn.cursor() as cur:
             cur.execute(
-                "SELECT created_at FROM control_plane_groups WHERE group_id = %s",
+                "SELECT 1 FROM control_plane_groups WHERE group_id = %s",
                 (group_id,),
             )
-            row = cur.fetchone()
-            if row is None:
+            if cur.fetchone() is None:
                 raise NotFound(f"group {group_id!r}")
             cur.execute(
                 "SELECT 1 FROM control_plane_group_members "
@@ -776,7 +785,7 @@ class PostgresControlPlaneStore:
                 (group_id, member_id),
             )
             if cur.fetchone() is not None:
-                return self._load_group(cur, group_id, row[0])
+                return self._load_group(cur, group_id)
             if self._is_existing_group(cur, member_id) and self._would_close_cycle(
                 cur, member_id, group_id
             ):
@@ -788,23 +797,22 @@ class PostgresControlPlaneStore:
                 "(group_id, member_id) VALUES (%s, %s)",
                 (group_id, member_id),
             )
-            return self._load_group(cur, group_id, row[0])
+            return self._load_group(cur, group_id)
 
     def remove_from_group(self, group_id: str, member_id: str) -> Group:
         with self._atomic(), self._conn.cursor() as cur:
             cur.execute(
-                "SELECT created_at FROM control_plane_groups WHERE group_id = %s",
+                "SELECT 1 FROM control_plane_groups WHERE group_id = %s",
                 (group_id,),
             )
-            row = cur.fetchone()
-            if row is None:
+            if cur.fetchone() is None:
                 raise NotFound(f"group {group_id!r}")
             cur.execute(
                 "DELETE FROM control_plane_group_members "
                 "WHERE group_id = %s AND member_id = %s",
                 (group_id, member_id),
             )
-            return self._load_group(cur, group_id, row[0])
+            return self._load_group(cur, group_id)
 
     def delete_group(self, group_id: str) -> None:
         with self._atomic(), self._conn.cursor() as cur:
@@ -818,22 +826,28 @@ class PostgresControlPlaneStore:
     def read_group(self, group_id: str) -> Group:
         with self._atomic(), self._conn.cursor() as cur:
             cur.execute(
-                "SELECT created_at FROM control_plane_groups WHERE group_id = %s",
+                "SELECT 1 FROM control_plane_groups WHERE group_id = %s",
                 (group_id,),
             )
-            row = cur.fetchone()
-            if row is None:
+            if cur.fetchone() is None:
                 raise NotFound(f"group {group_id!r}")
-            return self._load_group(cur, group_id, row[0])
+            return self._load_group(cur, group_id)
 
-    def list_groups(self) -> list[Group]:
+    def list_groups(self, *, name: str | None = None) -> list[Group]:
         with self._atomic(), self._conn.cursor() as cur:
-            cur.execute(
-                "SELECT group_id, created_at FROM control_plane_groups "
-                "ORDER BY group_id"
-            )
-            rows = cur.fetchall()
-            return [self._load_group(cur, gid, created_at) for gid, created_at in rows]
+            if name is None:
+                cur.execute(
+                    "SELECT group_id FROM control_plane_groups "
+                    "ORDER BY group_id"
+                )
+            else:
+                cur.execute(
+                    "SELECT group_id FROM control_plane_groups "
+                    "WHERE name = %s ORDER BY group_id",
+                    (name,),
+                )
+            gids = [row[0] for row in cur.fetchall()]
+            return [self._load_group(cur, gid) for gid in gids]
 
     def resolve_worker_in_group(self, worker_id: str, group_id: str) -> bool:
         with self._atomic(), self._conn.cursor() as cur:

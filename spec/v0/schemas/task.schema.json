@@ -31,22 +31,19 @@
         },
         "id": {
           "type": "string",
-          "minLength": 1,
-          "maxLength": 64,
-          "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
+          "pattern": "^(wkr|grp)_[0-9a-hjkmnp-tv-z]{26}$",
+          "description": "Target id — a worker_id (wkr_*) or a group_id (grp_*) (spec/v0/02-data-model.md §1.6)."
         }
       }
     },
     "created_by": {
       "type": "string",
-      "minLength": 1,
-      "description": "Actor identifier of the caller that created the task (worker_id, the admin sentinel, or another deployment-defined actor)."
+      "pattern": "^(admin|wkr_[0-9a-hjkmnp-tv-z]{26})$",
+      "description": "Actor identifier of the caller that created the task: the admin sentinel `admin` or a worker_id (spec/v0/02-data-model.md §1.6)."
     },
     "submitted_by": {
       "type": "string",
-      "minLength": 1,
-      "maxLength": 64,
-      "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
+      "pattern": "^wkr_[0-9a-hjkmnp-tv-z]{26}$",
       "description": "worker_id of the claimant whose submission was committed; preserved across the terminal transition that clears `claim` (spec/v0/02-data-model.md §3.4)."
     },
     "claim": {
@@ -55,9 +52,7 @@
       "properties": {
         "worker_id": {
           "type": "string",
-          "minLength": 1,
-          "maxLength": 64,
-          "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
+          "pattern": "^wkr_[0-9a-hjkmnp-tv-z]{26}$"
         },
         "claimed_at": {
           "type": "string",
@@ -91,7 +86,7 @@
             "type": "object",
             "required": ["experiment_id"],
             "properties": {
-              "experiment_id": {"type": "string", "minLength": 1}
+              "experiment_id": {"type": "string", "pattern": "^exp_[0-9a-hjkmnp-tv-z]{26}$"}
             }
           }
         }

@@ -14,7 +14,8 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from eden_contracts import DateTimeStr, WorkerId
+from eden_contracts import DateTimeStr, DisplayName, ExperimentId, WorkerId
+from eden_contracts._common import NotNone
 from pydantic import BaseModel, ConfigDict, Field
 
 from ._common import ConfigUriStr
@@ -39,7 +40,7 @@ class ExperimentLease(BaseModel):
     model_config = ConfigDict(strict=True, extra="allow")
 
     lease_id: Annotated[str, Field(min_length=1)]
-    experiment_id: Annotated[str, Field(min_length=1)]
+    experiment_id: ExperimentId
     holder: WorkerId
     holder_instance: Annotated[str, Field(min_length=1)]
     acquired_at: DateTimeStr
@@ -58,7 +59,8 @@ class RegisteredExperiment(BaseModel):
 
     model_config = ConfigDict(strict=True, extra="allow")
 
-    experiment_id: Annotated[str, Field(min_length=1)]
+    experiment_id: ExperimentId
+    name: Annotated[DisplayName | None, NotNone] = None
     config_uri: ConfigUriStr
     created_at: DateTimeStr
     last_known_state: LastKnownState
@@ -80,12 +82,17 @@ class RegisteredExperiment(BaseModel):
 
 
 class RegisterExperimentRequest(BaseModel):
-    """Body for `POST /v0/control/experiments`."""
+    """Body for `POST /v0/control/experiments`.
+
+    The caller does NOT supply an `experiment_id`; the server mints a
+    fresh `exp_*` (chapter 11 §2). `name` is an optional display
+    label (data-model §1.7).
+    """
 
     model_config = ConfigDict(strict=True, extra="allow")
 
-    experiment_id: Annotated[str, Field(min_length=1)]
     config_uri: ConfigUriStr
+    name: Annotated[DisplayName | None, NotNone] = None
 
 
 class LeaseAcquireRequest(BaseModel):

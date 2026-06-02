@@ -7,7 +7,15 @@
   "properties": {
     "experiment_id": {
       "type": "string",
-      "minLength": 1
+      "pattern": "^exp_[0-9a-hjkmnp-tv-z]{26}$",
+      "description": "Opaque, system-minted experiment identifier (spec/v0/02-data-model.md §1.6)."
+    },
+    "name": {
+      "type": "string",
+      "format": "display-name",
+      "minLength": 1,
+      "maxLength": 128,
+      "description": "OPTIONAL operator-supplied display label (spec/v0/02-data-model.md §1.7). The `pattern`-inexpressible rules (NFC normalization, Unicode-category exclusions, no leading/trailing whitespace) are carried by `format: display-name`."
     },
     "state": {
       "type": "string",
@@ -43,6 +51,11 @@
               "type": "string",
               "minLength": 1,
               "description": "The source checkpoint's manifest.checkpoint_format_version value, copied verbatim at import time."
+            },
+            "source_experiment_id": {
+              "type": "string",
+              "pattern": "^exp_[0-9a-hjkmnp-tv-z]{26}$",
+              "description": "OPTIONAL export-side experiment_id of the source experiment, stamped when the receiver minted a fresh exp_* on import (no as_experiment_id override). Provenance only — never reused as the primary key (spec/v0/10-checkpoints.md §10)."
             }
           }
         }

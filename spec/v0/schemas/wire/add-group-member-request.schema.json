@@ -8,9 +8,8 @@
   "properties": {
     "member_id": {
       "type": "string",
-      "minLength": 1,
-      "maxLength": 64,
-      "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
+      "pattern": "^(wkr|grp)_[0-9a-hjkmnp-tv-z]{26}$",
+      "description": "Member id — a worker_id (wkr_*) or a group_id (grp_*) (spec/v0/02-data-model.md §1.6)."
     }
   }
 }

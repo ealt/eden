@@ -21,18 +21,22 @@ from typing import Any
 
 from eden_contracts import Group, Worker
 from eden_storage.errors import (
-    AlreadyExists,
     CycleDetected,
     InvalidPrecondition,
     NotFound,
 )
 
 from ._credentials import (
+    DEPLOYMENT_SCOPE_SENTINEL,
     check_credential_hash,
     constant_time_dummy_verify,
     generate_credential_token,
     hash_credential,
-    validate_registry_id,
+    mint_opaque_id,
+    validate_display_name,
+    validate_group_name,
+    validate_member_id,
+    validate_worker_name,
 )
 from .errors import (
     LeaseExpired,
@@ -133,27 +137,22 @@ class InMemoryControlPlaneStore:
     # ------------------------------------------------------------------
 
     def register_experiment(
-        self, experiment_id: str, config_uri: str
+        self, config_uri: str, *, name: str | None = None
     ) -> tuple[RegisteredExperiment, bool]:
-        # Atomic insert-or-observe inside the single store lock so
-        # concurrent callers observe exactly one `created=True`.
+        # Ids are system-minted, so every call creates a distinct
+        # entry — `created` is always True. The validated display
+        # name (if any) is stored alongside.
+        validated_name = validate_display_name(name) if name is not None else None
         with self._lock:
-            existing = self._experiments.get(experiment_id)
-            if existing is not None:
-                if existing["config_uri"] != config_uri:
-                    raise AlreadyExists(
-                        f"experiment {experiment_id!r} is registered with a "
-                        f"different config_uri (stored "
-                        f"{existing['config_uri']!r}, requested "
-                        f"{config_uri!r})"
-                    )
-                return self._build_entry(existing), False
+            experiment_id = mint_opaque_id("exp")
             row: dict[str, Any] = {
                 "experiment_id": experiment_id,
                 "config_uri": config_uri,
                 "created_at": self._now_str(),
                 "last_known_state": "running",
             }
+            if validated_name is not None:
+                row["name"] = validated_name
             self._experiments[experiment_id] = row
             return self._build_entry(row), True
 
@@ -325,31 +324,26 @@ class InMemoryControlPlaneStore:
 
     def register_worker(
         self,
-        worker_id: str,
+        name: str | None = None,
         *,
         labels: dict[str, str] | None = None,
         registered_by: str | None = None,
     ) -> tuple[Worker, str | None]:
-        validate_registry_id(worker_id, kind="worker")
+        validated_name = validate_worker_name(name) if name is not None else None
         with self._lock:
-            existing = self._workers.get(worker_id)
-            if existing is not None:
-                return (_deep(existing), None)
-            if worker_id in self._groups:
-                raise AlreadyExists(
-                    f"id {worker_id!r} is already registered as a group; "
-                    f"namespaces MUST be disjoint per chapter 02 §7.1"
-                )
+            worker_id = mint_opaque_id("wkr")
             token = generate_credential_token()
             data: dict[str, Any] = {
                 "worker_id": worker_id,
                 # Deployment-scoped workers have no per-experiment binding;
                 # the model's `experiment_id` field is set to the deployment
-                # sentinel `<deployment>` to satisfy the schema while making
+                # sentinel to satisfy the §1.6 `exp_*` grammar while making
                 # the deployment scope visible to clients per chapter 11 §6.
-                "experiment_id": "<deployment>",
+                "experiment_id": DEPLOYMENT_SCOPE_SENTINEL,
                 "registered_at": self._now_str(),
             }
+            if validated_name is not None:
+                data["name"] = validated_name
             if registered_by is not None:
                 data["registered_by"] = registered_by
             if labels:
@@ -384,9 +378,13 @@ class InMemoryControlPlaneStore:
                 raise NotFound(f"worker {worker_id!r}")
             return _deep(worker)
 
-    def list_workers(self) -> list[Worker]:
+    def list_workers(self, *, name: str | None = None) -> list[Worker]:
         with self._lock:
-            return [_deep(w) for _, w in sorted(self._workers.items())]
+            return [
+                _deep(w)
+                for _, w in sorted(self._workers.items())
+                if name is None or w.name == name
+            ]
 
     # ------------------------------------------------------------------
     # Deployment-scoped groups (chapter 11 §6)
@@ -394,42 +392,42 @@ class InMemoryControlPlaneStore:
 
     def register_group(
         self,
-        group_id: str,
+        name: str | None = None,
         *,
         members: Iterable[str] | None = None,
+        created_by: str | None = None,
+        allow_reserved: bool = False,
     ) -> Group:
-        validate_registry_id(group_id, kind="group")
+        validated_name = (
+            validate_group_name(name, allow_reserved=allow_reserved)
+            if name is not None
+            else None
+        )
+        members_list = list(members) if members is not None else []
+        for m in members_list:
+            validate_member_id(m)
         with self._lock:
-            existing = self._groups.get(group_id)
-            if existing is not None:
-                # Idempotent on repeat register_group with the same id
-                # (matches chapter 02 §7's per-experiment shape).
-                return _deep(existing)
-            if group_id in self._workers:
-                raise AlreadyExists(
-                    f"id {group_id!r} is already registered as a worker; "
-                    f"namespaces MUST be disjoint per chapter 02 §7.1"
-                )
-            members_list = list(members) if members is not None else []
-            for m in members_list:
-                validate_registry_id(m, kind="member")
+            group_id = mint_opaque_id("grp")
             # Cycle check: the group plus its members MUST NOT close a
             # cycle through any pre-existing group. Easy here since
-            # `group_id` is new; just check transitively that none of
-            # the listed group-members point back at `group_id`.
+            # `group_id` is freshly minted; just check transitively that
+            # none of the listed group-members point back at `group_id`.
             for m in members_list:
                 if m in self._groups and self._would_close_cycle(m, group_id):
                     raise CycleDetected(
                         f"adding {m!r} to {group_id!r} closes a cycle"
                     )
-            group = Group.model_validate(
-                {
-                    "group_id": group_id,
-                    "experiment_id": "<deployment>",
-                    "members": members_list,
-                    "created_at": self._now_str(),
-                }
-            )
+            data: dict[str, Any] = {
+                "group_id": group_id,
+                "experiment_id": DEPLOYMENT_SCOPE_SENTINEL,
+                "members": members_list,
+                "created_at": self._now_str(),
+            }
+            if validated_name is not None:
+                data["name"] = validated_name
+            if created_by is not None:
+                data["created_by"] = created_by
+            group = Group.model_validate(data)
             self._groups[group_id] = group
             return _deep(group)
 
@@ -453,7 +451,7 @@ class InMemoryControlPlaneStore:
         return False
 
     def add_to_group(self, group_id: str, member_id: str) -> Group:
-        validate_registry_id(member_id, kind="member")
+        validate_member_id(member_id)
         with self._lock:
             group = self._groups.get(group_id)
             if group is None:
@@ -498,9 +496,13 @@ class InMemoryControlPlaneStore:
                 raise NotFound(f"group {group_id!r}")
             return _deep(group)
 
-    def list_groups(self) -> list[Group]:
+    def list_groups(self, *, name: str | None = None) -> list[Group]:
         with self._lock:
-            return [_deep(g) for _, g in sorted(self._groups.items())]
+            return [
+                _deep(g)
+                for _, g in sorted(self._groups.items())
+                if name is None or g.name == name
+            ]
 
     def resolve_worker_in_group(self, worker_id: str, group_id: str) -> bool:
         with self._lock:

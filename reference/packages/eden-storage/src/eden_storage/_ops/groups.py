@@ -9,10 +9,10 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import Any
 
-from eden_contracts import Group
+from eden_contracts import Group, mint_opaque_id
 
 from .._base import _StoreCore, _Tx
-from ..errors import AlreadyExists, CycleDetected, NotFound
+from ..errors import CycleDetected, NotFound
 from ._helpers import _deep, _validated_update
 
 
@@ -21,22 +21,51 @@ class _GroupOpsMixin(_StoreCore):
 
     def register_group(
         self,
-        group_id: str,
+        name: str | None = None,
         *,
         members: Iterable[str] | None = None,
         created_by: str | None = None,
+        allow_reserved: bool = False,
     ) -> Group:
-        """Register a new group, optionally with initial members.
+        """Register a new group, optionally with initial members (issue #128).
 
-        Cycles are detected at write time per
+        Mints an opaque ``group_id`` (``grp_<ulid>``) and takes an
+        optional operator-supplied display ``name``. Each entry in
+        ``members`` MUST be a well-formed opaque member id
+        (``wkr_*`` / ``grp_*``); a member that does not resolve to a
+        registered worker / group is retained as a dangling reference
+        (resolution treats it as membership=false per §7.1), exactly as
+        before the rename. Cycles are detected at write time per
         [`spec/v0/02-data-model.md`](../../../../spec/v0/02-data-model.md)
-        §7.3; a mutation that would close a cycle raises ``CycleDetected``.
-        ``register_group`` of an existing ``group_id`` raises
-        ``AlreadyExists`` (groups are not idempotent on re-register —
-        unlike workers, group creation is operator-driven and a second
-        call most likely indicates a config mistake).
+        §7.3 and raise ``CycleDetected``.
+
+        Raises ``InvalidName`` when ``name`` violates the display-name
+        grammar (§1.7). Reserved group names (``admins`` /
+        ``orchestrators``) raise ``ReservedIdentifier`` UNLESS
+        ``allow_reserved=True`` — the privileged seed path
+        (setup-experiment) passes ``allow_reserved=True`` to mint the
+        auto-created ``admins`` / ``orchestrators`` groups whose name is
+        the reserved literal. A later operator ``register_group`` with
+        that name (default ``allow_reserved=False``) is rejected.
         """
-        self._validate_registry_id(group_id, kind="group")
+        if name is not None:
+            if allow_reserved:
+                # Privileged seed path: skip the reserved-name guard but
+                # still enforce the display-name grammar.
+                from eden_contracts._common import _check_display_name
+
+                from ..errors import InvalidName
+
+                try:
+                    _check_display_name(name)
+                except ValueError as exc:
+                    raise InvalidName(
+                        f"group name {name!r} is not a well-formed "
+                        f"display name: {exc}"
+                    ) from exc
+            else:
+                self._validate_display_name(name, kind="group")
+        group_id = mint_opaque_id("grp")
         # §7 "group is a recursively-resolved set": dedup the input
         # members in stable order so the durable store's
         # `(group_id, member_id)` uniqueness constraint never sees a
@@ -50,24 +79,16 @@ class _GroupOpsMixin(_StoreCore):
             seen.add(member)
             member_list.append(member)
         for member in member_list:
-            self._validate_registry_id(member, kind="member")
+            self._validate_member_id(member)
         with self._atomic_operation():
-            if self._get_group(group_id) is not None:
-                raise AlreadyExists(f"group {group_id!r}")
-            # §7.1 disjoint-namespaces: a worker with the same id MUST
-            # NOT exist. See the symmetric check in register_worker.
-            if self._get_worker(group_id) is not None:
-                raise AlreadyExists(
-                    f"id {group_id!r} is already registered as a worker; "
-                    f"worker / group namespaces MUST be disjoint per "
-                    f"chapter 02 §7.1"
-                )
             group_data: dict[str, Any] = {
                 "group_id": group_id,
                 "experiment_id": self._experiment_id,
                 "members": member_list,
                 "created_at": self._ts(),
             }
+            if name is not None:
+                group_data["name"] = name
             if created_by is not None:
                 group_data["created_by"] = created_by
             group = Group.model_validate(group_data)
@@ -79,7 +100,7 @@ class _GroupOpsMixin(_StoreCore):
 
     def add_to_group(self, group_id: str, member_id: str) -> Group:
         """Add ``member_id`` to ``group_id``. Idempotent on already-member."""
-        self._validate_registry_id(member_id, kind="member")
+        self._validate_member_id(member_id)
         with self._atomic_operation():
             group = self._get_group(group_id)
             if group is None:
@@ -131,10 +152,20 @@ class _GroupOpsMixin(_StoreCore):
                 raise NotFound(f"group {group_id!r}")
             return _deep(group)
 
-    def list_groups(self) -> list[Group]:
-        """Return all groups (deep copies, sorted by ``group_id``)."""
+    def list_groups(self, name: str | None = None) -> list[Group]:
+        """Return groups (deep copies, sorted by ``group_id``).
+
+        When ``name`` is supplied, returns only groups whose display
+        ``name`` matches exactly (case-sensitive, against the persisted
+        NFC form) — 0..N matches. ``name=None`` returns all groups
+        (issue #128).
+        """
         with self._atomic_operation():
-            return [_deep(g) for g in self._iter_groups()]
+            return [
+                _deep(g)
+                for g in self._iter_groups()
+                if name is None or g.name == name
+            ]
 
     def resolve_worker_in_group(self, worker_id: str, group_id: str) -> bool:
         """Return ``True`` iff ``worker_id`` is transitively in ``group_id``.

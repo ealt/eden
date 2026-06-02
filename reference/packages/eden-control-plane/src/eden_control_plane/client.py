@@ -128,21 +128,25 @@ class ControlPlaneClient:
 
     def register_experiment(
         self,
-        experiment_id: str,
         config_uri: str,
+        *,
+        name: str | None = None,
     ) -> RegisteredExperiment:
         """`POST /v0/control/experiments`.
 
-        Admin-gated. Idempotent on (experiment_id, config_uri); a
-        differing config_uri raises `AlreadyExists`.
+        Admin-gated. The server mints a fresh `exp_*` (chapter 11 §2);
+        the caller supplies only the `config_uri` and an optional
+        display `name`. Every call creates a distinct entry.
         """
-        body = RegisterExperimentRequest(
-            experiment_id=experiment_id, config_uri=config_uri
+        body = (
+            RegisterExperimentRequest(config_uri=config_uri, name=name)
+            if name is not None
+            else RegisterExperimentRequest(config_uri=config_uri)
         )
         resp = self._request(
             "POST",
             f"{self._base}/experiments",
-            json=body.model_dump(mode="json"),
+            json=body.model_dump(mode="json", exclude_none=True),
         )
         return RegisteredExperiment.model_validate(resp.json())
 

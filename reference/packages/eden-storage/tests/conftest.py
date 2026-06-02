@@ -20,16 +20,20 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from eden_contracts import mint_opaque_id
 from eden_storage import InMemoryStore, PostgresStore, SqliteStore, Store
 
-# Workers pre-registered against every freshly-built store. The
+# Friendly handles pre-registered against every freshly-built store.
+# Since the identity rename (issue #128) ``register_worker`` MINTS an
+# opaque ``wkr_*`` id and takes an optional display ``name``; the
 # claim-time RBAC enforcement in `Store.claim` (spec §3.5 step 2)
-# requires the caller's worker_id to exist in the registry; auto-
-# registering this small set keeps the legacy state-machine tests
-# focused on transition shapes rather than registration plumbing.
-# Tests that exercise the RBAC checks themselves use bespoke
-# worker_ids and register them inline.
-_DEFAULT_WORKERS: tuple[str, ...] = (
+# requires the caller's opaque ``worker_id`` to exist in the registry.
+# We register each friendly handle as the worker's display ``name`` and
+# expose the minted ids through ``store.seeded_workers[<handle>]`` so the
+# legacy state-machine tests can resolve a stable handle to the opaque
+# id the store actually minted. Tests that exercise registration
+# directly register their own workers inline and capture the returned id.
+_DEFAULT_WORKER_NAMES: tuple[str, ...] = (
     "test-worker",
     "worker-a",
     "worker-b",
@@ -46,31 +50,42 @@ _DEFAULT_WORKERS: tuple[str, ...] = (
 )
 
 
-def _seed_default_workers(store: Store) -> None:
-    """Register the standard test-worker set on a fresh store.
+def _seed_default_workers(store: Store) -> dict[str, str]:
+    """Register the standard handle set on a fresh store.
 
-    Idempotent on existing rows (per spec §6.3) so suites that share
-    a backend (postgres-per-schema) don't fail on second-call.
+    Returns a ``{handle: minted_worker_id}`` map. Every call mints fresh
+    rows (there is no id-based idempotency post-#128), which is fine: a
+    given test gets its own store, and the map resolves handles to the
+    ids that store actually minted.
     """
-    for wid in _DEFAULT_WORKERS:
-        store.register_worker(wid)
+    seeded: dict[str, str] = {}
+    for handle in _DEFAULT_WORKER_NAMES:
+        worker, _ = store.register_worker(name=handle)
+        seeded[handle] = worker.worker_id
+    return seeded
+
+
+def _default_experiment_id() -> str:
+    """Mint a fresh opaque ``exp_*`` id for a test store (issue #128)."""
+    return mint_opaque_id("exp")
 
 
 def _memory_factory(
     tmp_path: Path,  # noqa: ARG001 - accepted for uniform factory signature
 ) -> Callable[..., Store]:
     def _make(
-        experiment_id: str = "exp-test",
+        experiment_id: str | None = None,
         *,
         seed_workers: bool = True,
         **kwargs: Any,
     ) -> Store:
         store = InMemoryStore(
-            experiment_id=experiment_id,
+            experiment_id=experiment_id or _default_experiment_id(),
             **kwargs,
         )
-        if seed_workers:
-            _seed_default_workers(store)
+        store.seeded_workers = (  # type: ignore[attr-defined]
+            _seed_default_workers(store) if seed_workers else {}
+        )
         return store
 
     return _make
@@ -82,7 +97,7 @@ def _sqlite_factory(
     counter = itertools.count(1)
 
     def _make(
-        experiment_id: str = "exp-test",
+        experiment_id: str | None = None,
         *,
         seed_workers: bool = True,
         **kwargs: Any,
@@ -92,12 +107,13 @@ def _sqlite_factory(
         # don't share state.
         db_path = tmp_path / f"store-{next(counter):04d}.db"
         store = SqliteStore(
-            experiment_id,
+            experiment_id or _default_experiment_id(),
             db_path,
             **kwargs,
         )
-        if seed_workers:
-            _seed_default_workers(store)
+        store.seeded_workers = (  # type: ignore[attr-defined]
+            _seed_default_workers(store) if seed_workers else {}
+        )
         return store
 
     return _make
@@ -123,11 +139,12 @@ def _postgres_factory(
     counter = itertools.count(1)
 
     def _make(
-        experiment_id: str = "exp-test",
+        experiment_id: str | None = None,
         *,
         seed_workers: bool = True,
         **kwargs: Any,
     ) -> Store:
+        experiment_id = experiment_id or _default_experiment_id()
         schema = f"test_{secrets.token_hex(8)}_{next(counter):04d}"
         # Pre-create the schema. PostgresStore opens its own
         # connection with `search_path` overridden so all DDL +
@@ -150,8 +167,9 @@ def _postgres_factory(
             store_dsn,
             **kwargs,
         )
-        if seed_workers:
-            _seed_default_workers(store)
+        store.seeded_workers = (  # type: ignore[attr-defined]
+            _seed_default_workers(store) if seed_workers else {}
+        )
 
         def _drop() -> None:
             store.close()

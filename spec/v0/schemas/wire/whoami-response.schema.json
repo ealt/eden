@@ -8,9 +8,15 @@
   "properties": {
     "worker_id": {
       "type": "string",
+      "pattern": "^wkr_[0-9a-hjkmnp-tv-z]{26}$",
+      "description": "Opaque, system-minted worker identifier (spec/v0/02-data-model.md §1.6)."
+    },
+    "name": {
+      "type": "string",
+      "format": "display-name",
       "minLength": 1,
-      "maxLength": 64,
-      "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
+      "maxLength": 128,
+      "description": "OPTIONAL operator-supplied display label of the authenticated worker (spec/v0/02-data-model.md §1.7)."
     }
   }
 }

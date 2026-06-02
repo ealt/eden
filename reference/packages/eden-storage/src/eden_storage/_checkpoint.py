@@ -354,6 +354,12 @@ def _snapshot_store(store: _StoreBase) -> _Snapshot:
     }
     if experiment.base_commit_sha is not None:
         experiment_row["base_commit_sha"] = experiment.base_commit_sha
+    # Issue #128: record the export-side display name for provenance.
+    # The receiver supplies its own experiment name at store
+    # construction (the experiment_id / name are minted at setup, not
+    # by storage on import), so this is informational in the archive.
+    if experiment.name is not None:
+        experiment_row["name"] = experiment.name
     if experiment.imported_from is not None:
         experiment_row["imported_from"] = experiment.imported_from.model_dump(
             mode="json"

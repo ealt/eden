@@ -49,7 +49,7 @@ class TestLegalTransitions:
     def test_claim_pending_to_claimed(self, make_store) -> None:
         store = make_store()
         store.create_ideation_task("t1")
-        claim = store.claim("t1", "ideator-1")
+        claim = store.claim("t1", store.seeded_workers["ideator-1"])
         assert store.read_task("t1").state == "claimed"
         assert claim.worker_id
         assert [e.type for e in store.events()] == ["task.created", "task.claimed"]
@@ -57,7 +57,7 @@ class TestLegalTransitions:
     def test_submit_claimed_to_submitted(self, make_store) -> None:
         store = make_store()
         store.create_ideation_task("t1")
-        claim = store.claim("t1", "ideator-1")
+        claim = store.claim("t1", store.seeded_workers["ideator-1"])
         store.submit("t1", claim.worker_id, IdeaSubmission(status="success"))
         assert store.read_task("t1").state == "submitted"
         assert [e.type for e in store.events()] == [
@@ -69,7 +69,7 @@ class TestLegalTransitions:
     def test_accept_submitted_to_completed(self, make_store) -> None:
         store = make_store()
         store.create_ideation_task("t1")
-        claim = store.claim("t1", "ideator-1")
+        claim = store.claim("t1", store.seeded_workers["ideator-1"])
         store.submit("t1", claim.worker_id, IdeaSubmission(status="success"))
         store.accept("t1")
         task = store.read_task("t1")
@@ -85,7 +85,7 @@ class TestLegalTransitions:
     def test_reject_submitted_to_failed(self, make_store) -> None:
         store = make_store()
         store.create_ideation_task("t1")
-        claim = store.claim("t1", "ideator-1")
+        claim = store.claim("t1", store.seeded_workers["ideator-1"])
         store.submit("t1", claim.worker_id, IdeaSubmission(status="error"))
         store.reject("t1", "worker_error")
         task = store.read_task("t1")
@@ -97,7 +97,7 @@ class TestLegalTransitions:
     def test_reclaim_claimed_to_pending(self, make_store) -> None:
         store = make_store()
         store.create_ideation_task("t1")
-        store.claim("t1", "ideator-1")
+        store.claim("t1", store.seeded_workers["ideator-1"])
         store.reclaim("t1", "health_policy")
         task = store.read_task("t1")
         assert task.state == "pending"
@@ -112,36 +112,36 @@ class TestIllegalTransitions:
     def test_claim_from_claimed_rejected(self, make_store) -> None:
         store = make_store()
         store.create_ideation_task("t1")
-        store.claim("t1", "ideator-1")
+        store.claim("t1", store.seeded_workers["ideator-1"])
         with pytest.raises(IllegalTransition):
-            store.claim("t1", "ideator-2")
+            store.claim("t1", store.seeded_workers["ideator-2"])
 
     def test_claim_from_completed_rejected(self, make_store) -> None:
         store = make_store()
         store.create_ideation_task("t1")
-        claim = store.claim("t1", "ideator-1")
+        claim = store.claim("t1", store.seeded_workers["ideator-1"])
         store.submit("t1", claim.worker_id, IdeaSubmission(status="success"))
         store.accept("t1")
         with pytest.raises(IllegalTransition):
-            store.claim("t1", "ideator-2")
+            store.claim("t1", store.seeded_workers["ideator-2"])
 
     def test_submit_from_pending_rejected(self, make_store) -> None:
         store = make_store()
         store.create_ideation_task("t1")
         with pytest.raises(NotClaimed):
-            store.submit("t1", "ideator-1", IdeaSubmission(status="success"))
+            store.submit("t1", store.seeded_workers["ideator-1"], IdeaSubmission(status="success"))
 
     def test_accept_from_claimed_rejected(self, make_store) -> None:
         store = make_store()
         store.create_ideation_task("t1")
-        store.claim("t1", "ideator-1")
+        store.claim("t1", store.seeded_workers["ideator-1"])
         with pytest.raises(IllegalTransition):
             store.accept("t1")
 
     def test_reclaim_from_terminal_rejected(self, make_store) -> None:
         store = make_store()
         store.create_ideation_task("t1")
-        claim = store.claim("t1", "ideator-1")
+        claim = store.claim("t1", store.seeded_workers["ideator-1"])
         store.submit("t1", claim.worker_id, IdeaSubmission(status="success"))
         store.accept("t1")
         with pytest.raises(IllegalTransition):
@@ -151,7 +151,7 @@ class TestIllegalTransitions:
         """§5.1: automatic reclaim (expired, health_policy) MUST NOT apply to submitted."""
         store = make_store()
         store.create_ideation_task("t1")
-        claim = store.claim("t1", "ideator-1")
+        claim = store.claim("t1", store.seeded_workers["ideator-1"])
         store.submit("t1", claim.worker_id, IdeaSubmission(status="success"))
         with pytest.raises(IllegalTransition):
             store.reclaim("t1", "expired")
@@ -161,7 +161,7 @@ class TestIllegalTransitions:
     def test_operator_reclaim_of_submitted_allowed(self, make_store) -> None:
         store = make_store()
         store.create_ideation_task("t1")
-        claim = store.claim("t1", "ideator-1")
+        claim = store.claim("t1", store.seeded_workers["ideator-1"])
         store.submit("t1", claim.worker_id, IdeaSubmission(status="success"))
         store.reclaim("t1", "operator")
         assert store.read_task("t1").state == "pending"
@@ -178,15 +178,15 @@ class TestAtomicClaimMatch:
     def test_submit_wrong_claimant_rejected(self, make_store) -> None:
         store = make_store()
         store.create_ideation_task("t1")
-        store.claim("t1", "ideator-1")
+        store.claim("t1", store.seeded_workers["ideator-1"])
         with pytest.raises(WrongClaimant):
-            store.submit("t1", "ideator-2", IdeaSubmission(status="success"))
+            store.submit("t1", store.seeded_workers["ideator-2"], IdeaSubmission(status="success"))
 
     def test_submit_after_reclaim_rejected(self, make_store) -> None:
         """§5.2: reclamation clears the claim; submit by the prior claimant fails."""
         store = make_store()
         store.create_ideation_task("t1")
-        stale_claim = store.claim("t1", "ideator-1")
+        stale_claim = store.claim("t1", store.seeded_workers["ideator-1"])
         store.reclaim("t1", "expired")
         with pytest.raises(NotClaimed):
             store.submit("t1", stale_claim.worker_id, IdeaSubmission(status="success"))
@@ -195,10 +195,10 @@ class TestAtomicClaimMatch:
         """A rejected submit must not move the task."""
         store = make_store()
         store.create_ideation_task("t1")
-        store.claim("t1", "ideator-1")
+        store.claim("t1", store.seeded_workers["ideator-1"])
         before_events = store.events()
         with pytest.raises(WrongClaimant):
-            store.submit("t1", "ideator-2", IdeaSubmission(status="success"))
+            store.submit("t1", store.seeded_workers["ideator-2"], IdeaSubmission(status="success"))
         assert store.events() == before_events
         assert store.read_task("t1").state == "claimed"
 
@@ -211,7 +211,7 @@ class TestIdempotentResubmit:
         _make_ready_idea(store, "p1")
         _make_ready_idea(store, "p2")
         store.create_ideation_task("t1")
-        claim = store.claim("t1", "ideator-1")
+        claim = store.claim("t1", store.seeded_workers["ideator-1"])
         store.submit("t1", claim.worker_id, IdeaSubmission(status="success", idea_ids=("p1", "p2")))
         events_after_first = store.events()
         store.submit("t1", claim.worker_id, IdeaSubmission(status="success", idea_ids=("p1", "p2")))
@@ -223,7 +223,7 @@ class TestIdempotentResubmit:
         _make_ready_idea(store, "p1")
         _make_ready_idea(store, "p2")
         store.create_ideation_task("t1")
-        claim = store.claim("t1", "ideator-1")
+        claim = store.claim("t1", store.seeded_workers["ideator-1"])
         store.submit("t1", claim.worker_id, IdeaSubmission(status="success", idea_ids=("p1", "p2")))
         store.submit("t1", claim.worker_id, IdeaSubmission(status="success", idea_ids=("p2", "p1")))
         assert store.read_task("t1").state == "submitted"
@@ -232,7 +232,7 @@ class TestIdempotentResubmit:
         store = make_store()
         _make_ready_idea(store, "p1")
         store.create_ideation_task("t1")
-        claim = store.claim("t1", "ideator-1")
+        claim = store.claim("t1", store.seeded_workers["ideator-1"])
         store.submit("t1", claim.worker_id, IdeaSubmission(status="success", idea_ids=("p1",)))
         with pytest.raises(ConflictingResubmission):
             store.submit("t1", claim.worker_id, IdeaSubmission(status="error"))
@@ -248,7 +248,7 @@ class TestTerminalImmutability:
     def test_submit_after_terminal_rejected(self, make_store) -> None:
         store = make_store()
         store.create_ideation_task("t1")
-        claim = store.claim("t1", "ideator-1")
+        claim = store.claim("t1", store.seeded_workers["ideator-1"])
         store.submit("t1", claim.worker_id, IdeaSubmission(status="success"))
         store.accept("t1")
         # §4.4 + §4.1: a submit against a terminal task fires NotClaimed
@@ -259,7 +259,7 @@ class TestTerminalImmutability:
     def test_accept_after_terminal_rejected(self, make_store) -> None:
         store = make_store()
         store.create_ideation_task("t1")
-        claim = store.claim("t1", "ideator-1")
+        claim = store.claim("t1", store.seeded_workers["ideator-1"])
         store.submit("t1", claim.worker_id, IdeaSubmission(status="success"))
         store.accept("t1")
         with pytest.raises(IllegalTransition):

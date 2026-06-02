@@ -141,20 +141,21 @@ class InMemoryStore(_StoreBase):
         return dict(self._dispatch_mode)
 
     def _get_experiment(self) -> Experiment:
-        # base_commit_sha carries NotNone — passing an explicit None would
-        # trip the reject-null validator, so omit the kwarg when absent and
-        # let the field default to None.
-        return Experiment(
-            experiment_id=self._experiment_id,
-            state=self._experiment_state,  # type: ignore[arg-type]
-            created_at=self._experiment_created_at,
-            imported_from=self._imported_from,
-            **(
-                {"base_commit_sha": self._base_commit_sha}
-                if self._base_commit_sha is not None
-                else {}
-            ),
-        )
+        # Build via dict so an absent optional field is omitted entirely —
+        # the `NotNone` validators on Experiment.name / .base_commit_sha
+        # reject explicit null (mirroring the JSON-schema absent-vs-null
+        # distinction); passing an explicit None would trip the validator.
+        data: dict[str, object] = {
+            "experiment_id": self._experiment_id,
+            "state": self._experiment_state,
+            "created_at": self._experiment_created_at,
+            "imported_from": self._imported_from,
+        }
+        if self._experiment_name is not None:
+            data["name"] = self._experiment_name
+        if self._base_commit_sha is not None:
+            data["base_commit_sha"] = self._base_commit_sha
+        return Experiment.model_validate(data)
 
     def _apply_commit(self, tx: _Tx) -> None:
         for task_id, task in tx.tasks.items():

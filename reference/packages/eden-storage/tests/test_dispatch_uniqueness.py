@@ -49,7 +49,7 @@ def _advance_variant_to_starting_with_commit(
     ``create_evaluation_task`` checks.
     """
     store.create_execution_task("t-exec-bootstrap", idea_id)
-    store.claim("t-exec-bootstrap", "executor-bootstrap")
+    store.claim("t-exec-bootstrap", store.seeded_workers["executor-bootstrap"])
     store.create_variant(
         Variant(
             variant_id=variant_id,
@@ -63,7 +63,7 @@ def _advance_variant_to_starting_with_commit(
     )
     store.submit(
         "t-exec-bootstrap",
-        "executor-bootstrap",
+        store.seeded_workers["executor-bootstrap"],
         VariantSubmission(
             status="success",
             variant_id=variant_id,
@@ -162,10 +162,10 @@ def test_terminal_evaluation_does_not_block_retry(
     _advance_variant_to_starting_with_commit(store, "p1", "variant-1")
 
     store.create_evaluation_task("t-eval-1", "variant-1")
-    store.claim("t-eval-1", "evaluator-w")
+    store.claim("t-eval-1", store.seeded_workers["evaluator-w"])
     store.submit(
         "t-eval-1",
-        "evaluator-w",
+        store.seeded_workers["evaluator-w"],
         EvaluationSubmission(status="evaluation_error", variant_id="variant-1"),
     )
     store.reject("t-eval-1", "worker_error")

@@ -14,7 +14,7 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from ._common import CommitSha, DateTimeStr, NotNone
+from ._common import CommitSha, DateTimeStr, DisplayName, ExperimentId, NotNone
 
 ExperimentState = Literal["running", "terminated"]
 """Lifecycle state per ``02-data-model.md`` §2.5.
@@ -40,6 +40,11 @@ class ImportProvenance(BaseModel):
 
     checkpoint_exported_at: DateTimeStr
     checkpoint_format_version: Annotated[str, Field(min_length=1)]
+    source_experiment_id: Annotated[ExperimentId | None, NotNone] = None
+    """Export-side ``experiment_id`` of the source experiment, stamped at
+    import time when the receiver minted a fresh ``exp_*`` (no
+    ``as_experiment_id`` override). Provenance only — never the PK
+    (spec/v0/10-checkpoints.md §10, 02-data-model.md §2.5)."""
 
 
 class Experiment(BaseModel):
@@ -51,7 +56,8 @@ class Experiment(BaseModel):
 
     model_config = ConfigDict(strict=True, extra="allow")
 
-    experiment_id: Annotated[str, Field(min_length=1)]
+    experiment_id: ExperimentId
+    name: Annotated[DisplayName | None, NotNone] = None
     state: ExperimentState
     created_at: DateTimeStr
     base_commit_sha: Annotated[CommitSha | None, NotNone] = None
