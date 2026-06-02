@@ -438,6 +438,17 @@ services:
       - ${EDEN_ADMIN_TOKEN:?}
       - --experiment-config
       - /etc/eden/experiment-config.yaml
+      # Issue #145: per-experiment config + credential dirs for the
+      # experiment switcher. --experiment-config is the deployment
+      # default; non-default experiments load <dir>/<id>.yaml from the
+      # config dir. --credentials-dir keeps the web-ui's per-experiment
+      # worker tokens on the mounted credentials volume (the new
+      # resolve_credential_dir otherwise falls back to an in-container
+      # XDG path that is not persisted).
+      - --experiment-config-dir
+      - /var/lib/eden/web-ui-configs
+      - --credentials-dir
+      - /var/lib/eden/credentials
       - --session-secret
       - ${EDEN_SESSION_SECRET:?EDEN_SESSION_SECRET must be set (run setup-experiment)}
       - --artifacts-dir
@@ -477,6 +488,8 @@ services:
       - ${EDEN_EXPERIMENT_DATA_ROOT:?}/web-ui-repo:/var/lib/eden/repo
       - ${EDEN_EXPERIMENT_DATA_ROOT:?}/artifacts:/var/lib/eden/artifacts
       - ${EDEN_EXPERIMENT_DATA_ROOT:?}/credentials/web-ui:/var/lib/eden/credentials
+      # Issue #145: per-experiment config YAMLs for the switcher.
+      - ${EDEN_EXPERIMENT_DATA_ROOT:?}/web-ui-configs:/var/lib/eden/web-ui-configs
       - ${EDEN_FORGEJO_CREDS_DIR_HOST:?}/credential-helper.sh:/etc/eden/credential-helper.sh:ro
       # Issue #109: per-service log bind-mount.
       - ${EDEN_EXPERIMENT_DATA_ROOT:?}/logs/web-ui:/var/lib/eden/logs

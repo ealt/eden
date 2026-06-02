@@ -20,6 +20,9 @@ the wire-observable end-state should look like.
   experiment (operator wire op + orchestrator policy-driven path),
   reference termination policies, drain semantics, idempotent
   re-terminate (Phase 12a-3).
+- [Web UI multi-experiment operation](web-ui-multi-experiment.md) — the
+  experiment switcher, the four credential-bootstrap postures, and the
+  per-experiment config / repo layout (issue #145).
 
 These docs assume the reference Compose deployment + the
 [`docs/glossary.md`](../glossary.md) vocabulary. For the underlying

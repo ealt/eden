@@ -349,6 +349,7 @@ mkdir -p \
     "${EDEN_EXPERIMENT_DATA_ROOT}/credentials/executor" \
     "${EDEN_EXPERIMENT_DATA_ROOT}/credentials/evaluator" \
     "${EDEN_EXPERIMENT_DATA_ROOT}/credentials/web-ui" \
+    "${EDEN_EXPERIMENT_DATA_ROOT}/web-ui-configs" \
     "${EDEN_EXPERIMENT_DATA_ROOT}/logs/task-store-server" \
     "${EDEN_EXPERIMENT_DATA_ROOT}/logs/orchestrator" \
     "${EDEN_EXPERIMENT_DATA_ROOT}/logs/ideator-host" \
@@ -382,6 +383,7 @@ if ! chmod 0777 \
     "${EDEN_EXPERIMENT_DATA_ROOT}/credentials/executor" \
     "${EDEN_EXPERIMENT_DATA_ROOT}/credentials/evaluator" \
     "${EDEN_EXPERIMENT_DATA_ROOT}/credentials/web-ui" \
+    "${EDEN_EXPERIMENT_DATA_ROOT}/web-ui-configs" \
     "${EDEN_EXPERIMENT_DATA_ROOT}/logs" \
     "${EDEN_EXPERIMENT_DATA_ROOT}/logs/task-store-server" \
     "${EDEN_EXPERIMENT_DATA_ROOT}/logs/orchestrator" \
@@ -472,6 +474,13 @@ fi
 
 # --- Copy experiment config into compose dir ---
 cp "$CONFIG_PATH" "${COMPOSE_DIR}/experiment-config.yaml"
+
+# Issue #145: also drop the config into the web-ui's per-experiment
+# config dir as <experiment_id>.yaml. The web-ui's experiment switcher
+# loads non-default experiments' objective / evaluation_schema from this
+# dir (the deployment default still reads --experiment-config). Idempotent
+# overwrite; running setup-experiment per experiment populates the dir.
+cp "$CONFIG_PATH" "${EDEN_EXPERIMENT_DATA_ROOT}/web-ui-configs/${EXPERIMENT_ID}.yaml"
 
 # --- Write the partial .env (no EDEN_BASE_COMMIT_SHA yet) ---
 # Postgres DSN points at the in-network postgres service hostname.
