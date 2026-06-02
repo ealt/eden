@@ -19,6 +19,7 @@ from conftest import (
     WORKER_ID,
     _config,
     _now,
+    _one_experiment_factory,
     get_csrf,
 )
 from eden_storage import InMemoryStore
@@ -41,7 +42,7 @@ class TestCookieAttributes:
         self, store: InMemoryStore, artifacts_dir: Path
     ) -> None:
         app = make_app(
-            store=store,
+            store_factory=_one_experiment_factory(store),
             experiment_id=EXPERIMENT_ID,
             experiment_config=_config(),
             worker_id=WORKER_ID,
@@ -67,7 +68,7 @@ class TestBearerLeak:
         StoreClient holds it; tests use InMemoryStore), assert that no
         endpoint renders or echoes the configured bearer string."""
         app = make_app(
-            store=store,
+            store_factory=_one_experiment_factory(store),
             experiment_id=EXPERIMENT_ID,
             experiment_config=_config(),
             worker_id=WORKER_ID,

@@ -35,6 +35,7 @@ from conftest import (
     WORKER_ID,
     _config,
     _now,
+    _one_experiment_factory,
     get_csrf,
 )
 from eden_contracts import Idea, TaskTarget, Variant
@@ -828,7 +829,7 @@ def test_reassign_url_pattern_is_under_tasks_not_workers_or_groups(
     store: InMemoryStore,
 ) -> None:
     app: FastAPI = make_app(
-        store=store,
+        store_factory=_one_experiment_factory(store),
         experiment_id=EXPERIMENT_ID,
         experiment_config=_config(),
         worker_id=WORKER_ID,

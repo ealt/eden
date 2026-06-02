@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 from eden_contracts import (
     EvaluationTask,
@@ -13,10 +13,15 @@ from eden_contracts import (
     Task,
 )
 from eden_storage.errors import NotFound as StorageNotFound
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Request, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
 
-from .._helpers import get_session, read_idea_content, read_variant_artifact
+from .._helpers import (
+    get_session,
+    read_idea_content,
+    read_variant_artifact,
+    resolve_active_context,
+)
 from .._lineage import (
     lineage_for_evaluation_task,
     lineage_for_execution_task,
@@ -122,7 +127,10 @@ async def tasks_index(request: Request) -> HTMLResponse | RedirectResponse:
     session = get_session(request)
     if session is None:
         return RedirectResponse(url="/signin", status_code=303)
-    store = request.app.state.store
+    active = resolve_active_context(request)
+    if isinstance(active, Response):
+        return active
+    store = active.store
     now = _now_dt(request)
 
     filters = _parse_task_filters(request)
@@ -174,7 +182,10 @@ async def task_detail(
     session = get_session(request)
     if session is None:
         return RedirectResponse(url="/signin", status_code=303)
-    store = request.app.state.store
+    active = resolve_active_context(request)
+    if isinstance(active, Response):
+        return active
+    store = active.store
     now = _now_dt(request)
 
     try:
@@ -224,7 +235,10 @@ async def variants_index(request: Request) -> HTMLResponse | RedirectResponse:
     session = get_session(request)
     if session is None:
         return RedirectResponse(url="/signin", status_code=303)
-    store = request.app.state.store
+    active = resolve_active_context(request)
+    if isinstance(active, Response):
+        return active
+    store = active.store
 
     status = _coerce_filter(request.query_params.get("status"), _VARIANT_STATUS_VALUES)
     worker = coerce_worker_filter(request.query_params.get("worker"))
@@ -251,7 +265,9 @@ async def variants_index(request: Request) -> HTMLResponse | RedirectResponse:
 
     try:
         variants = store.list_variants(status=status)
-        exec_tasks = store.list_tasks(kind="execution")
+        exec_tasks = cast(
+            "list[ExecutionTask]", store.list_tasks(kind="execution")
+        )
     except Exception:  # noqa: BLE001 — transport/store-domain
         return _read_failure_response(request, "could not load variants")
     exec_terminal_by_idea: dict[str, bool] = {
@@ -307,7 +323,10 @@ async def variant_detail(
     session = get_session(request)
     if session is None:
         return RedirectResponse(url="/signin", status_code=303)
-    store = request.app.state.store
+    active = resolve_active_context(request)
+    if isinstance(active, Response):
+        return active
+    store = active.store
     artifacts_dir = request.app.state.artifacts_dir
 
     try:
@@ -383,7 +402,10 @@ async def events_index(request: Request) -> HTMLResponse | RedirectResponse:
     session = get_session(request)
     if session is None:
         return RedirectResponse(url="/signin", status_code=303)
-    store = request.app.state.store
+    active = resolve_active_context(request)
+    if isinstance(active, Response):
+        return active
+    store = active.store
 
     raw_limit = request.query_params.get("limit")
     limit = _DEFAULT_EVENTS_LIMIT
@@ -431,7 +453,10 @@ async def ideas_index(request: Request) -> HTMLResponse | RedirectResponse:
     session = get_session(request)
     if session is None:
         return RedirectResponse(url="/signin", status_code=303)
-    store = request.app.state.store
+    active = resolve_active_context(request)
+    if isinstance(active, Response):
+        return active
+    store = active.store
     state = _coerce_filter(request.query_params.get("state"), _IDEA_STATE_VALUES)
     if state == _INVALID_FILTER:
         return request.app.state.templates.TemplateResponse(
@@ -496,13 +521,18 @@ async def idea_detail(
     session = get_session(request)
     if session is None:
         return RedirectResponse(url="/signin", status_code=303)
-    store = request.app.state.store
+    active = resolve_active_context(request)
+    if isinstance(active, Response):
+        return active
+    store = active.store
     artifacts_dir = request.app.state.artifacts_dir
     try:
         idea = store.read_idea(idea_id)
         live_execution_tasks = [
             t
-            for t in store.list_tasks(kind="execution")
+            for t in cast(
+                "list[ExecutionTask]", store.list_tasks(kind="execution")
+            )
             if t.payload.idea_id == idea_id
         ]
         workers_list = store.list_workers()
@@ -545,8 +575,11 @@ async def experiment_detail(
     session = get_session(request)
     if session is None:
         return RedirectResponse(url="/signin", status_code=303)
-    store = request.app.state.store
-    admin_store = request.app.state.admin_store
+    active = resolve_active_context(request)
+    if isinstance(active, Response):
+        return active
+    store = active.store
+    admin_store = active.admin_store
     try:
         experiment = store.read_experiment()
         events_full = store.replay()

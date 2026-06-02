@@ -8,14 +8,15 @@ store.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 from eden_contracts import ExperimentConfig
 from eden_control_plane import ControlPlaneClient
 from eden_git import GitRepo
-from eden_storage import Store
 from eden_storage.errors import NotFound as StorageNotFound
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse
@@ -23,6 +24,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from .middleware import AdminGateMiddleware
+from .repo_factory import RepoMaterializer
 from .routes import admin as admin_routes
 from .routes import admin_artifacts as admin_artifacts_routes
 from .routes import admin_experiments as admin_experiments_routes
@@ -34,8 +36,10 @@ from .routes import evaluator as evaluator_routes
 from .routes import executor as executor_routes
 from .routes import ideator as ideator_routes
 from .routes import index as index_routes
+from .routes._helpers import switcher_context
 from .routes.admin import control as admin_control_routes
 from .sessions import SessionCodec
+from .store_factory import StaticStoreFactory, StoreFactory
 
 _TEMPLATES_DIR = Path(__file__).parent / "templates"
 _STATIC_DIR = Path(__file__).parent / "static"
@@ -46,6 +50,26 @@ def _now_factory() -> Callable[[], datetime]:
         return datetime.now(UTC)
 
     return _now
+
+
+def _experiment_context(request: Request) -> dict[str, Any]:
+    """Template context processor: per-request active ``experiment_id``.
+
+    Issue #145 moves ``experiment_id`` from a render-time Jinja global
+    (one value for the process lifetime) to a per-request value, so
+    every template reflects the experiment the operator selected. The
+    active id is stashed on ``request.state.active_experiment_id`` by
+    ``resolve_active_context``; absent that (unauthenticated pages,
+    handlers that don't resolve), it falls back to the deployment
+    default.
+    """
+    active = getattr(request.state, "active_experiment_id", None)
+    default = request.app.state.experiment_id
+    return {
+        "experiment_id": active or default,
+        "active_experiment_id": active,
+        "default_experiment_id": default,
+    }
 
 
 def _register_routers(
@@ -72,9 +96,9 @@ def _register_routers(
 
 def make_app(
     *,
-    store: Store,
+    store_factory: StoreFactory | StaticStoreFactory,
     experiment_id: str,
-    experiment_config: ExperimentConfig,
+    experiment_config: ExperimentConfig | None,
     worker_id: str,
     session_secret: str,
     claim_ttl_seconds: int,
@@ -82,36 +106,58 @@ def make_app(
     secure_cookies: bool = False,
     now: Callable[[], datetime] | None = None,
     repo: GitRepo | None = None,
+    repo_materializer: RepoMaterializer | None = None,
     clone_url: str | None = None,
     base_commit_sha: str | None = None,
-    admin_store: Store | None = None,
     control_plane: ControlPlaneClient | None = None,
+    experiment_config_dir: Path | None = None,
 ) -> FastAPI:
     """Construct the FastAPI app.
 
     ``now`` is injected so tests can pin time deterministically.
     ``repo`` gates the executor module (None → routes unregistered).
-    ``admin_store`` is a separate ``Store`` bearing the deployment
-    admin credential for admin-gated wire ops; ``None`` → mutation
-    controls render disabled and POSTs 303 to ``?error=admin-disabled``
-    (plan §D.3 four-posture matrix).
+
+    Issue #145: per-experiment routing goes through ``store_factory``.
+    The CLI builds a live :class:`StoreFactory`; tests build a
+    :class:`StaticStoreFactory` (one pre-built store for the single
+    deployment experiment). When the factory's admin view is ``None``
+    (no admin token configured), mutation controls render disabled and
+    admin POSTs 303 to ``?error=admin-disabled`` (plan §D.3 four-posture
+    matrix). ``experiment_config`` is the deployment-default config (and
+    the single-experiment config source); ``experiment_config_dir``
+    enables per-experiment config loading in control-plane mode (plan
+    Decision 6).
     """
-    app = FastAPI(title="EDEN reference Web UI", version="0.0.1")
+
+    @asynccontextmanager
+    async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
+        try:
+            yield
+        finally:
+            store_factory.close()
+
+    app = FastAPI(
+        title="EDEN reference Web UI", version="0.0.1", lifespan=_lifespan
+    )
     app.mount(
         "/static",
         StaticFiles(directory=str(_STATIC_DIR)),
         name="static",
     )
-    templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))
-    templates.env.globals["experiment_id"] = experiment_id
+    templates = Jinja2Templates(
+        directory=str(_TEMPLATES_DIR),
+        context_processors=[_experiment_context, switcher_context],
+    )
     templates.env.globals["executor_enabled"] = repo is not None
-    templates.env.globals["admin_enabled"] = admin_store is not None
+    templates.env.globals["admin_enabled"] = store_factory.admin_enabled
     templates.env.globals["control_plane_enabled"] = control_plane is not None
 
-    app.state.store = store
-    app.state.admin_store = admin_store
+    app.state.store_factory = store_factory
     app.state.experiment_id = experiment_id
+    app.state.experiments_cache = {}
     app.state.experiment_config = experiment_config
+    app.state.experiment_config_dir = experiment_config_dir
+    app.state.experiment_config_cache = {}
     app.state.worker_id = worker_id
     app.state.session_codec = SessionCodec(session_secret)
     app.state.claim_ttl_seconds = claim_ttl_seconds
@@ -120,12 +166,21 @@ def make_app(
     app.state.now = now or _now_factory()
     app.state.templates = templates
     app.state.repo = repo
+    app.state.repo_materializer = repo_materializer
     app.state.clone_url = clone_url
     app.state.base_commit_sha = base_commit_sha
     app.state.control_plane = control_plane
 
     app.add_middleware(AdminGateMiddleware)
     _register_routers(app, control_plane=control_plane, repo=repo)
+    _install_healthz_and_error_handlers(app, templates)
+    return app
+
+
+def _install_healthz_and_error_handlers(
+    app: FastAPI, templates: Jinja2Templates
+) -> None:
+    """Wire the unauthenticated healthcheck + the 404 / NotFound pages."""
 
     @app.get("/healthz", include_in_schema=False)
     async def _healthz() -> dict[str, str]:
@@ -151,5 +206,3 @@ def make_app(
             {"title": "Not found", "message": str(exc)},
             status_code=404,
         )
-
-    return app

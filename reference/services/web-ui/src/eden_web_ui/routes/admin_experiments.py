@@ -74,6 +74,44 @@ _SELECT_OUTCOMES: dict[str, tuple[str, str]] = {
     "missing-experiment-id": ("error", "experiment_id is required"),
 }
 
+# Banners for the active-experiment resolution failures that the
+# per-experiment routes redirect here with (issue #145 §3.2 / Decision 8 /
+# §3.6). Each value is a format string that may reference ``exp`` / ``frm``
+# / ``to`` query params.
+_RESOLVE_ERROR_MESSAGES: dict[str, str] = {
+    "stale-selection": (
+        "the experiment you had selected is no longer registered; your "
+        "selection was cleared and you're back on the deployment default"
+    ),
+    "control-plane-unreachable": (
+        "the control plane was unreachable while resolving your selected "
+        "experiment; retry, then check the control-plane logs if it persists"
+    ),
+    "cannot-bootstrap-credential": (
+        "could not obtain a worker credential for experiment {exp}: the "
+        "web-ui has no persisted credential for it and no admin token is "
+        "available at runtime to mint one (see "
+        "docs/operations/web-ui-multi-experiment.md)"
+    ),
+    "task-store-unreachable": (
+        "the task-store-server was unreachable while obtaining a credential "
+        "for experiment {exp}; retry, then check the task-store-server logs"
+    ),
+    "config-missing": (
+        "experiment {exp} has no config YAML in --experiment-config-dir; "
+        "provision <dir>/{exp}.yaml, then reload"
+    ),
+    "config-invalid": (
+        "experiment {exp}'s config YAML failed to parse/validate; fix "
+        "<dir>/{exp}.yaml, then reload"
+    ),
+    "switched-mid-form": (
+        "you switched from experiment {frm} to {to} while filling out a form "
+        "on {frm}; the submission was discarded to avoid writing to the "
+        "wrong experiment. Re-enter it under {to}."
+    ),
+}
+
 
 def _outcome(
     outcomes: dict[str, tuple[str, str]], key: str | None
@@ -81,6 +119,22 @@ def _outcome(
     if key is None:
         return None
     return outcomes.get(key)
+
+
+def _resolve_error_outcome(request: Request) -> tuple[str, str] | None:
+    """Build the banner for an ``?error=`` resolution-failure redirect."""
+    key = request.query_params.get("error")
+    if key is None:
+        return None
+    template = _RESOLVE_ERROR_MESSAGES.get(key)
+    if template is None:
+        return None
+    message = template.format(
+        exp=request.query_params.get("exp", "?"),
+        frm=request.query_params.get("from", "?"),
+        to=request.query_params.get("to", "?"),
+    )
+    return ("error", message)
 
 
 def _require_session(request: Request) -> Session | RedirectResponse:
@@ -150,6 +204,9 @@ async def dashboard(
         result = _outcome(label, key)
         if result is not None:
             outcomes.append(result)
+    resolve_error = _resolve_error_outcome(request)
+    if resolve_error is not None:
+        outcomes.append(resolve_error)
     return request.app.state.templates.TemplateResponse(
         request,
         "admin_experiments.html",

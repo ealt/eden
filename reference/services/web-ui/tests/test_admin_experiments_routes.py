@@ -14,6 +14,7 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
+from conftest import _one_experiment_factory
 from eden_contracts import ExperimentConfig
 from eden_control_plane import (
     ControlPlaneClient,
@@ -110,8 +111,7 @@ def signed_in_client(
     cp_client: ControlPlaneClient,
 ) -> Iterator[TestClient]:
     app = make_web_ui_app(
-        store=store,
-        admin_store=store,
+        store_factory=_one_experiment_factory(store, admin_store=store),
         experiment_id=EXPERIMENT_ID,
         experiment_config=_config(),
         worker_id=WORKER_ID,
@@ -167,7 +167,7 @@ def test_dashboard_redirects_unauthenticated(
 ) -> None:
     """No session cookie → /signin redirect."""
     app = make_web_ui_app(
-        store=store,
+        store_factory=_one_experiment_factory(store),
         experiment_id=EXPERIMENT_ID,
         experiment_config=_config(),
         worker_id=WORKER_ID,
@@ -358,7 +358,7 @@ def test_routes_hidden_when_control_plane_unset(
 ) -> None:
     """When `control_plane=None`, `/admin/experiments/` is 404."""
     app = make_web_ui_app(
-        store=store,
+        store_factory=_one_experiment_factory(store),
         experiment_id=EXPERIMENT_ID,
         experiment_config=_config(),
         worker_id=WORKER_ID,
@@ -370,3 +370,76 @@ def test_routes_hidden_when_control_plane_unset(
         client.post("/signin", follow_redirects=False)
         r = client.get("/admin/experiments/")
         assert r.status_code == 404
+
+
+# ---------------------------------------------------------------------
+# Top-nav experiment switcher + resolve-error banners (issue #145 W4)
+# ---------------------------------------------------------------------
+
+
+def test_switcher_widget_renders_registered_experiments(
+    signed_in_client: TestClient,
+    cp_store: InMemoryControlPlaneStore,
+) -> None:
+    cp_store.register_experiment("exp-a", "file:///etc/a.yaml")
+    cp_store.register_experiment("exp-b", "file:///etc/b.yaml")
+    r = signed_in_client.get("/admin/experiments/")
+    assert r.status_code == 200
+    assert 'class="switcher"' in r.text
+    assert "/admin/experiments/exp-a/select" in r.text
+    assert "/admin/experiments/exp-b/select" in r.text
+
+
+def test_switcher_marks_the_selected_experiment_active(
+    signed_in_client: TestClient,
+    cp_store: InMemoryControlPlaneStore,
+) -> None:
+    cp_store.register_experiment("exp-a", "file:///etc/a.yaml")
+    csrf = _csrf_token(signed_in_client)
+    signed_in_client.post(
+        "/admin/experiments/exp-a/select",
+        data={"csrf_token": csrf},
+        follow_redirects=False,
+    )
+    r = signed_in_client.get("/admin/experiments/")
+    assert "Active:" in r.text
+    assert "exp-a" in r.text
+
+
+def test_dashboard_renders_stale_selection_banner(
+    signed_in_client: TestClient,
+) -> None:
+    r = signed_in_client.get("/admin/experiments/?error=stale-selection")
+    assert r.status_code == 200
+    assert "no longer registered" in r.text
+
+
+def test_dashboard_renders_switched_mid_form_banner(
+    signed_in_client: TestClient,
+) -> None:
+    r = signed_in_client.get(
+        "/admin/experiments/?error=switched-mid-form&from=exp-x&to=exp-y"
+    )
+    assert r.status_code == 200
+    assert "exp-x" in r.text
+    assert "exp-y" in r.text
+
+
+def test_switcher_absent_without_control_plane(
+    store: InMemoryStore,
+    artifacts_dir: Path,
+) -> None:
+    app = make_web_ui_app(
+        store_factory=_one_experiment_factory(store, admin_store=store),
+        experiment_id=EXPERIMENT_ID,
+        experiment_config=_config(),
+        worker_id=WORKER_ID,
+        session_secret=SESSION_SECRET,
+        claim_ttl_seconds=3600,
+        artifacts_dir=artifacts_dir,
+    )
+    with TestClient(app) as client:
+        client.post("/signin", follow_redirects=False)
+        r = client.get("/")
+        assert 'class="switcher"' not in r.text
+        assert "experiment:" in r.text

@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import httpx
 import uvicorn
 from eden_contracts import ExperimentConfig
 from eden_control_plane import ControlPlaneClient
@@ -27,20 +28,38 @@ from eden_service_common import (
     load_experiment_config,
     parse_log_level,
     resolve_admin_token,
-    resolve_worker_bearer,
     wait_for_task_store,
 )
 from eden_service_common.logging import configure_logging
-from eden_wire import StoreClient
+from eden_storage import Store
 from eden_wire.errors import Unauthorized
+from eden_wire.errors import WireError as ControlPlaneWireError
 
 from .app import make_app
+from .credentials import bootstrap_control_plane_credential, resolve_credential_dir
+from .repo_factory import RepoMaterializer
+from .store_factory import BearerCache, StoreFactory
 
 
 def _build_control_plane_client(
-    args: argparse.Namespace, *, admin_token: str | None
+    args: argparse.Namespace,
+    *,
+    admin_token: str | None,
+    credential_dir: Path,
+    log: Any,
 ) -> ControlPlaneClient | None:
-    """Construct the optional ControlPlaneClient from CLI flags."""
+    """Construct the optional ControlPlaneClient from CLI flags.
+
+    Issue #145 §3.2: the switcher's reads (``list_experiments`` /
+    ``read_experiment_metadata``) accept any authenticated principal. To
+    keep "no admin token at runtime, but switcher still works" viable
+    (Posture C), the web-ui bootstraps a deployment-scoped control-plane
+    worker credential (persisted under ``<credential-dir>/control-plane/``)
+    when an admin token is available, and reuses the persisted credential
+    on later boots. When neither an admin token nor a persisted
+    credential is available (Posture D), the switcher reads will fail; a
+    startup warning surfaces it rather than silently degrading.
+    """
     url = args.control_plane_url
     if url is None:
         return None
@@ -49,8 +68,42 @@ def _build_control_plane_client(
         or os.environ.get("EDEN_CONTROL_PLANE_ADMIN_TOKEN")
         or admin_token
     )
-    bearer = f"admin:{cp_token}" if cp_token else None
-    return ControlPlaneClient(url, bearer=bearer)
+    cp_worker_id = args.control_plane_worker_id or f"{args.worker_id}-cp"
+    try:
+        credential = bootstrap_control_plane_credential(
+            base_url=url,
+            worker_id=cp_worker_id,
+            credential_dir=credential_dir,
+            admin_token=cp_token,
+        )
+        return ControlPlaneClient(url, bearer=credential.bearer)
+    except RuntimeError as exc:
+        # No admin token AND no persisted control-plane credential.
+        if cp_token is not None:
+            # Defensive: an admin token was available but bootstrap
+            # still failed; fall back to the admin bearer so the
+            # dashboard keeps working.
+            return ControlPlaneClient(url, bearer=f"admin:{cp_token}")
+        log.warning(
+            "control_plane_url set but no admin token and no persisted "
+            "web-ui credential; switcher reads will fail (Posture D)",
+            error=str(exc),
+        )
+        return ControlPlaneClient(url, bearer=None)
+    except (httpx.TransportError, ControlPlaneWireError) as exc:
+        # Control-plane unreachable / rejected the bootstrap at startup.
+        # Treat as a degraded runtime posture (Posture D — banners +
+        # hidden switcher) rather than a hard service-start dependency;
+        # the dashboard's per-request reads surface the failure, and the
+        # switcher hides on the cold-cache read error.
+        log.warning(
+            "control-plane credential bootstrap failed; the cross-experiment "
+            "switcher/dashboard will be degraded until the control plane is "
+            "reachable",
+            error=f"{exc.__class__.__name__}: {exc}",
+        )
+        bearer = f"admin:{cp_token}" if cp_token is not None else None
+        return ControlPlaneClient(url, bearer=bearer)
 
 
 # slop-allow: argparse builder; one add_argument per CLI flag with no
@@ -60,12 +113,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     add_common_arguments(parser)
     parser.add_argument(
         "--experiment-config",
-        required=True,
+        required=False,
+        default=None,
         help=(
-            "YAML experiment-config file — read for objective and "
-            "evaluation_schema. Drift between this file and the "
-            "task-store-server's copy is a known reference-impl "
-            "limitation; Phase 12's control plane fixes it."
+            "YAML experiment-config file for the deployment-default "
+            "experiment — read for objective and evaluation_schema. "
+            "Required in single-experiment mode (no --control-plane-url). "
+            "In control-plane mode it is optional when "
+            "--experiment-config-dir is set (the default experiment then "
+            "loads from <dir>/<experiment_id>.yaml like every other). "
+            "Operators who hand-edit this file do NOT affect non-default "
+            "experiments — each experiment's config is independent (#145)."
         ),
     )
     parser.add_argument("--host", default="127.0.0.1")
@@ -119,7 +177,22 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "Optional: when set, the executor module is registered "
             "and the user can claim execution tasks via the UI; when "
             "omitted, the executor module is not available and the "
-            "/executor/* routes return 404."
+            "/executor/* routes return 404. This is the deployment-default "
+            "experiment's clone; non-default experiments clone under "
+            "--repo-root (issue #145)."
+        ),
+    )
+    parser.add_argument(
+        "--repo-root",
+        type=Path,
+        default=None,
+        help=(
+            "Directory holding per-experiment bare clones "
+            "(<repo-root>/<experiment_id>.git) for non-default experiments "
+            "in control-plane mode (issue #145 §3.5). Must be a DURABLE "
+            "location (in Compose, a bind-mounted volume — the parent of "
+            "--repo-path is the container filesystem and would not "
+            "survive). Defaults to the parent of --repo-path when unset."
         ),
     )
     parser.add_argument(
@@ -188,6 +261,40 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "a single admin secret across the two services)."
         ),
     )
+    parser.add_argument(
+        "--control-plane-worker-id",
+        default=None,
+        help=(
+            "worker_id for the deployment-scoped control-plane credential "
+            "the switcher uses for read calls (issue #145 §3.2). Defaults "
+            "to '<--worker-id>-cp'. Only used when --control-plane-url is set."
+        ),
+    )
+    parser.add_argument(
+        "--credential-dir",
+        default=None,
+        help=(
+            "Directory for the web-ui's per-experiment + control-plane "
+            "credentials (issue #145). One '<experiment_id>/<worker_id>.token' "
+            "per experiment, plus 'control-plane/<cp-worker-id>.token'. "
+            "Defaults to $EDEN_CREDENTIAL_DIR, then "
+            "${XDG_STATE_HOME:-~/.local/state}/eden/web-ui/."
+        ),
+    )
+    parser.add_argument(
+        "--experiment-config-dir",
+        default=None,
+        type=Path,
+        help=(
+            "Directory of per-experiment '<experiment_id>.yaml' configs "
+            "(issue #145 Decision 6). When the operator switches to a "
+            "non-default experiment in control-plane mode, the web-ui loads "
+            "that experiment's objective / evaluation_schema from this dir. "
+            "The deployment-default still uses --experiment-config. Operators "
+            "who hand-edit --experiment-config do NOT affect non-default "
+            "experiments — each experiment's config is independent."
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -221,10 +328,10 @@ class _ListeningAnnouncer:
 class _WebUIRuntime:
     """Constructed runtime objects ready for :func:`make_app` + uvicorn."""
 
-    config: ExperimentConfig
-    store: StoreClient
-    admin_store: StoreClient | None
+    config: ExperimentConfig | None
+    store_factory: StoreFactory
     repo: GitRepo | None
+    repo_materializer: RepoMaterializer | None
     control_plane: ControlPlaneClient | None
 
 
@@ -252,32 +359,44 @@ def _materialize_repo(args: argparse.Namespace) -> GitRepo | None:
     return repo
 
 
-def _build_admin_store(
+def _build_repo_materializer(
     args: argparse.Namespace,
-    *,
-    admin_token: str | None,
-    log: Any,
-    store: StoreClient,
-) -> StoreClient | None | int:
-    """Construct + auth-probe the optional admin StoreClient.
+) -> RepoMaterializer | None:
+    """Materializer for non-default experiments' integrator clones (#145 §3.5).
 
-    Returns None when no admin token is configured, the admin
-    StoreClient on success, or exit code 1 when the admin bearer is
-    rejected (after closing ``store`` to avoid a leak).
+    Per-experiment bare clones live under ``--repo-root`` (a durable,
+    operator-supplied directory), at ``<repo-root>/<experiment_id>.git``;
+    ``--repo-root`` defaults to the parent of ``--repo-path`` when unset
+    (fine for local/dev, but in Compose it MUST be a bind-mounted volume —
+    the container filesystem parent would not survive a restart). Returns
+    ``None`` when the executor module is disabled (no ``--repo-path``).
+    The deployment-default experiment keeps using the flat ``--repo-path``
+    clone via ``app.state.repo``; the materializer is consulted only for
+    non-default experiments (control-plane mode).
     """
-    if admin_token is None:
+    if args.repo_path is None:
         return None
-    admin_store = StoreClient(
-        base_url=args.task_store_url,
-        experiment_id=args.experiment_id,
-        bearer=f"admin:{admin_token}",
+    repo_root = args.repo_root if args.repo_root is not None else args.repo_path.parent
+    return RepoMaterializer(
+        repo_root=repo_root,
+        forgejo_url=args.forgejo_url,
+        credential_helper=args.credential_helper,
     )
-    # Validate the admin bearer at startup; a stale or wrong
-    # token would otherwise surface only when the operator
-    # tried to register a worker, as an opaque "transport"
-    # banner (plan §8.1 risk note). list_workers is either-
-    # gated, so the call succeeds with the admin bearer when
-    # the bearer parses cleanly and 401s otherwise.
+
+
+def _validate_admin_store(
+    admin_store: Store | None, *, log: Any
+) -> bool:
+    """Probe the admin bearer at startup; return False if rejected.
+
+    A stale or wrong admin token would otherwise surface only when the
+    operator tried to register a worker, as an opaque "transport" banner
+    (plan §8.1 risk note). ``list_workers`` is either-gated, so the call
+    succeeds with the admin bearer when it parses cleanly and 401s
+    otherwise.
+    """
+    if admin_store is None:
+        return True
     try:
         admin_store.list_workers()
     except Unauthorized:
@@ -286,27 +405,67 @@ def _build_admin_store(
             "--admin-token / $EDEN_ADMIN_TOKEN matches the "
             "task-store-server's --admin-token"
         )
-        with contextlib.suppress(Exception):
-            store.close()
-        with contextlib.suppress(Exception):
-            admin_store.close()
+        return False
+    return True
+
+
+def _resolve_default_config(
+    args: argparse.Namespace, log: Any
+) -> ExperimentConfig | None | int:
+    """Resolve the deployment-default experiment's config (issue #145 Decision 6).
+
+    Returns the parsed config, ``None`` (control-plane mode with no
+    ``--experiment-config`` — the default experiment then loads from
+    ``<--experiment-config-dir>/<id>.yaml`` like every other), or exit
+    code 1 on a misconfiguration. Single-experiment mode requires
+    ``--experiment-config``; control-plane mode requires at least one of
+    ``--experiment-config`` / ``--experiment-config-dir``.
+    """
+    has_control_plane = args.control_plane_url is not None
+    if args.experiment_config is not None:
+        # The deployment-default experiment ALWAYS resolves to this config
+        # (active_config's default-experiment branch returns
+        # app.state.experiment_config and never reads the config-dir copy),
+        # so --experiment-config is authoritative for the default and a
+        # divergent <config-dir>/<default>.yaml is harmless — we do NOT
+        # fail on a mismatch. (Compose legitimately produces one: smoke
+        # appends fields to the mounted config after setup-experiment has
+        # already copied the pre-append config into the config-dir.)
+        return load_experiment_config(args.experiment_config)
+    if not has_control_plane:
+        log.error(
+            "--experiment-config is required in single-experiment mode "
+            "(no --control-plane-url)"
+        )
         return 1
-    return admin_store
+    if args.experiment_config_dir is None:
+        log.error(
+            "control-plane mode requires --experiment-config or "
+            "--experiment-config-dir"
+        )
+        return 1
+    return None
 
 
 def _build_runtime(
     args: argparse.Namespace, log: Any
 ) -> _WebUIRuntime | int:
-    """Build the web-ui's wire-side runtime; return exit code 1 on auth rejection."""
-    config = load_experiment_config(args.experiment_config)
+    """Build the web-ui's wire-side runtime; return exit code 1 on auth rejection.
+
+    Issue #145: the runtime is built around a :class:`StoreFactory` that
+    vends per-experiment ``StoreClient`` views against one task-store URL
+    over a shared ``httpx.Client``. The deployment-default experiment's
+    worker + admin views are vended (and auth-probed) at startup so the
+    no-selection / single-experiment posture is validated exactly as
+    before; non-default experiments are JIT-credentialed on first switch.
+    """
+    config = _resolve_default_config(args, log)
+    if isinstance(config, int):
+        return config
     log.info("waiting_for_task_store", url=args.task_store_url)
     # The readiness probe accepts 200/401/403 ("server is up") so the
-    # web-ui can run before it has its per-worker credential. The
-    # bootstrap below registers / verifies / reissues against the
-    # admin bearer. Without this preflight, a direct launch where
-    # the task-store is still binding would surface as a confusing
-    # connection failure from inside resolve_worker_bearer rather
-    # than a clean readiness timeout.
+    # web-ui can run before it has its per-worker credential. The factory
+    # registers / verifies / reissues against the admin bearer below.
     wait_for_task_store(
         base_url=args.task_store_url,
         experiment_id=args.experiment_id,
@@ -314,21 +473,28 @@ def _build_runtime(
         deadline_seconds=args.startup_timeout,
     )
     repo = _materialize_repo(args)
-    bearer = resolve_worker_bearer(
-        args, worker_id=args.worker_id, labels={"role": "web-ui"}
-    )
-    store = StoreClient(
+    admin_token = resolve_admin_token(args)
+    credential_dir = resolve_credential_dir(args)
+    shared_client = httpx.Client(timeout=30.0)
+    bearer_cache = BearerCache(
         base_url=args.task_store_url,
-        experiment_id=args.experiment_id,
-        bearer=bearer,
+        worker_id=args.worker_id,
+        credential_dir=credential_dir,
+        admin_token=admin_token,
     )
-    # Posture-D guard (plan §D.3): if the task-store is auth-enabled
-    # and the worker bearer doesn't authenticate, fail fast at
-    # startup rather than running a silently-broken service whose
-    # every wire call will 401. We probe /whoami because it's the
-    # authenticated ping op that requires a worker bearer.
-    # Auth-disabled task-stores return "anonymous" — also fine.
+    store_factory = StoreFactory(
+        base_url=args.task_store_url,
+        bearer_cache=bearer_cache,
+        admin_token=admin_token,
+        shared_client=shared_client,
+    )
+
+    # Vend + auth-probe the deployment-default experiment's worker view.
+    # Posture-D guard (plan §D.3): fail fast if the bearer doesn't
+    # authenticate rather than running a silently-broken service.
     try:
+        store = store_factory.for_experiment(args.experiment_id, role="worker")
+        assert store is not None  # worker role never returns None
         store.whoami()
     except Unauthorized:
         log.error(
@@ -337,23 +503,26 @@ def _build_runtime(
             "or persist a worker credential via the admin module's "
             "reissue-credential endpoint"
         )
-        with contextlib.suppress(Exception):
-            store.close()
+        store_factory.close()
+        return 1
+    except (RuntimeError, httpx.TransportError) as exc:
+        log.error("failed to bootstrap default-experiment credential", error=str(exc))
+        store_factory.close()
         return 1
 
-    admin_token = resolve_admin_token(args)
-    admin_store = _build_admin_store(
-        args, admin_token=admin_token, log=log, store=store
-    )
-    if isinstance(admin_store, int):
-        return admin_store
+    admin_store = store_factory.for_experiment(args.experiment_id, role="admin")
+    if not _validate_admin_store(admin_store, log=log):
+        store_factory.close()
+        return 1
 
-    control_plane = _build_control_plane_client(args, admin_token=admin_token)
+    control_plane = _build_control_plane_client(
+        args, admin_token=admin_token, credential_dir=credential_dir, log=log
+    )
     return _WebUIRuntime(
         config=config,
-        store=store,
-        admin_store=admin_store,
+        store_factory=store_factory,
         repo=repo,
+        repo_materializer=_build_repo_materializer(args),
         control_plane=control_plane,
     )
 
@@ -371,16 +540,17 @@ def main(argv: list[str] | None = None) -> int:
         return runtime
 
     app = make_app(
-        store=runtime.store,
-        admin_store=runtime.admin_store,
+        store_factory=runtime.store_factory,
         experiment_id=args.experiment_id,
         experiment_config=runtime.config,
+        experiment_config_dir=args.experiment_config_dir,
         worker_id=args.worker_id,
         session_secret=args.session_secret,
         claim_ttl_seconds=args.claim_ttl_seconds,
         artifacts_dir=args.artifacts_dir,
         secure_cookies=args.secure_cookies,
         repo=runtime.repo,
+        repo_materializer=runtime.repo_materializer,
         clone_url=args.clone_url,
         base_commit_sha=args.base_commit_sha,
         control_plane=runtime.control_plane,
@@ -408,9 +578,12 @@ def main(argv: list[str] | None = None) -> int:
     try:
         server.run()
     finally:
+        # The factory owns the shared httpx.Client every vended store
+        # rides on; closing it tears down all per-experiment views. The
+        # lifespan shutdown hook also calls this — close() is idempotent.
         with contextlib.suppress(Exception):
-            runtime.store.close()
-        if runtime.admin_store is not None:
+            runtime.store_factory.close()
+        if runtime.control_plane is not None:
             with contextlib.suppress(Exception):
-                runtime.admin_store.close()
+                runtime.control_plane.close()
     return 0

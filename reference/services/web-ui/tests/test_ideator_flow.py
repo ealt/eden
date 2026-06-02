@@ -13,6 +13,7 @@ from conftest import (
     SESSION_SECRET,
     WORKER_ID,
     _config,
+    _one_experiment_factory,
     get_csrf,
 )
 from eden_dispatch import sweep_expired_claims
@@ -791,7 +792,7 @@ class TestStrandedClaim:
                 return datetime(2026, 4, 24, 14, 0, tzinfo=UTC)
 
         app = make_app(
-            store=store,
+            store_factory=_one_experiment_factory(store),
             experiment_id=EXPERIMENT_ID,
             experiment_config=_config(),
             worker_id=WORKER_ID,

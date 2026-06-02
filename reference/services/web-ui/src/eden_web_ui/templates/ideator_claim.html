@@ -27,6 +27,7 @@
 </section>
 <form action="/ideator/{{ task_id }}/submit" method="post" enctype="multipart/form-data" class="idea-form">
     <input type="hidden" name="csrf_token" value="{{ session.csrf }}">
+    <input type="hidden" name="form_experiment_id" value="{{ experiment_id }}">
     <p class="form-note">
         Each idea row accepts an optional markdown body + any number of
         file attachments. Single file (text-only OR one upload) is

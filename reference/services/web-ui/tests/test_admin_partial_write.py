@@ -20,6 +20,7 @@ from conftest import (
     WORKER_ID,
     _config,
     _now,
+    _one_experiment_factory,
     get_csrf,
     make_child_commit,
     seed_evaluate_task,
@@ -36,7 +37,7 @@ def admin_repo_app(
     store: InMemoryStore, artifacts_dir: Path, bare_repo: GitRepo
 ) -> FastAPI:
     return make_app(
-        store=store,
+        store_factory=_one_experiment_factory(store),
         experiment_id=EXPERIMENT_ID,
         experiment_config=_config(),
         worker_id=WORKER_ID,

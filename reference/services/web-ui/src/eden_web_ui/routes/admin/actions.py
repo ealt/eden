@@ -8,10 +8,10 @@ from typing import Any
 from eden_contracts import TaskTarget
 from eden_storage.errors import IllegalTransition, InvalidPrecondition
 from eden_storage.errors import NotFound as StorageNotFound
-from fastapi import APIRouter, Form, Request
+from fastapi import APIRouter, Form, Request, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
 
-from .._helpers import csrf_ok, get_session
+from .._helpers import csrf_ok, get_session, resolve_active_context
 from ._common import (
     _DISPATCH_MODE_KEYS,
     _DISPATCH_MODE_OUTCOMES,
@@ -38,7 +38,10 @@ async def task_reclaim(
         return RedirectResponse(url="/signin", status_code=303)
     if not csrf_ok(session, csrf_token):
         return _csrf_failure_response()
-    store = request.app.state.store
+    active = resolve_active_context(request)
+    if isinstance(active, Response):
+        return active
+    store = active.store
     try:
         store.reclaim(task_id, "operator")
     except IllegalTransition:
@@ -67,7 +70,10 @@ async def task_reassign_form(
     session = get_session(request)
     if session is None:
         return RedirectResponse(url="/signin", status_code=303)
-    store = request.app.state.store
+    active = resolve_active_context(request)
+    if isinstance(active, Response):
+        return active
+    store = active.store
 
     try:
         task = store.read_task(task_id)
@@ -166,7 +172,10 @@ async def task_reassign(
         return RedirectResponse(url="/signin", status_code=303)
     if not csrf_ok(session, csrf_token):
         return _csrf_failure_response()
-    store = request.app.state.store
+    active = resolve_active_context(request)
+    if isinstance(active, Response):
+        return active
+    store = active.store
 
     redirect_base = f"/admin/tasks/{task_id}/reassign"
     reason = reason.strip()
@@ -253,7 +262,10 @@ async def dispatch_mode_form(
     session = get_session(request)
     if session is None:
         return RedirectResponse(url="/signin", status_code=303)
-    store = request.app.state.store
+    active = resolve_active_context(request)
+    if isinstance(active, Response):
+        return active
+    store = active.store
     try:
         mode = store.read_dispatch_mode()
     except Exception:  # noqa: BLE001 — transport / store domain
@@ -289,7 +301,10 @@ async def dispatch_mode_update(
         return RedirectResponse(url="/signin", status_code=303)
     if not csrf_ok(session, csrf_token):
         return _csrf_failure_response()
-    store = request.app.state.store
+    active = resolve_active_context(request)
+    if isinstance(active, Response):
+        return active
+    store = active.store
 
     updates: dict[str, str] = {
         "ideation_creation": ideation_creation,
@@ -345,6 +360,9 @@ async def create_execution_task(
         return RedirectResponse(url="/signin", status_code=303)
     if not csrf_ok(session, csrf_token):
         return _csrf_failure_response()
+    active = resolve_active_context(request)
+    if isinstance(active, Response):
+        return active
     target_kind = target_kind.strip().lower()
     target_id = target_id.strip()
     redirect_base = f"/admin/ideas/{idea_id}/"
@@ -364,7 +382,7 @@ async def create_execution_task(
         return RedirectResponse(
             url=f"{redirect_base}?error=invalid-target", status_code=303
         )
-    store = request.app.state.store
+    store = active.store
     task_id = f"execution-{uuid.uuid4().hex[:12]}"
     try:
         if target is None:
@@ -404,7 +422,10 @@ async def terminate_experiment(
         return RedirectResponse(url="/signin", status_code=303)
     if not csrf_ok(session, csrf_token):
         return _csrf_failure_response()
-    admin_store = request.app.state.admin_store
+    active = resolve_active_context(request)
+    if isinstance(active, Response):
+        return active
+    admin_store = active.admin_store
     if admin_store is None:
         return RedirectResponse(
             url="/admin/experiment/?error=admin-disabled", status_code=303

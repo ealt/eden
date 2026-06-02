@@ -11,8 +11,9 @@ import pytest
 from eden_contracts import ExperimentConfig, TaskTarget
 from eden_git import GitRepo, Identity, TreeEntry
 from eden_service_common import load_experiment_config
-from eden_storage import InMemoryStore
+from eden_storage import InMemoryStore, Store
 from eden_web_ui import make_app
+from eden_web_ui.store_factory import StaticStoreFactory
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -38,6 +39,20 @@ def _config() -> ExperimentConfig:
 def _now() -> datetime:
     """Deterministic frozen now for tests."""
     return datetime(2026, 4, 24, 12, 0, tzinfo=UTC)
+
+
+def _one_experiment_factory(
+    store: Store, *, admin_store: Store | None = None
+) -> StaticStoreFactory:
+    """Wrap a single in-memory store as the deployment's only experiment.
+
+    Issue #145: ``make_app`` takes a ``store_factory`` rather than a bare
+    ``store`` / ``admin_store``. In the single-experiment test posture the
+    static factory vends the same in-memory store for every experiment_id.
+    """
+    return StaticStoreFactory(
+        experiment_id=EXPERIMENT_ID, store=store, admin_store=admin_store
+    )
 
 
 @pytest.fixture
@@ -92,8 +107,7 @@ def app(store: InMemoryStore, artifacts_dir: Path) -> FastAPI:
     # and does no wire-layer auth. Admin-disabled posture tests use
     # the dedicated ``app_no_admin`` / ``client_no_admin`` fixtures.
     return make_app(
-        store=store,
-        admin_store=store,
+        store_factory=_one_experiment_factory(store, admin_store=store),
         experiment_id=EXPERIMENT_ID,
         experiment_config=_config(),
         worker_id=WORKER_ID,
@@ -113,10 +127,9 @@ def client(app: FastAPI) -> Iterator[TestClient]:
 
 @pytest.fixture
 def app_no_admin(store: InMemoryStore, artifacts_dir: Path) -> FastAPI:
-    """An app constructed without ``admin_store`` (postures B/C from plan §D.3)."""
+    """An app constructed without an admin store (postures B/C from plan §D.3)."""
     return make_app(
-        store=store,
-        admin_store=None,
+        store_factory=_one_experiment_factory(store, admin_store=None),
         experiment_id=EXPERIMENT_ID,
         experiment_config=_config(),
         worker_id=WORKER_ID,
@@ -151,7 +164,7 @@ def app_with_base_sha(
     """``app`` plus a ``base_commit_sha`` so the parent_commits hint
     panel renders with a base SHA. Issue #52."""
     return make_app(
-        store=store,
+        store_factory=_one_experiment_factory(store),
         experiment_id=EXPERIMENT_ID,
         experiment_config=_config(),
         worker_id=WORKER_ID,
@@ -242,7 +255,7 @@ def exec_app(
 ) -> FastAPI:
     """A make_app that has the executor module enabled."""
     return make_app(
-        store=store,
+        store_factory=_one_experiment_factory(store),
         experiment_id=EXPERIMENT_ID,
         experiment_config=_config(),
         worker_id=WORKER_ID,
@@ -264,7 +277,7 @@ def exec_app_with_clone_url(
 ) -> FastAPI:
     """``exec_app`` plus a ``clone_url`` so the forgejo instructions render."""
     return make_app(
-        store=store,
+        store_factory=_one_experiment_factory(store),
         experiment_id=EXPERIMENT_ID,
         experiment_config=_config(),
         worker_id=WORKER_ID,
@@ -308,7 +321,7 @@ def exec_app_with_clone_url_fixture(
     """Signed-in client whose ``--clone-url`` embeds HTTP Basic credentials
     (the local-demo default — see issue #161)."""
     app = make_app(
-        store=store,
+        store_factory=_one_experiment_factory(store),
         experiment_id=EXPERIMENT_ID,
         experiment_config=_config(),
         worker_id=WORKER_ID,

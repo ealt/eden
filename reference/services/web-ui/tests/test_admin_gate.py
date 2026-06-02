@@ -29,6 +29,7 @@ from conftest import (
     WORKER_ID,
     _config,
     _now,
+    _one_experiment_factory,
 )
 from eden_storage import InMemoryStore
 from eden_web_ui import make_app
@@ -67,8 +68,7 @@ def app_non_admin(
     store_non_admin: InMemoryStore, artifacts_dir: Path
 ) -> FastAPI:
     return make_app(
-        store=store_non_admin,
-        admin_store=store_non_admin,
+        store_factory=_one_experiment_factory(store_non_admin, admin_store=store_non_admin),
         experiment_id=EXPERIMENT_ID,
         experiment_config=_config(),
         worker_id=WORKER_ID,
@@ -216,8 +216,7 @@ class TestMembershipCheckFailure:
 
         store.resolve_worker_in_group = _boom  # type: ignore[method-assign]
         app = make_app(
-            store=store,
-            admin_store=store,
+            store_factory=_one_experiment_factory(store, admin_store=store),
             experiment_id=EXPERIMENT_ID,
             experiment_config=_config(),
             worker_id=WORKER_ID,

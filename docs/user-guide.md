@@ -475,13 +475,26 @@ If you hand-craft a wire call for `claim` or `submit` and include `worker_id` in
 
 ## 12. Multi-experiment deployments
 
-Each task-store-server instance serves exactly one `--experiment-id`. The Compose stack is single-experiment by construction (one `EDEN_EXPERIMENT_ID` in `.env`).
+A single task-store-server URL serves many experiments — the wire path is `/v0/experiments/{id}/…`, so the `{id}` segment selects the experiment per call. With a **control plane** configured (`--control-plane-url`), the Web UI lets one deployment register and switch between multiple experiments.
 
-To run two experiments side-by-side:
+### 12.1 The experiment switcher
+
+Register experiments on the cross-experiment dashboard at `/admin/experiments/`, then pick the active one from the **top-nav switcher dropdown** (present on every page when a control plane is configured). The switcher shows `Active: <id>` (or `Default: <id>` before you've selected one). Selecting an experiment is load-bearing: every per-experiment page — ideator, executor, evaluator, `/admin/tasks`, `/admin/variants`, `/admin/workers`, `/admin/groups`, `/admin/work-refs`, … — now reads that experiment's data, not just a relabelled header.
+
+Notes:
+
+- The selection is **per session**, not per tab. Switching in one tab changes the other tab's data on its next request.
+- If you switch experiments while a draft form is open and then submit it, the submission is **discarded** (a banner explains why) rather than written to the experiment you switched to. Re-enter it under the now-active experiment.
+- Selecting an experiment the control plane no longer knows about clears the stale selection and returns you to the dashboard.
+- An experiment registered on the dashboard but not yet seeded (no `setup-experiment` / checkpoint-import run for it) renders an "initialize me" page rather than empty data.
+
+Operationally the web-ui needs a worker credential in each experiment it talks to; with the deployment admin token present at runtime it mints these on first switch. See [`docs/operations/web-ui-multi-experiment.md`](operations/web-ui-multi-experiment.md) for the credential-bootstrap postures and the per-experiment config / repo layout.
+
+### 12.2 Separate stacks (isolation)
+
+For hard isolation (separate Postgres, Forgejo, secrets) run two Compose projects instead:
 
 1. Use distinct `COMPOSE_PROJECT_NAME` values (e.g. `eden-exp-a` and `eden-exp-b`).
 2. Override host ports so they don't collide: `POSTGRES_HOST_PORT`, `FORGEJO_HOST_PORT`, `FORGEJO_SSH_HOST_PORT`, `WEB_UI_HOST_PORT`.
 3. Use distinct `--env-file` paths so each project has its own secrets.
 4. Build the shared image once and re-use it across projects (Compose's image cache makes this automatic).
-
-Native multi-experiment support is Phase 12 work (see [`docs/roadmap.md`](roadmap.md)).

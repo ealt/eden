@@ -9,7 +9,27 @@
 <body>
     <header class="topbar">
         <div class="brand">EDEN reference UI</div>
+        {% if control_plane_enabled and switcher_experiments is not none %}
+        {% set switcher_active = switcher_selected or experiment_id %}
+        <details class="switcher">
+            <summary>
+                {% if switcher_selected %}Active{% else %}Default{% endif %}:
+                <code>{{ switcher_active }}</code>
+            </summary>
+            <ul class="switcher-list">
+                {% for exp in switcher_experiments %}
+                <li>
+                    <form action="/admin/experiments/{{ exp }}/select" method="post">
+                        <input type="hidden" name="csrf_token" value="{{ switcher_csrf }}">
+                        <button type="submit"{% if exp == switcher_active %} class="active" aria-current="true"{% endif %}>{{ exp }}</button>
+                    </form>
+                </li>
+                {% endfor %}
+            </ul>
+        </details>
+        {% else %}
         <div class="experiment">experiment: <code>{{ experiment_id }}</code></div>
+        {% endif %}
         <nav>
             <a href="/">home</a>
             <a href="/ideator/">ideator</a>

@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block title %}EDEN — experiment not initialized{% endblock %}
+{% block main %}
+<h1>Experiment not initialized</h1>
+<div class="banner banner-error">
+    Experiment <code>{{ experiment_id }}</code> is registered in the control
+    plane but has no data on the task-store-server yet. Initialize it via
+    <code>setup-experiment</code> or a checkpoint import, then reload this
+    page. Reads return empty and writes are refused until the experiment is
+    seeded.
+</div>
+<p><a href="/admin/experiments/">back to experiments</a></p>
+{% endblock %}

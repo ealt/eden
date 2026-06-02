@@ -7,13 +7,15 @@ copy. Auth-first POST discipline: ``get_session(request)`` runs
 before ``csrf_ok`` on every mutating route.
 
 Worker-registry write paths (register / reissue) require an admin
-bearer; the route layer pulls a ``StoreClient`` bearing
-``admin:<admin_token>`` from ``app.state.admin_store``. When that
+bearer; the route layer resolves the active experiment's admin
+``StoreClient`` (bearing ``admin:<admin_token>``) via
+``resolve_active_context(request).admin_store`` (issue #145). When that
 is ``None`` (postures B / C from plan §D.3) the templates render
 write controls disabled and POSTs short-circuit with
-``?error=admin-disabled``. Read paths use ``app.state.store``
-(worker bearer), which is sufficient for the either-gated
-``list_workers`` / ``read_worker`` endpoints (chapter 07 §6.1).
+``?error=admin-disabled``. Read paths use the active experiment's
+worker store (``active.store``), which is sufficient for the
+either-gated ``list_workers`` / ``read_worker`` endpoints (chapter 07
+§6.1).
 """
 
 from __future__ import annotations
@@ -32,10 +34,10 @@ from eden_storage.errors import (
     NotFound as StorageNotFound,
 )
 from eden_wire.errors import BadRequest
-from fastapi import APIRouter, Form, Request
+from fastapi import APIRouter, Form, Request, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
 
-from ._helpers import csrf_ok, get_session
+from ._helpers import csrf_ok, get_session, resolve_active_context
 
 router = APIRouter(prefix="/admin/workers")
 
@@ -268,8 +270,11 @@ async def workers_index(request: Request) -> HTMLResponse | RedirectResponse:
     session = get_session(request)
     if session is None:
         return RedirectResponse(url="/signin", status_code=303)
-    store = request.app.state.store
-    admin_store = request.app.state.admin_store
+    active = resolve_active_context(request)
+    if isinstance(active, Response):
+        return active
+    store = active.store
+    admin_store = active.admin_store
 
     q_raw = request.query_params.get("q") or ""
     q = q_raw[:64].lower() if q_raw else None
@@ -326,7 +331,10 @@ async def workers_register(
         return RedirectResponse(url="/signin", status_code=303)
     if not csrf_ok(session, csrf_token):
         return _csrf_failure_response()
-    admin_store = request.app.state.admin_store
+    active = resolve_active_context(request)
+    if isinstance(active, Response):
+        return active
+    admin_store = active.admin_store
     if admin_store is None:
         return RedirectResponse(
             url="/admin/workers/?error=admin-disabled", status_code=303
@@ -396,8 +404,11 @@ async def worker_detail(
     session = get_session(request)
     if session is None:
         return RedirectResponse(url="/signin", status_code=303)
-    store = request.app.state.store
-    admin_store = request.app.state.admin_store
+    active = resolve_active_context(request)
+    if isinstance(active, Response):
+        return active
+    store = active.store
+    admin_store = active.admin_store
 
     try:
         worker = store.read_worker(worker_id)
@@ -451,7 +462,10 @@ async def worker_reissue(
         return RedirectResponse(url="/signin", status_code=303)
     if not csrf_ok(session, csrf_token):
         return _csrf_failure_response()
-    admin_store = request.app.state.admin_store
+    active = resolve_active_context(request)
+    if isinstance(active, Response):
+        return active
+    admin_store = active.admin_store
     if admin_store is None:
         return RedirectResponse(
             url=f"/admin/workers/{worker_id}/?error=admin-disabled",

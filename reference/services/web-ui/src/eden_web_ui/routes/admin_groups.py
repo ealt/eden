@@ -2,9 +2,10 @@
 
 Implements plan §D.5 of phase 12a-1b. Mirrors the chunk-9e admin
 module shape (server-side Jinja, auth-first POST, closed-allowlist
-banners). Admin-gated writes route through ``app.state.admin_store``;
-reads use ``app.state.store`` (either-gated wire endpoints accept
-the worker bearer).
+banners). Admin-gated writes route through the active experiment's
+admin store (``resolve_active_context(request).admin_store``, issue
+#145); reads use the active experiment's worker store (either-gated
+wire endpoints accept the worker bearer).
 
 The transitive-membership view is walked client-side via repeated
 ``read_group`` calls — ``StoreClient`` exposes ``resolve_worker_in_group``
@@ -27,10 +28,10 @@ from eden_storage.errors import (
     NotFound as StorageNotFound,
 )
 from eden_wire.errors import BadRequest
-from fastapi import APIRouter, Form, Request
+from fastapi import APIRouter, Form, Request, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
 
-from ._helpers import csrf_ok, get_session
+from ._helpers import csrf_ok, get_session, resolve_active_context
 
 router = APIRouter(prefix="/admin/groups")
 
@@ -285,8 +286,11 @@ async def groups_index(request: Request) -> HTMLResponse | RedirectResponse:
     session = get_session(request)
     if session is None:
         return RedirectResponse(url="/signin", status_code=303)
-    store = request.app.state.store
-    admin_store = request.app.state.admin_store
+    active = resolve_active_context(request)
+    if isinstance(active, Response):
+        return active
+    store = active.store
+    admin_store = active.admin_store
 
     q_raw = request.query_params.get("q") or ""
     q = q_raw[:64].lower() if q_raw else None
@@ -353,7 +357,10 @@ async def groups_register(
         return RedirectResponse(url="/signin", status_code=303)
     if not csrf_ok(session, csrf_token):
         return _csrf_failure_response_redirect()
-    admin_store = request.app.state.admin_store
+    active = resolve_active_context(request)
+    if isinstance(active, Response):
+        return active
+    admin_store = active.admin_store
     if admin_store is None:
         return RedirectResponse(
             url="/admin/groups/?error=admin-disabled", status_code=303
@@ -438,8 +445,11 @@ async def group_detail(
     session = get_session(request)
     if session is None:
         return RedirectResponse(url="/signin", status_code=303)
-    store = request.app.state.store
-    admin_store = request.app.state.admin_store
+    active = resolve_active_context(request)
+    if isinstance(active, Response):
+        return active
+    store = active.store
+    admin_store = active.admin_store
 
     try:
         group = store.read_group(group_id)
@@ -484,7 +494,10 @@ async def group_add_member(
         return RedirectResponse(url="/signin", status_code=303)
     if not csrf_ok(session, csrf_token):
         return _csrf_failure_response_redirect()
-    admin_store = request.app.state.admin_store
+    active = resolve_active_context(request)
+    if isinstance(active, Response):
+        return active
+    admin_store = active.admin_store
     if admin_store is None:
         return RedirectResponse(
             url=f"/admin/groups/{group_id}/?error=admin-disabled",
@@ -541,7 +554,10 @@ async def group_remove_member(
         return RedirectResponse(url="/signin", status_code=303)
     if not csrf_ok(session, csrf_token):
         return _csrf_failure_response_redirect()
-    admin_store = request.app.state.admin_store
+    active = resolve_active_context(request)
+    if isinstance(active, Response):
+        return active
+    admin_store = active.admin_store
     if admin_store is None:
         return RedirectResponse(
             url=f"/admin/groups/{group_id}/?error=admin-disabled",
@@ -576,7 +592,10 @@ async def group_delete(
         return RedirectResponse(url="/signin", status_code=303)
     if not csrf_ok(session, csrf_token):
         return _csrf_failure_response_redirect()
-    admin_store = request.app.state.admin_store
+    active = resolve_active_context(request)
+    if isinstance(active, Response):
+        return active
+    admin_store = active.admin_store
     if admin_store is None:
         return RedirectResponse(
             url=f"/admin/groups/{group_id}/?error=admin-disabled",

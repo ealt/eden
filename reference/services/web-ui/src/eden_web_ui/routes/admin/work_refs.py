@@ -5,10 +5,10 @@ from __future__ import annotations
 from typing import Any
 
 from eden_contracts import Variant
-from fastapi import APIRouter, Form, Request
+from fastapi import APIRouter, Form, Request, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
 
-from .._helpers import csrf_ok, get_session
+from .._helpers import csrf_ok, get_session, repo_for, resolve_active_context
 from ._common import (
     _REF_DELETE_OUTCOMES,
     _WORK_REF_RE,
@@ -27,9 +27,8 @@ async def work_refs_index(request: Request) -> HTMLResponse | RedirectResponse:
     session = get_session(request)
     if session is None:
         return RedirectResponse(url="/signin", status_code=303)
-    repo = request.app.state.repo
     outcome = _outcome(request, "deleted", "error", _REF_DELETE_OUTCOMES)
-    if repo is None:
+    if request.app.state.repo is None:
         return request.app.state.templates.TemplateResponse(
             request,
             "admin_work_refs.html",
@@ -41,7 +40,11 @@ async def work_refs_index(request: Request) -> HTMLResponse | RedirectResponse:
                 "outcome": outcome,
             },
         )
-    store = request.app.state.store
+    active = resolve_active_context(request)
+    if isinstance(active, Response):
+        return active
+    store = active.store
+    repo = repo_for(request, active.experiment_id)
     if _repo_has_origin(repo):
         try:
             repo.fetch_all_heads()
@@ -128,8 +131,7 @@ async def work_refs_delete(
         return RedirectResponse(url="/signin", status_code=303)
     if not csrf_ok(session, csrf_token):
         return _csrf_failure_response()
-    repo = request.app.state.repo
-    if repo is None:
+    if request.app.state.repo is None:
         return RedirectResponse(
             url="/admin/work-refs/?error=invalid-ref-name", status_code=303
         )
@@ -137,7 +139,11 @@ async def work_refs_delete(
         return RedirectResponse(
             url="/admin/work-refs/?error=invalid-ref-name", status_code=303
         )
-    store = request.app.state.store
+    active = resolve_active_context(request)
+    if isinstance(active, Response):
+        return active
+    store = active.store
+    repo = repo_for(request, active.experiment_id)
     groups = _classify_work_refs(repo, store)
     try:
         target = _find_delete_target(groups, ref_name)

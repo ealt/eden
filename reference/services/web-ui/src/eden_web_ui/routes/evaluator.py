@@ -33,14 +33,14 @@ from dataclasses import replace
 from datetime import timedelta
 from typing import Any
 
-from eden_contracts import EvaluationTask, Idea, Variant
+from eden_contracts import EvaluationTask, ExperimentConfig, Idea, Variant
 from eden_storage import (
     DispatchError,
     EvaluationSubmission,
     InvalidPrecondition,
     StorageError,
 )
-from fastapi import APIRouter, Form, Request
+from fastapi import APIRouter, Form, Request, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
 from starlette.datastructures import UploadFile
 
@@ -57,6 +57,7 @@ from ._helpers import (
     build_artifact_links,
     build_list_links,
     csrf_ok,
+    form_experiment_guard,
     get_session,
     is_htmx_request,
     parse_list_view,
@@ -64,6 +65,7 @@ from ._helpers import (
     read_idea_manifest,
     read_variant_artifact,
     read_variant_artifact_manifest,
+    resolve_active_context,
 )
 from ._submit_readback import submit_with_readback, wire_error_banner
 
@@ -166,7 +168,12 @@ async def list_pending(request: Request) -> HTMLResponse | RedirectResponse:
     session = get_session(request)
     if session is None:
         return RedirectResponse(url="/signin", status_code=303)
-    store = request.app.state.store
+    active = resolve_active_context(request, need_config=True)
+    if isinstance(active, Response):
+        return active
+    store = active.store
+    config = active.config
+    assert config is not None  # need_config=True populates it
     artifacts_dir = request.app.state.artifacts_dir
     try:
         pending = store.list_tasks(kind="evaluation", state="pending")
@@ -177,7 +184,6 @@ async def list_pending(request: Request) -> HTMLResponse | RedirectResponse:
         return _render_error(
             request, f"task-store transport failure: {exc.__class__.__name__}"
         )
-    config = request.app.state.experiment_config
     view = parse_list_view(request.query_params)
     resolver = EligibilityResolver(store, session.worker_id)
     pending_rows, read_failed_count = _build_evaluator_pending_rows(
@@ -216,7 +222,10 @@ async def claim(
         return RedirectResponse(url="/signin", status_code=303)
     if not csrf_ok(session, csrf_token):
         return _csrf_failure_response(request)
-    store = request.app.state.store
+    active = resolve_active_context(request)
+    if isinstance(active, Response):
+        return active
+    store = active.store
     try:
         task = store.read_task(task_id)
     except DispatchError as exc:
@@ -274,7 +283,12 @@ async def draft_form(
             status_code=303,
         )
     _, variant_id = entry
-    store = request.app.state.store
+    active = resolve_active_context(request, need_config=True)
+    if isinstance(active, Response):
+        return active
+    store = active.store
+    config = active.config
+    assert config is not None  # need_config=True populates it
     try:
         variant = store.read_variant(variant_id)
         idea: Idea = store.read_idea(variant.idea_id)
@@ -287,11 +301,12 @@ async def draft_form(
         )
     return _render_draft(
         request,
+        config=config,
         session=session,
         task_id=task_id,
         variant=variant,
         idea=idea,
-        form_state=_empty_form_state(request),
+        form_state=_empty_form_state(config),
         errors=None,
         status_code=200,
     )
@@ -318,6 +333,7 @@ def _collect_metric_inputs(form: Any, evaluation_schema: Any) -> dict[str, str]:
 def _finalize_evaluator_submit(
     *,
     request: Request,
+    config: ExperimentConfig,
     session: Any,
     task_id: str,
     variant: Variant,
@@ -354,6 +370,7 @@ def _finalize_evaluator_submit(
         errors.add_overall(banner or "eden://error/invalid-precondition")
         return _render_draft(
             request,
+            config=config,
             session=session,
             task_id=task_id,
             variant=variant,
@@ -392,7 +409,15 @@ async def submit(
         )
     token, variant_id = entry
 
-    store = request.app.state.store
+    active = resolve_active_context(request, need_config=True)
+    if isinstance(active, Response):
+        return active
+    store = active.store
+    config = active.config
+    assert config is not None  # need_config=True populates it
+    mismatch = form_experiment_guard(form, active.experiment_id)
+    if mismatch is not None:
+        return mismatch
     try:
         variant = store.read_variant(variant_id)
         idea: Idea = store.read_idea(variant.idea_id)
@@ -407,12 +432,14 @@ async def submit(
     draft, errors, form_state = _parse_evaluator_submit_form(
         form,
         request=request,
+        config=config,
         variant_id=variant_id,
         uploaded=await _collect_uploads(form, field_name="artifact_files"),
     )
     if draft is None or errors:
         return _render_draft(
             request,
+            config=config,
             session=session,
             task_id=task_id,
             variant=variant,
@@ -425,6 +452,7 @@ async def submit(
     return _build_and_submit_evaluation(
         request=request,
         store=store,
+        config=config,
         session=session,
         task_id=task_id,
         token=token,
@@ -441,6 +469,7 @@ def _parse_evaluator_submit_form(
     form: Any,
     *,
     request: Request,
+    config: ExperimentConfig,
     variant_id: str,
     uploaded: list[UploadedFile],
 ) -> tuple[Any, Any, dict[str, Any]]:
@@ -452,7 +481,6 @@ def _parse_evaluator_submit_form(
     rewritten to point at a freshly-bundled artifact when the
     operator supplied text/uploads instead of an explicit URI.
     """
-    config = request.app.state.experiment_config
     evaluation_schema = config.evaluation_schema
 
     status_raw = str(form.get("status") or "")
@@ -575,6 +603,7 @@ def _build_and_submit_evaluation(
     *,
     request: Request,
     store: Any,
+    config: ExperimentConfig,
     session: Any,
     task_id: str,
     token: str,
@@ -603,6 +632,7 @@ def _build_and_submit_evaluation(
     )
     return _finalize_evaluator_submit(
         request=request,
+        config=config,
         session=session,
         task_id=task_id,
         variant=variant,
@@ -617,8 +647,7 @@ def _build_and_submit_evaluation(
     )
 
 
-def _empty_form_state(request: Request) -> dict[str, Any]:
-    config = request.app.state.experiment_config
+def _empty_form_state(config: ExperimentConfig) -> dict[str, Any]:
     return {
         "status": "success",
         "artifacts_uri": "",
@@ -630,6 +659,7 @@ def _empty_form_state(request: Request) -> dict[str, Any]:
 def _render_draft(
     request: Request,
     *,
+    config: ExperimentConfig,
     session: Any,
     task_id: str,
     variant: Variant,
@@ -645,7 +675,6 @@ def _render_draft(
     variant_artifact_manifest = read_variant_artifact_manifest(
         variant.artifacts_uri, artifacts_dir
     )
-    config = request.app.state.experiment_config
     metric_schema_items = list(config.evaluation_schema.root.items())
     return request.app.state.templates.TemplateResponse(
         request,

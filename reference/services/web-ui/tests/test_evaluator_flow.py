@@ -21,6 +21,7 @@ from conftest import (
     SESSION_SECRET,
     WORKER_ID,
     _config,
+    _one_experiment_factory,
     get_csrf,
     get_evaluate_submission,
     seed_evaluate_task,
@@ -169,7 +170,7 @@ class TestStrandedClaimRecovery:
         # App with a claim_ttl_seconds=1 so the sweeper will pick
         # up an abandoned tab.
         app = make_app(
-            store=store,
+            store_factory=_one_experiment_factory(store),
             experiment_id=EXPERIMENT_ID,
             experiment_config=_config(),
             worker_id=WORKER_ID,

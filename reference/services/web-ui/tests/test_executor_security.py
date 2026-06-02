@@ -24,6 +24,7 @@ from conftest import (
     WORKER_ID,
     _config,
     _now,
+    _one_experiment_factory,
     get_csrf,
     seed_implement_task,
 )
@@ -136,7 +137,7 @@ class TestCookieAttributes:
         self, store: InMemoryStore, artifacts_dir: Path, bare_repo: GitRepo
     ) -> None:
         app: FastAPI = make_app(
-            store=store,
+            store_factory=_one_experiment_factory(store),
             experiment_id=EXPERIMENT_ID,
             experiment_config=_config(),
             worker_id=WORKER_ID,
