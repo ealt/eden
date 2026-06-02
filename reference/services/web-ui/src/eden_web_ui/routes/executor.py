@@ -1,3 +1,4 @@
+# slop-allow-file: 816 SLOC > 800 threshold after #145's per-handler resolve_active_context calls (~16 SLOC). Per-resource split is a separate refactor opportunity (cousin of F-3 for eden-wire/server.py); not in scope for #145.
 """Executor-module routes.
 
 Implements the spec-to-code map pinned in §C of the Phase 9c plan.
