@@ -23,7 +23,7 @@ EDEN's state lives in four substrates:
 | **Task store** (Postgres) | Tasks, ideas, variants, submissions, events, workers, groups, dispatch decisions, leases, experiment state | Host bind-mount at `${EDEN_EXPERIMENT_DATA_ROOT}/postgres/` (12a-1g) |
 | **Git remote** (Forgejo) | The experiment repo: seed commit + `work/*` (executor scratch) + `variant/*` (integrated lineage) + `main` | Host bind-mount at `${EDEN_EXPERIMENT_DATA_ROOT}/forgejo/` |
 | **Artifacts** | Worker-emitted blobs: idea content, evaluation outputs | Host bind-mount at `${EDEN_EXPERIMENT_DATA_ROOT}/artifacts/` ⇄ `/var/lib/eden/artifacts/` inside web-ui; served at `GET /artifacts?uri=file://...` (session-authed). **Empty in scripted mode** — only subprocess mode writes real files. |
-| **Process logs** | Container stdout from each service | Captured by Docker's logging driver (`json-file`, 50MB × 5 per service); ephemeral. **Issue #109** also persists each service's JSON-line log to `${EDEN_EXPERIMENT_DATA_ROOT}/logs/<service>/<service>.jsonl` (host bind-mount; rotates at 50MB × 5; survives `compose down -v`). |
+| **Process logs** | Container stdout from each service | Captured by Docker's logging driver (`json-file`, 50MB × 5 per service); ephemeral. **Issue #109** also persists each service's JSON-line log to `${EDEN_EXPERIMENT_DATA_ROOT}/logs/<service>/<service>.jsonl` (host bind-mount; rotates at 50MB × 5; survives `compose down -v`). The opt-in Loki + Alloy + Grafana overlay ([§2.8](#28-log-search-ui-loki--alloy--grafana)) indexes that JSONL substrate for cross-service / time-window search. |
 
 Every observability tool below reads from one or more of these. The event log in the task store is the closest thing to a single source of truth — every state change of consequence emits an event, and the orchestrator's loop is driven entirely by reads against it.
 
@@ -172,8 +172,10 @@ The four-rung ladder for production-grade persistence:
 |---|---|---|
 | **L1** | Bumped docker rotation (50MB × 5 per service) | In place |
 | **L2** | Per-service file handler writing to `${EDEN_EXPERIMENT_DATA_ROOT}/logs/` (bind-mount; survives `compose down -v`) | In place ([#109](https://github.com/ealt/eden/issues/109)) |
-| **L3** | In-stack search UI (Loki + Promtail + Grafana overlay at `localhost:3000`) | Tracked in [#110](https://github.com/ealt/eden/issues/110) |
+| **L3** | In-stack search UI (Loki + Alloy + Grafana overlay at `localhost:3000`) | **In place** ([#110](https://github.com/ealt/eden/issues/110)) — opt-in [`compose.logging.yaml`](../reference/compose/compose.logging.yaml); see [§2.8](#28-log-search-ui-loki--alloy--grafana) |
 | **L4** | External streaming to CloudWatch / Datadog / Grafana Cloud / etc. | Production-grade; out of scope for the reference stack — wire each service's stdout to your collector of choice |
+
+> **Why Alloy, not Promtail?** Promtail reached end-of-life on 2026-03-02. Grafana's supported successor is [Grafana Alloy](https://grafana.com/docs/alloy/) (their OpenTelemetry Collector distribution); the L3 overlay ships Alloy. The pipeline is identical — tail the #109 JSONL bind-mount → ship to Loki → search in Grafana — only the collector binary + its config language changed.
 
 ### 2.6 Read-only local clone of Forgejo
 
@@ -202,6 +204,72 @@ PGPASSWORD="$PG_PASS" psql -h localhost -p 5433 -U eden_readonly -d eden
 ```
 
 Or attach a browser via Adminer — see [§3.1](#31-adminer-for-postgres).
+
+### 2.8 Log search UI (Loki + Alloy + Grafana)
+
+The container logs in [§2.5](#25-container-logs) are great for tailing one service or `jq`-filtering one file. For **cross-service, time-windowed search** — "show me every `error` from any service in the last hour", or correlating an orchestrator dispatch decision with the evaluator's later processing of the resulting variant — there's an opt-in overlay that indexes the #109 JSONL substrate into Loki and exposes a Grafana search UI. This is rung **L3** of the ladder in [§2.5](#25-container-logs).
+
+It is **not** part of the default stack (it pulls ~400 MB of images); add it with one extra `-f`:
+
+```bash
+cd reference/compose
+# Layer the overlay on top of any stack you'd normally bring up.
+docker compose -f compose.yaml -f compose.logging.yaml --env-file .env up -d --wait
+
+# With subprocess workers (real per-task log volume), layer all three:
+docker compose -f compose.yaml -f compose.subprocess.yaml -f compose.logging.yaml \
+    --env-file .env up -d --wait
+```
+
+No extra setup-experiment flag is needed: `setup-experiment.sh` always generates `EDEN_GRAFANA_ADMIN_PASSWORD` and creates the `loki/` + `alloy/` data-root subdirs, so the overlay works against any bootstrapped stack.
+
+**What it runs (three internal services; only Grafana is host-exposed):**
+
+| Service | Role |
+|---|---|
+| `alloy` | [Grafana Alloy](https://grafana.com/docs/alloy/) tails `${EDEN_EXPERIMENT_DATA_ROOT}/logs/**/*.jsonl` read-only and ships each line to Loki, lifting `service` / `level` / `experiment_id` to Loki labels. No docker socket. |
+| `loki` | Stores + indexes the lines. Internal-only (`http://loki:3100` on the compose network); no host port. |
+| `grafana` | The search UI, at `http://localhost:3000` (override with `GRAFANA_HOST_PORT`). |
+
+**Using it:**
+
+1. Open `http://localhost:3000`. Sign in as user `admin`, password = `EDEN_GRAFANA_ADMIN_PASSWORD` from `.env`:
+
+   ```bash
+   grep '^EDEN_GRAFANA_ADMIN_PASSWORD=' reference/compose/.env | cut -d= -f2
+   ```
+
+2. The **EDEN explore** dashboard (folder *EDEN*) is pre-provisioned: a logs panel with `service` / `level` / `experiment_id` multi-select template variables and a time picker. Expand any line to see the inline JSON context fields (`decision_type`, `task_id`, `variant_id`, …).
+
+3. For ad-hoc queries, use Grafana's **Explore** view against the pre-provisioned **Loki** datasource. Example LogQL:
+
+   ```logql
+   # every error from any service:
+   {level="error"}
+   # orchestrator dispatch lines mentioning a variant:
+   {service="orchestrator"} |= "variant"
+   # all services for one experiment, last 15m (set the time picker):
+   {experiment_id="<your-experiment-id>"}
+   ```
+
+**Storage is DERIVED, not durable.** Loki's index/chunks live at `${EDEN_EXPERIMENT_DATA_ROOT}/loki/` and Alloy's tail positions at `${EDEN_EXPERIMENT_DATA_ROOT}/alloy/`. These are a *queryable projection* of the `logs/` JSONL substrate, **not** protocol-owned state (chapter 01 §13): losing them loses search history but no experiment state, and they rebuild by re-ingesting whatever remains under `logs/`. They are wiped by the same `rm -rf ${EDEN_EXPERIMENT_DATA_ROOT}` reset and are **not** covered by the durability invariant. A finite `retention_period` (default 7 days, in [`loki-config.yaml`](../reference/compose/logging/loki-config.yaml)) bounds disk growth on a long-lived demo.
+
+**Coverage caveat — EDEN services only, by default.** The file-tail captures only the six EDEN services (the ones using `eden_service_common` logging). Postgres + Forgejo log to stdout, which the JSONL tail does not see. To also capture their stdout, layer the optional **infra** overlay on top — it mounts the host docker socket (read-only) into Alloy, so it lives in its own overlay per the privilege-isolation discipline (exactly how `compose.docker-exec.yaml` isolates the same privilege):
+
+```bash
+# Probe the socket's in-container gid (NOT a host-side stat), then bring up:
+EDEN_LOGGING_DOCKER_GID=$(docker run --rm \
+  -v /var/run/docker.sock:/var/run/docker.sock alpine:3.20 \
+  stat -c '%g' /var/run/docker.sock) \
+docker compose -f compose.yaml -f compose.logging.yaml -f compose.logging-infra.yaml \
+  --env-file .env up -d --wait
+```
+
+`EDEN_LOGGING_DOCKER_GID` is a dedicated required var (`:?`-guarded) — deliberately *not* `EDEN_DOCKER_GID`, which defaults to `0` and would silently bring the overlay up with the wrong gid. See [`compose.logging-infra.yaml`](../reference/compose/compose.logging-infra.yaml)'s header.
+
+Infra stdout streams carry only a `service` label (`postgres` / `forgejo`) — they have no `experiment_id` or `level` (those are EDEN-JSON fields). The **EDEN explore** dashboard still surfaces them: its template variables default to an all-value that doesn't require those labels (`experiment_id`/`level` use `.*`, which matches streams missing the label; `service` uses `.+` as the load-bearing non-empty matcher Loki requires). Filtering by a specific `level` or `experiment_id`, naturally, narrows to the EDEN-service streams that carry those labels.
+
+**Implicit contract with `logging.py`.** Alloy's JSON-parse stage keys on the field names emitted by [`eden_service_common/logging.py`](../reference/services/_common/src/eden_service_common/logging.py) (`ts`, `level`, `service`, `experiment_id`). A future logging-schema rename degrades labels *silently* (ingestion keeps working; search by the renamed label quietly stops). The `compose-smoke-logging` CI job asserts `{service="orchestrator"}` returns lines, so a `service`-label regression fails the smoke. Validate locally with `bash reference/compose/healthcheck/smoke-logging.sh`.
 
 ## 3. Bring-your-own admin UIs
 

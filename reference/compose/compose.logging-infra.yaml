@@ -1,0 +1,74 @@
+# Issue #110 §3.4 — OPTIONAL infra-stdout capture overlay.
+#
+# Layered ON TOP of compose.logging.yaml to ALSO ship Postgres +
+# Forgejo container stdout (not captured by the EDEN-service JSONL
+# tail; those infra services log to stdout only) into the search UI:
+#
+#   docker compose -f compose.yaml \
+#                  -f compose.logging.yaml \
+#                  -f compose.logging-infra.yaml \
+#                  --env-file .env up -d --wait
+#
+# It re-declares the `alloy` service to (a) mount the host docker
+# socket read-only + join the socket's group, and (b) point Alloy at
+# the extended alloy-config-infra.alloy (file-tail PLUS docker-stdout
+# pipelines).
+#
+# WHY A SEPARATE OVERLAY: this is the only file in the logging stack
+# that mounts /var/run/docker.sock. Per the AGENTS.md privilege-
+# isolation discipline ("any deployment mode that needs new privilege
+# goes in its own compose overlay"), the default compose.logging.yaml
+# never touches the socket — exactly how compose.docker-exec.yaml
+# isolates the same privilege from the base subprocess overlay.
+#
+# REQUIRED ENV — EDEN_LOGGING_DOCKER_GID:
+#   The gid of /var/run/docker.sock AS SEEN FROM INSIDE A CONTAINER.
+#   This is a DEDICATED var, deliberately NOT the docker-exec overlay's
+#   EDEN_DOCKER_GID — setup-experiment.sh writes EDEN_DOCKER_GID=0 by
+#   default (it only probes the real gid under --exec-mode docker), so
+#   reusing it here would let this overlay come up with a wrong gid 0
+#   and then fail at runtime with confusing docker-socket permission
+#   errors. The `:?` guard below fails loud at `compose config` / `up`
+#   time if it is unset.
+#
+#   Probe it the same way setup-experiment / compose.docker-exec do —
+#   FROM INSIDE A CONTAINER, not a host-side `stat` (on Docker Desktop /
+#   Colima the in-VM gid differs from the host's):
+#
+#     docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+#       alpine:3.20 stat -c '%g' /var/run/docker.sock
+#
+#   Then bring the stack up with that value, e.g.:
+#
+#     EDEN_LOGGING_DOCKER_GID=$(docker run --rm \
+#       -v /var/run/docker.sock:/var/run/docker.sock \
+#       alpine:3.20 stat -c '%g' /var/run/docker.sock) \
+#     docker compose -f compose.yaml -f compose.logging.yaml \
+#       -f compose.logging-infra.yaml --env-file .env up -d --wait
+#
+# See compose.docker-exec.yaml for the companion socket-trust note.
+
+name: eden-reference
+
+services:
+  alloy:
+    # Re-point Alloy at the extended config (file-tail + docker-stdout).
+    command:
+      - run
+      - /etc/alloy/config.alloy
+      - --storage.path=/var/lib/alloy/data
+      - --server.http.listen-addr=0.0.0.0:12345
+      - --disable-reporting
+    # group_add gives the alloy process supplementary membership in the
+    # socket's group so it can read /var/run/docker.sock. Fails loud if
+    # EDEN_LOGGING_DOCKER_GID is unset (see header).
+    group_add:
+      - "${EDEN_LOGGING_DOCKER_GID:?set EDEN_LOGGING_DOCKER_GID to the gid of /var/run/docker.sock as seen from inside a container — see compose.logging-infra.yaml header}"
+    volumes:
+      # Compose MERGES (does not replace) the volumes list across files,
+      # so the three mounts from compose.logging.yaml (logs ro, config,
+      # alloy data) are still present; these two are additive. The
+      # config mount below SHADOWS the base config bind at the same
+      # target with the extended infra config.
+      - ./logging/alloy-config-infra.alloy:/etc/alloy/config.alloy:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro

@@ -1,0 +1,21 @@
+--- docs/plans/review/issue-110-loki-grafana-overlay/impl/20260601T144222/1.md	2026-06-01 14:57:27
++++ docs/plans/review/issue-110-loki-grafana-overlay/impl/20260601T144222/2.md	2026-06-01 15:01:08
+@@ -72,3 +72,18 @@
+ ## Review Status
+ 
+ Round 1 — awaiting re-review.
++
++---
++
++## Round 2 — fixes applied
++
++**Round-1 finding (Risk) — the "surfaces both EDEN + infra" guard didn't prove what it claimed. ADDRESSED.**
++Correct catch: `query_count "$DASH_DEFAULT_SELECTOR" >= 1` was already satisfied by the EDEN (orchestrator) lines that the prior assertion guarantees, so a reverted allValue (excluding label-less infra streams) would still pass. Two changes:
++1. **Behavioral guard (Phase 6)** — replaced the weak check with `{service="postgres", experiment_id=~".*", level=~".*"} >= 1`. This pins a label-less infra stream (postgres has no `experiment_id`/`level`) and keeps the `.*` matchers from the dashboard's default shape: it returns lines ONLY IF those `.*` matchers don't exclude label-less streams. If allValue reverts to a value-list, this drops to 0 and fails — exactly the finding-1 regression.
++2. **Faithfulness guard (Phase 5)** — the hardcoded selector is only a meaningful proxy if the provisioned dashboard actually carries the assumed allValues. Added an assertion that reads the provisioned dashboard via the Grafana API and requires `experiment_id=.*`, `level=.*`, `service=.+` on the template vars. So the smoke now enforces BOTH that the dashboard uses the label shape AND that the shape surfaces label-less infra streams.
++
++**Validation:** `smoke-logging.sh` re-run end-to-end — PASS (postgres 5, forgejo 5, EDEN-under-infra OK, faithfulness allValues OK, label-less-infra-via-default-shape OK). shellcheck / `bash -n` clean.
++
++## Review Status
++
++Round 2 — awaiting re-review.

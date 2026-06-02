@@ -1,0 +1,22 @@
+# Dashboard provider (issue #110). Loads every dashboard JSON under
+# /var/lib/grafana/dashboards (the read-only bind-mount of
+# logging/grafana/dashboards declared in compose.logging.yaml) on
+# start and on a 30s interval thereafter. Like the datasource above,
+# this is reconstructed on every Grafana start, so no durable storage
+# is needed.
+apiVersion: 1
+
+providers:
+  - name: eden
+    orgId: 1
+    folder: EDEN
+    type: file
+    disableDeletion: false
+    # Operators editing a provisioned dashboard in the UI can save a
+    # copy; the provisioned original stays authoritative on the next
+    # provisioning sweep.
+    allowUiUpdates: true
+    updateIntervalSeconds: 30
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false

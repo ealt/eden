@@ -218,6 +218,18 @@ FORGEJO_SSH_HOST_PORT="${EXISTING_FORGEJO_SSH_HOST_PORT:-2222}"
 EXISTING_WEB_UI_HOST_PORT="$(read_env_key WEB_UI_HOST_PORT "$ENV_FILE")"
 WEB_UI_HOST_PORT="${EXISTING_WEB_UI_HOST_PORT:-8090}"
 
+# Issue #110: log-search overlay (compose.logging.yaml) secrets/knobs.
+# Generated/preserved unconditionally (decision §2.4) — negligible when
+# the overlay isn't used (one unused secret line, one empty dir each
+# for loki/ + alloy/), and keeps bring-up frictionless: no --with-logging
+# flag, just add `-f compose.logging.yaml`. Grafana admin password
+# follows the same generate-or-preserve path as every other secret.
+EXISTING_GRAFANA_ADMIN_PASSWORD="$(read_env_key EDEN_GRAFANA_ADMIN_PASSWORD "$ENV_FILE")"
+EDEN_GRAFANA_ADMIN_PASSWORD="${EXISTING_GRAFANA_ADMIN_PASSWORD:-$(gen_hex 32)}"
+
+EXISTING_GRAFANA_HOST_PORT="$(read_env_key GRAFANA_HOST_PORT "$ENV_FILE")"
+GRAFANA_HOST_PORT="${EXISTING_GRAFANA_HOST_PORT:-3000}"
+
 # Issue #133: ideation policy moved from env vars to the experiment
 # config's `ideation_policy` block. The orchestrator reads
 # /etc/eden/experiment-config.yaml at startup; `setup-experiment.sh`
@@ -342,7 +354,17 @@ mkdir -p \
     "${EDEN_EXPERIMENT_DATA_ROOT}/logs/ideator-host" \
     "${EDEN_EXPERIMENT_DATA_ROOT}/logs/executor-host" \
     "${EDEN_EXPERIMENT_DATA_ROOT}/logs/evaluator-host" \
-    "${EDEN_EXPERIMENT_DATA_ROOT}/logs/web-ui"
+    "${EDEN_EXPERIMENT_DATA_ROOT}/logs/web-ui" \
+    "${EDEN_EXPERIMENT_DATA_ROOT}/loki" \
+    "${EDEN_EXPERIMENT_DATA_ROOT}/alloy"
+# Issue #110: loki/ + alloy/ are DERIVED / observability storage for the
+# opt-in compose.logging.yaml overlay — NOT protocol-owned durable state
+# (chapter 01 §13). loki/ holds Loki's index+chunks (a queryable
+# projection of logs/); alloy/ holds Alloy's file-tail positions. They
+# are created unconditionally (created here even for experiments that
+# never run the overlay; they stay empty until it does) and wiped by the
+# same `rm -rf ${EDEN_EXPERIMENT_DATA_ROOT}` reset. chmod 0777 because
+# Loki runs as uid 10001 (12a-1g multi-uid precedent).
 if ! chmod 0777 \
     "${EDEN_EXPERIMENT_DATA_ROOT}" \
     "${EDEN_EXPERIMENT_DATA_ROOT}/postgres" \
@@ -366,7 +388,9 @@ if ! chmod 0777 \
     "${EDEN_EXPERIMENT_DATA_ROOT}/logs/ideator-host" \
     "${EDEN_EXPERIMENT_DATA_ROOT}/logs/executor-host" \
     "${EDEN_EXPERIMENT_DATA_ROOT}/logs/evaluator-host" \
-    "${EDEN_EXPERIMENT_DATA_ROOT}/logs/web-ui" 2>/dev/null
+    "${EDEN_EXPERIMENT_DATA_ROOT}/logs/web-ui" \
+    "${EDEN_EXPERIMENT_DATA_ROOT}/loki" \
+    "${EDEN_EXPERIMENT_DATA_ROOT}/alloy" 2>/dev/null
 then
     # Best-effort: the script continues. But warn the operator so a
     # follow-up "compose up postgres-permission-denied" failure
@@ -486,6 +510,16 @@ EDEN_ADMIN_TOKEN=${EDEN_ADMIN_TOKEN}
 EDEN_SESSION_SECRET=${EDEN_SESSION_SECRET}
 EDEN_STORE_URL=${EDEN_STORE_URL}
 WEB_UI_HOST_PORT=${WEB_UI_HOST_PORT}
+
+# --- Log search UI (Loki/Alloy/Grafana overlay, issue #110) ---
+# Used only by compose.logging.yaml (opt-in). Generated/preserved
+# unconditionally so the overlay works against any bootstrapped stack
+# with no extra setup flag. EDEN_LOGGING_DOCKER_GID is intentionally
+# absent here — it is required ONLY for the optional infra-stdout
+# overlay (compose.logging-infra.yaml) and the operator supplies it at
+# `up` time (see that overlay's header + .env.example).
+EDEN_GRAFANA_ADMIN_PASSWORD=${EDEN_GRAFANA_ADMIN_PASSWORD}
+GRAFANA_HOST_PORT=${GRAFANA_HOST_PORT}
 
 # --- 12a-1g substrate data root ---
 # Host-side parent dir under which every durable substrate

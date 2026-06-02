@@ -537,6 +537,39 @@ jobs:
         working-directory: reference/compose
         run: bash healthcheck/smoke-checkpoint.sh
 
+  # Issue #110: exercises the opt-in Loki + Alloy + Grafana log-search
+  # overlay (compose.logging.yaml) end-to-end — brings up base +
+  # subprocess + logging, asserts Loki ingests EDEN lines, Grafana is
+  # healthy with the datasource + dashboard provisioned, and (since the
+  # runner has a docker socket) the optional compose.logging-infra.yaml
+  # overlay captures postgres stdout. Path-gated on the `compose`
+  # bucket like every other compose-smoke-* job. Not required by branch
+  # protection in this PR; same posture as compose-smoke-checkpoint —
+  # bump to required-status after staying clean on main for ~2 weeks.
+  compose-smoke-logging:
+    name: compose-smoke-logging
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: changes
+    if: >-
+      !cancelled() && (
+      needs.changes.result != 'success' ||
+      needs.changes.outputs.run_all == 'true' ||
+      needs.changes.outputs.compose == 'true' ||
+      needs.changes.outputs.python == 'true' )
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify docker compose + jq + python3 are available
+        run: |
+          docker compose version
+          jq --version
+          python3 --version
+
+      - name: Run compose smoke (log-search overlay)
+        working-directory: reference/compose
+        run: bash healthcheck/smoke-logging.sh
+
   compose-e2e:
     name: compose-e2e
     runs-on: ubuntu-latest
