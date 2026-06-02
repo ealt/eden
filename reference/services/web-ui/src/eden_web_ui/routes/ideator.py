@@ -242,12 +242,9 @@ async def add_row(task_id: str, request: Request):
             request, "/ideator/?banner=claim+missing+from+session"
         )
 
-    slugs = [str(v) for v in form.getlist("slug")]
-    priorities = [str(v) for v in form.getlist("priority")]
-    parents = [str(v) for v in form.getlist("parent_commits")]
-    contents = [str(v) for v in form.getlist("content")]
-    intended_kinds = [str(v) for v in form.getlist("intended_executor_kind")]
-    intended_ids = [str(v) for v in form.getlist("intended_executor_id")]
+    slugs, priorities, parents, contents, intended_kinds, intended_ids = (
+        _collect_idea_form_fields(form)
+    )
     typed_state = _form_state_from_inputs(
         slugs,
         priorities,
@@ -476,6 +473,20 @@ def _persist_idea_drafts(  # noqa: E501  # slop-allow: per-row save/validate/wri
     return idea_ids, slug_warnings, None, None
 
 
+def _collect_idea_form_fields(
+    form: Any,
+) -> tuple[list[str], list[str], list[str], list[str], list[str], list[str]]:
+    """Pull the six per-row idea form fields as parallel string lists."""
+    return (
+        [str(v) for v in form.getlist("slug")],
+        [str(v) for v in form.getlist("priority")],
+        [str(v) for v in form.getlist("parent_commits")],
+        [str(v) for v in form.getlist("content")],
+        [str(v) for v in form.getlist("intended_executor_kind")],
+        [str(v) for v in form.getlist("intended_executor_id")],
+    )
+
+
 @router.post("/{task_id}/submit", response_model=None)
 async def submit_idea(task_id: str, request: Request) -> HTMLResponse | RedirectResponse:
     session = get_session(request)
@@ -513,12 +524,9 @@ async def submit_idea(task_id: str, request: Request) -> HTMLResponse | Redirect
             task_id=task_id, token=token,
         )
 
-    slugs = [str(v) for v in form.getlist("slug")]
-    priorities = [str(v) for v in form.getlist("priority")]
-    parents = [str(v) for v in form.getlist("parent_commits")]
-    contents = [str(v) for v in form.getlist("content")]
-    intended_kinds = [str(v) for v in form.getlist("intended_executor_kind")]
-    intended_ids = [str(v) for v in form.getlist("intended_executor_id")]
+    slugs, priorities, parents, contents, intended_kinds, intended_ids = (
+        _collect_idea_form_fields(form)
+    )
     n_rows = max(len(slugs), len(priorities), len(parents), len(contents))
     uploads_per_row = await _collect_row_uploads(form, n_rows=n_rows)
     has_uploads_per_row = [bool(uploads_per_row.get(i)) for i in range(n_rows)]

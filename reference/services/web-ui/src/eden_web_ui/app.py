@@ -173,6 +173,14 @@ def make_app(
 
     app.add_middleware(AdminGateMiddleware)
     _register_routers(app, control_plane=control_plane, repo=repo)
+    _install_healthz_and_error_handlers(app, templates)
+    return app
+
+
+def _install_healthz_and_error_handlers(
+    app: FastAPI, templates: Jinja2Templates
+) -> None:
+    """Wire the unauthenticated healthcheck + the 404 / NotFound pages."""
 
     @app.get("/healthz", include_in_schema=False)
     async def _healthz() -> dict[str, str]:
@@ -198,5 +206,3 @@ def make_app(
             {"title": "Not found", "message": str(exc)},
             status_code=404,
         )
-
-    return app
