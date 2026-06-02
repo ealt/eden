@@ -100,7 +100,7 @@ This module is the highest-risk, highest-value unit and gets the densest unit te
 | Route | `GET /admin/lineage/` (user-facing title "Variant lineage tree") | **new** |
 | Route module | `routes/admin/lineage.py` | **new** |
 | Graph builder + view models | `lineage_graph.py`: `build_lineage_graph`, `LineageGraph`, `LineageNode`, `LineageEdge` | **new** |
-| Objective evaluator | `objective_eval.py`: `compile_objective`, `evaluate`, `objective_score_for_variant`, `CompiledObjective`, `ObjectiveError` (global/compile-time), `ObjectiveEvalError` (per-node) | **new** |  <!-- rename-discipline:cite -->
+| Objective evaluator | `objective_eval.py`: `compile_objective`, `evaluate`, `objective_score_for_variant`, `CompiledObjective`, `ObjectiveError` (global/compile-time), `ObjectiveEvalError` (per-node) <!-- rename-discipline:cite --> | **new** |
 | Template | `templates/admin_lineage.html` | **new** |
 | Static | `static/d3.v7.min.js` (vendored), `static/lineage-tree.js` | **new** |
 | Config | `--forgejo-web-url` flag / `FORGEJO_WEB_URL` env → `app.state.forgejo_web_url` | **new** |
