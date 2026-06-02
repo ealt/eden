@@ -33,6 +33,7 @@ from eden_service_common import (
 from eden_service_common.logging import configure_logging
 from eden_storage import Store
 from eden_wire.errors import Unauthorized
+from eden_wire.errors import WireError as ControlPlaneWireError
 
 from .app import make_app
 from .credentials import bootstrap_control_plane_credential, resolve_credential_dir
@@ -89,6 +90,20 @@ def _build_control_plane_client(
             error=str(exc),
         )
         return ControlPlaneClient(url, bearer=None)
+    except (httpx.TransportError, ControlPlaneWireError) as exc:
+        # Control-plane unreachable / rejected the bootstrap at startup.
+        # Treat as a degraded runtime posture (Posture D — banners +
+        # hidden switcher) rather than a hard service-start dependency;
+        # the dashboard's per-request reads surface the failure, and the
+        # switcher hides on the cold-cache read error.
+        log.warning(
+            "control-plane credential bootstrap failed; the cross-experiment "
+            "switcher/dashboard will be degraded until the control plane is "
+            "reachable",
+            error=f"{exc.__class__.__name__}: {exc}",
+        )
+        bearer = f"admin:{cp_token}" if cp_token is not None else None
+        return ControlPlaneClient(url, bearer=bearer)
 
 
 # slop-allow: argparse builder; one add_argument per CLI flag with no
