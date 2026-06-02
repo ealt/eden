@@ -16,6 +16,7 @@ import pytest
 from eden_contracts import (
     BaselineConfig,
     EvaluationSchema,
+    Experiment,
     ExperimentConfig,
     ObjectiveSpec,
     Variant,
@@ -23,6 +24,7 @@ from eden_contracts import (
 from eden_dispatch import InMemoryStore
 from eden_orchestrator.baseline import BASELINE_VARIANT_ID, ensure_baseline_variant
 from eden_orchestrator.multi_loop import _experiment_is_drained_terminated
+from eden_storage.errors import AlreadyExists, NotFound
 
 _SEED = "a" * 40
 _DT = "2026-05-01T00:00:00.000Z"
@@ -116,6 +118,77 @@ def test_ensure_baseline_drift_raises() -> None:
     with pytest.raises(RuntimeError, match="drift"):
         ensure_baseline_variant(
             store=store, config=_config(), experiment_id="exp-baseline"
+        )
+
+
+class _RacingStore:
+    """Fake store that forces the ``AlreadyExists`` race branch.
+
+    `read_variant` returns NotFound on the first call (the pre-create
+    identity check) then the concurrent `winner` on the read-back after
+    `create_variant` raises `AlreadyExists` — exactly the single-mode race
+    `ensure_baseline_variant` must verify rather than blindly accept.
+    """
+
+    def __init__(self, *, winner: Variant) -> None:
+        self._winner = winner
+        self._read_calls = 0
+
+    def read_experiment(self) -> Experiment:
+        return Experiment(
+            experiment_id="exp-baseline",
+            state="running",
+            created_at=_DT,
+            base_commit_sha=_SEED,
+        )
+
+    def read_variant(self, variant_id: str) -> Variant:
+        self._read_calls += 1
+        if self._read_calls == 1:
+            raise NotFound(variant_id)  # initial check: not present yet
+        return self._winner  # read-back after AlreadyExists: the race winner
+
+    def create_variant(self, variant: Variant) -> None:
+        raise AlreadyExists(variant.variant_id)  # a concurrent instance won
+
+
+def test_already_exists_race_accepts_valid_baseline_winner() -> None:
+    """The post-AlreadyExists read-back accepts a valid baseline winner."""
+    winner = Variant(
+        variant_id=BASELINE_VARIANT_ID,
+        experiment_id="exp-baseline",
+        kind="baseline",
+        status="starting",
+        parent_commits=[_SEED],
+        commit_sha=_SEED,
+        started_at=_DT,
+    )
+    store = _RacingStore(winner=winner)
+    # Must not raise: the concurrent winner is a valid baseline.
+    ensure_baseline_variant(
+        store=store,  # type: ignore[arg-type]
+        config=_config(),
+        experiment_id="exp-baseline",
+    )
+
+
+def test_already_exists_race_rejects_squatting_winner() -> None:
+    """The post-AlreadyExists read-back fails loudly on a non-baseline winner."""
+    squatter = Variant(
+        variant_id=BASELINE_VARIANT_ID,
+        experiment_id="exp-baseline",
+        idea_id="idea-1",
+        status="starting",
+        parent_commits=[_SEED],
+        commit_sha="b" * 40,
+        started_at=_DT,
+    )
+    store = _RacingStore(winner=squatter)
+    with pytest.raises(RuntimeError, match="drift"):
+        ensure_baseline_variant(
+            store=store,  # type: ignore[arg-type]
+            config=_config(),
+            experiment_id="exp-baseline",
         )
 
 

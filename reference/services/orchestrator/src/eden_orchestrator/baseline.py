@@ -95,13 +95,7 @@ def ensure_baseline_variant(
         return
 
     if existing is not None:
-        if existing.kind != "baseline" or existing.commit_sha != base_sha:
-            raise RuntimeError(
-                f"variant {BASELINE_VARIANT_ID!r} exists but is not the expected "
-                f"baseline for experiment {experiment_id!r}: kind={existing.kind!r}, "
-                f"commit_sha={existing.commit_sha!r} (expected kind='baseline', "
-                f"commit_sha={base_sha!r}). Seed/config drift — refusing to proceed."
-            )
+        _verify_existing_baseline(existing, base_sha=base_sha, experiment_id=experiment_id)
         return  # already created; idempotent no-op (no event re-emit)
 
     metrics = config.baseline.metrics if config.baseline is not None else None
@@ -136,9 +130,23 @@ def ensure_baseline_variant(
     try:
         store.create_variant(variant)
     except AlreadyExists:
-        # A concurrent instance won the race; the verified read-back on the
-        # next iteration confirms it. Do NOT treat as an error and do NOT
-        # re-emit events.
+        # A concurrent instance won the create race. This is NOT a blind
+        # pass: read the winning row back and verify it is the expected
+        # baseline (single-mode has no "next iteration" to re-check, so an
+        # unrelated row squatting the deterministic id must fail loudly
+        # here too — plan §D.2). A read failure on the verify path is
+        # transient; surface it and let the next startup/iteration re-check.
+        try:
+            winner = store.read_variant(BASELINE_VARIANT_ID)
+        except StorageError:
+            _log.warning(
+                "baseline_variant_already_created_readback_failed",
+                experiment_id=experiment_id,
+            )
+            return
+        _verify_existing_baseline(
+            winner, base_sha=base_sha, experiment_id=experiment_id
+        )
         _log.info("baseline_variant_already_created", experiment_id=experiment_id)
         return
     _log.info(
@@ -147,3 +155,27 @@ def ensure_baseline_variant(
         path=path,
         commit_sha=base_sha,
     )
+
+
+def _verify_existing_baseline(
+    existing: Variant, *, base_sha: str, experiment_id: str
+) -> None:
+    """Verify a row at the deterministic baseline id is the expected baseline.
+
+    The identity check (plan §D.2 "verified read-back, not blind
+    ``AlreadyExists``"): the row MUST be ``kind == "baseline"`` with
+    ``commit_sha == base_sha``. An unrelated row squatting the id — or a
+    seed drift across restarts — fails loudly rather than being silently
+    accepted. Status / evaluation are intentionally NOT checked: the first
+    create wins and the baseline is immutable thereafter, so a later
+    config-metrics change has no effect on an already-created baseline
+    (and a default-path baseline legitimately advances ``starting`` →
+    ``success`` at evaluation time).
+    """
+    if existing.kind != "baseline" or existing.commit_sha != base_sha:
+        raise RuntimeError(
+            f"variant {BASELINE_VARIANT_ID!r} exists but is not the expected "
+            f"baseline for experiment {experiment_id!r}: kind={existing.kind!r}, "
+            f"commit_sha={existing.commit_sha!r} (expected kind='baseline', "
+            f"commit_sha={base_sha!r}). Seed/config drift — refusing to proceed."
+        )

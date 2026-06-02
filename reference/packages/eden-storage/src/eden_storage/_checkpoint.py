@@ -622,11 +622,15 @@ def _apply_archive_commit(
         if state and state != "running":
             tx.experiment_state = state
         # Round-trip the seed baseline-variant commit (02-data-model.md
-        # §2.5 / §9.4, 10-checkpoints.md §5). Absent on the source ⇒ no
-        # write (the receiver keeps whatever it was constructed with).
-        base_commit_sha = parsed.experiment_row.get("base_commit_sha")
-        if base_commit_sha is not None:
-            tx.base_commit_sha_update = (base_commit_sha,)
+        # §2.5 / §9.4, 10-checkpoints.md §5). Stage UNCONDITIONALLY so the
+        # imported experiment's base_commit_sha is exactly the source's:
+        # absent on the source ⇒ write None (clear any seed the receiver
+        # was constructed with), present ⇒ write the source value. Treating
+        # absence as "no update" would let a seedless source inherit the
+        # receiver's seed and synthesize a baseline the source never had.
+        tx.base_commit_sha_update = (
+            parsed.experiment_row.get("base_commit_sha"),
+        )
         # Record import provenance.
         tx.imported_from_update = (
             ImportProvenance(

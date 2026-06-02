@@ -189,6 +189,29 @@ def test_base_commit_sha_round_trip(
     assert target.read_experiment().base_commit_sha == seed
 
 
+def test_base_commit_sha_absent_source_clears_receiver_seed(
+    make_store: Callable[..., Store], tmp_path: Path
+) -> None:
+    """Importing a seedless checkpoint clears the receiver's constructed seed.
+
+    Treating an absent-source ``base_commit_sha`` as "no update" would let
+    a seedless source inherit the receiver's seed and synthesize a baseline
+    the source never had (10-checkpoints.md §5 round-trip fidelity).
+    """
+    source = make_store("exp-noseed", seed_workers=False)  # no seed
+    assert source.read_experiment().base_commit_sha is None
+    archive = io.BytesIO()
+    source.export_checkpoint(archive, experiment_config="parallel_variants: 1\n")
+
+    # Receiver was constructed WITH a seed — import must clear it to match
+    # the seedless source.
+    target = make_store("exp-noseed", seed_workers=False, base_commit_sha="e" * 40)
+    assert target.read_experiment().base_commit_sha == "e" * 40
+    archive.seek(0)
+    target.import_checkpoint(archive, extract_dir=tmp_path)
+    assert target.read_experiment().base_commit_sha is None
+
+
 def test_full_experiment_round_trip(
     make_store: Callable[..., Store], tmp_path: Path
 ) -> None:
