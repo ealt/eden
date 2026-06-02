@@ -423,18 +423,15 @@ def _resolve_default_config(
     """
     has_control_plane = args.control_plane_url is not None
     if args.experiment_config is not None:
-        config = load_experiment_config(args.experiment_config)
-        # Fail fast on a default-config / config-dir mismatch (§3.4).
-        if args.experiment_config_dir is not None:
-            dir_path = args.experiment_config_dir / f"{args.experiment_id}.yaml"
-            if dir_path.is_file() and load_experiment_config(dir_path) != config:
-                log.error(
-                    "--experiment-config disagrees with the default experiment's "
-                    "entry in --experiment-config-dir; reconcile them",
-                    experiment_id=args.experiment_id,
-                )
-                return 1
-        return config
+        # The deployment-default experiment ALWAYS resolves to this config
+        # (active_config's default-experiment branch returns
+        # app.state.experiment_config and never reads the config-dir copy),
+        # so --experiment-config is authoritative for the default and a
+        # divergent <config-dir>/<default>.yaml is harmless — we do NOT
+        # fail on a mismatch. (Compose legitimately produces one: smoke
+        # appends fields to the mounted config after setup-experiment has
+        # already copied the pre-append config into the config-dir.)
+        return load_experiment_config(args.experiment_config)
     if not has_control_plane:
         log.error(
             "--experiment-config is required in single-experiment mode "
