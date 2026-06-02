@@ -5,7 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Request, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
 
-from .._helpers import get_session, resolve_active_context
+from .._helpers import get_session, repo_for, resolve_active_context
 from ._common import (
     _KIND_VALUES,
     _STATE_VALUES,
@@ -27,7 +27,7 @@ async def index(request: Request) -> HTMLResponse | RedirectResponse:
     if isinstance(active, Response):
         return active
     store = active.store
-    repo = request.app.state.repo
+    repo = repo_for(request, active.experiment_id)
     now = _now_dt(request)
 
     try:

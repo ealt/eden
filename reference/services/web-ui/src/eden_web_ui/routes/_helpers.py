@@ -382,6 +382,26 @@ def resolve_active_context(
     )
 
 
+def repo_for(request: Request, experiment_id: str) -> Any:
+    """Return the local integrator clone for ``experiment_id`` (issue #145 §3.5).
+
+    The deployment-default experiment uses the startup-materialized
+    ``app.state.repo`` (unchanged single-experiment behavior). Non-default
+    experiments are materialized lazily by the ``RepoMaterializer`` under
+    ``<repo-root>/<experiment_id>.git``; when no materializer is configured
+    (single-experiment / test posture) the default repo is returned for
+    every experiment. Returns ``None`` when the executor module is
+    disabled (no ``--repo-path``).
+    """
+    default_repo = request.app.state.repo
+    if experiment_id == request.app.state.experiment_id:
+        return default_repo
+    materializer = request.app.state.repo_materializer
+    if materializer is None:
+        return default_repo
+    return materializer.for_experiment(experiment_id)
+
+
 # ---------------------------------------------------------------------------
 # Top-nav experiment switcher (issue #145 §3.7)
 # ---------------------------------------------------------------------------

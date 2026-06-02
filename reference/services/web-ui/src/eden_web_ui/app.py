@@ -24,6 +24,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from .middleware import AdminGateMiddleware
+from .repo_factory import RepoMaterializer
 from .routes import admin as admin_routes
 from .routes import admin_artifacts as admin_artifacts_routes
 from .routes import admin_experiments as admin_experiments_routes
@@ -105,6 +106,7 @@ def make_app(
     secure_cookies: bool = False,
     now: Callable[[], datetime] | None = None,
     repo: GitRepo | None = None,
+    repo_materializer: RepoMaterializer | None = None,
     clone_url: str | None = None,
     base_commit_sha: str | None = None,
     control_plane: ControlPlaneClient | None = None,
@@ -164,6 +166,7 @@ def make_app(
     app.state.now = now or _now_factory()
     app.state.templates = templates
     app.state.repo = repo
+    app.state.repo_materializer = repo_materializer
     app.state.clone_url = clone_url
     app.state.base_commit_sha = base_commit_sha
     app.state.control_plane = control_plane

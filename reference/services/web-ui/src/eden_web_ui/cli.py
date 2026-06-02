@@ -36,6 +36,7 @@ from eden_wire.errors import Unauthorized
 
 from .app import make_app
 from .credentials import bootstrap_control_plane_credential, resolve_credential_dir
+from .repo_factory import RepoMaterializer
 from .store_factory import BearerCache, StoreFactory
 
 
@@ -295,6 +296,7 @@ class _WebUIRuntime:
     config: ExperimentConfig
     store_factory: StoreFactory
     repo: GitRepo | None
+    repo_materializer: RepoMaterializer | None
     control_plane: ControlPlaneClient | None
 
 
@@ -320,6 +322,27 @@ def _materialize_repo(args: argparse.Namespace) -> GitRepo | None:
         repo = GitRepo(str(args.repo_path))
     repo.rev_parse("HEAD")
     return repo
+
+
+def _build_repo_materializer(
+    args: argparse.Namespace,
+) -> RepoMaterializer | None:
+    """Materializer for non-default experiments' integrator clones (#145 §3.5).
+
+    Per-experiment bare clones live as siblings of ``--repo-path`` (i.e.
+    under its parent dir), at ``<parent>/<experiment_id>.git``. Returns
+    ``None`` when the executor module is disabled (no ``--repo-path``).
+    The deployment-default experiment keeps using the flat ``--repo-path``
+    clone via ``app.state.repo``; the materializer is consulted only for
+    non-default experiments (control-plane mode).
+    """
+    if args.repo_path is None:
+        return None
+    return RepoMaterializer(
+        repo_root=args.repo_path.parent,
+        forgejo_url=args.forgejo_url,
+        credential_helper=args.credential_helper,
+    )
 
 
 def _validate_admin_store(
@@ -420,6 +443,7 @@ def _build_runtime(
         config=config,
         store_factory=store_factory,
         repo=repo,
+        repo_materializer=_build_repo_materializer(args),
         control_plane=control_plane,
     )
 
@@ -447,6 +471,7 @@ def main(argv: list[str] | None = None) -> int:
         artifacts_dir=args.artifacts_dir,
         secure_cookies=args.secure_cookies,
         repo=runtime.repo,
+        repo_materializer=runtime.repo_materializer,
         clone_url=args.clone_url,
         base_commit_sha=args.base_commit_sha,
         control_plane=runtime.control_plane,

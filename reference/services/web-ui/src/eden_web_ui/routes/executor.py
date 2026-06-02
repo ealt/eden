@@ -58,6 +58,7 @@ from ._helpers import (
     parse_list_view,
     read_idea_content,
     read_idea_manifest,
+    repo_for,
     resolve_active_context,
 )
 from ._submit_readback import submit_with_readback, wire_error_banner
@@ -586,7 +587,7 @@ async def submit(  # noqa: PLR0911 — flow has many distinct outcome arms by de
     mismatch = form_experiment_guard(form, experiment_id)
     if mismatch is not None:
         return mismatch
-    repo = request.app.state.repo
+    repo = repo_for(request, experiment_id)
     try:
         task = cast("ExecutionTask", store.read_task(task_id))
         idea = store.read_idea(task.payload.idea_id)
@@ -925,7 +926,10 @@ def _render_draft(
     content = read_idea_content(idea, artifacts_dir)
     idea_manifest = read_idea_manifest(idea, artifacts_dir)
     branch = _branch_name(idea.slug, variant_id)
-    repo_path = getattr(request.app.state.repo, "path", None)
+    active_id = getattr(
+        request.state, "active_experiment_id", request.app.state.experiment_id
+    )
+    repo_path = getattr(repo_for(request, active_id), "path", None)
     clone_url = getattr(request.app.state, "clone_url", None)
     return request.app.state.templates.TemplateResponse(
         request,
