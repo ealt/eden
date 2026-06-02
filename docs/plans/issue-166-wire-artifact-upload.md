@@ -66,7 +66,7 @@ challenge it directly rather than re-deriving it.
   deposit/retrieve wire endpoints + opaque scheme + `Backend` abstraction +
   auth + call-site migration. The **content-addressed checkpoint substrate
   rewrite** ([#102](https://github.com/ealt/eden/issues/102):
-  `artifacts/sha256/<hex>` materialization, promoting
+  `artifacts/sha256/<hex>` materialization, promoting  <!-- rename-discipline:cite -->
   [`10-checkpoints.md`](../../spec/v0/10-checkpoints.md) §7 from deferred to
   MUST, rewriting `artifacts_uri` → `checkpoint:sha256:<hex>` on export) stays a
   **separately-sequenced issue**. Rationale: #102 couples to the git-bundle /
@@ -84,9 +84,9 @@ challenge it directly rather than re-deriving it.
   richer model — "the role operating on the variant the artifact belongs to can
   read it" (e.g. an evaluator reading an executor's artifact for a variant under
   evaluation) — is **deferred** to a follow-up issue gated on
-  [#143](https://github.com/ealt/eden/issues/143) (admin-by-promotion ACL
+  [#143](https://github.com/ealt/eden/issues/143) (admin-by-promotion ACL  <!-- rename-discipline:cite -->
   scoping). Rationale: the cross-role grant needs a variant↔claim↔artifact
-  ACL graph that #143's identity/promotion model has not yet pinned;
+  ACL graph that #143's identity/promotion model has not yet pinned;  <!-- rename-discipline:cite -->
   secure-by-default (deny cross-worker reads except admin) is the correct v0
   posture and matches the issue's own security framing ("workers shouldn't read
   others' submissions unless explicitly granted"). Deferring it keeps this chunk
