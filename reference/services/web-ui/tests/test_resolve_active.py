@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
 
 import httpx
@@ -17,6 +18,7 @@ from eden_web_ui.routes._helpers import (
 )
 from eden_web_ui.sessions import SESSION_COOKIE_NAME, Session, SessionCodec
 from eden_web_ui.store_factory import StaticStoreFactory
+from eden_wire import Unauthorized
 from fastapi import FastAPI
 from starlette.requests import Request
 
@@ -36,6 +38,11 @@ class _FakeControlPlane:
         if experiment_id not in self._known:
             raise NotFound(f"experiment {experiment_id!r} not registered")
         return {"experiment_id": experiment_id}
+
+    def list_experiments(self) -> list[Any]:
+        if self._unreachable:
+            raise httpx.ConnectError("control plane down")
+        return [SimpleNamespace(experiment_id=e) for e in sorted(self._known)]
 
     def close(self) -> None:  # pragma: no cover - lifespan shutdown
         pass
@@ -66,7 +73,11 @@ class _FakeFactory:
 
 
 def _build_app(
-    *, control_plane: Any, store_factory: Any | None = None, tmp_path: Any
+    *,
+    control_plane: Any,
+    store_factory: Any | None = None,
+    tmp_path: Any,
+    config_dir: Any | None = None,
 ) -> FastAPI:
     artifacts = tmp_path / "artifacts"
     artifacts.mkdir(exist_ok=True)
@@ -78,6 +89,7 @@ def _build_app(
         store_factory=default_factory if store_factory is None else store_factory,
         experiment_id=EXPERIMENT_ID,
         experiment_config=_config(),
+        experiment_config_dir=config_dir,
         worker_id=WORKER_ID,
         session_secret=SESSION_SECRET,
         claim_ttl_seconds=3600,
@@ -207,10 +219,23 @@ def test_context_unseeded_returns_page(tmp_path: Any) -> None:
     assert result.status_code == 409
 
 
+def _config_dir_with(tmp_path: Any, experiment_id: str) -> Any:
+    """A per-experiment config dir holding ``<experiment_id>.yaml``."""
+    from conftest import _FIXTURE_CONFIG
+
+    cfg_dir = tmp_path / "configs"
+    cfg_dir.mkdir(exist_ok=True)
+    (cfg_dir / f"{experiment_id}.yaml").write_text(_FIXTURE_CONFIG.read_text())
+    return cfg_dir
+
+
 def test_context_happy_path_returns_context(tmp_path: Any) -> None:
     factory = _FakeFactory(seeded=True)
     app = _build_app(
-        control_plane=_FakeControlPlane(), store_factory=factory, tmp_path=tmp_path
+        control_plane=_FakeControlPlane(),
+        store_factory=factory,
+        tmp_path=tmp_path,
+        config_dir=_config_dir_with(tmp_path, OTHER_ID),
     )
     result = resolve_active_context(_request(app, selected=OTHER_ID), need_config=True)
     from eden_web_ui.routes._helpers import ActiveContext
@@ -219,6 +244,72 @@ def test_context_happy_path_returns_context(tmp_path: Any) -> None:
     assert result.experiment_id == OTHER_ID
     assert result.store is factory.for_experiment(OTHER_ID)
     assert result.config is not None
+
+
+def test_context_non_default_without_config_dir_redirects(tmp_path: Any) -> None:
+    """Non-default experiment + no config dir → config-missing redirect, not
+    a silent fall back to the default config (codex round-0 Bug 1)."""
+    from fastapi.responses import RedirectResponse
+
+    factory = _FakeFactory(seeded=True)
+    app = _build_app(
+        control_plane=_FakeControlPlane(), store_factory=factory, tmp_path=tmp_path
+    )
+    result = resolve_active_context(_request(app, selected=OTHER_ID), need_config=True)
+    assert isinstance(result, RedirectResponse)
+    assert "config-missing" in result.headers["location"]
+
+
+class _UnauthStore:
+    def read_experiment_state(self) -> str:
+        raise Unauthorized("no credential for this experiment")
+
+
+class _UnauthFactory:
+    """Factory whose worker store always 401s; records evict() calls."""
+
+    def __init__(self) -> None:
+        self.evicted: list[str] = []
+        self.admin_enabled = True
+
+    def for_experiment(self, experiment_id: str, *, role: str = "worker") -> Any:
+        return _UnauthStore()
+
+    def evict(self, experiment_id: str) -> None:
+        self.evicted.append(experiment_id)
+
+    def close(self) -> None:  # pragma: no cover - lifespan shutdown
+        pass
+
+
+def test_resolve_401_evicts_then_raises_missing_admin(tmp_path: Any) -> None:
+    """Posture C/D: a 401 on the seed probe evicts the cached credential and
+    re-bootstraps once; a persistent 401 → MissingAdminToken (the
+    cannot-bootstrap-credential branch), NOT unseeded (codex round-0 Bug 2 /
+    Risk 4)."""
+    from eden_web_ui.store_factory import MissingAdminToken
+
+    factory = _UnauthFactory()
+    app = _build_app(
+        control_plane=_FakeControlPlane(), store_factory=factory, tmp_path=tmp_path
+    )
+    with pytest.raises(MissingAdminToken):
+        resolve_active_experiment(_request(app, selected=OTHER_ID))
+    assert factory.evicted == [OTHER_ID]  # evicted once before the retry
+
+
+def test_switcher_hidden_when_control_plane_unreadable(tmp_path: Any) -> None:
+    """Posture D / control-plane outage with a cold cache → switcher hidden
+    (None), not an empty dropdown (codex round-0 Risk 5)."""
+    from eden_web_ui.routes._helpers import switcher_context
+
+    app = _build_app(
+        control_plane=_FakeControlPlane(unreachable=True), tmp_path=tmp_path
+    )
+    # A session must be present (signed in); the switcher's visibility is
+    # independent of which experiment is selected.
+    ctx = switcher_context(_request(app, selected=EXPERIMENT_ID))
+    assert ctx["switcher_experiments"] is None
 
 
 # ---------------------------------------------------------------------------

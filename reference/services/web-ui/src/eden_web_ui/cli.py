@@ -98,12 +98,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     add_common_arguments(parser)
     parser.add_argument(
         "--experiment-config",
-        required=True,
+        required=False,
+        default=None,
         help=(
-            "YAML experiment-config file — read for objective and "
-            "evaluation_schema. Drift between this file and the "
-            "task-store-server's copy is a known reference-impl "
-            "limitation; Phase 12's control plane fixes it."
+            "YAML experiment-config file for the deployment-default "
+            "experiment — read for objective and evaluation_schema. "
+            "Required in single-experiment mode (no --control-plane-url). "
+            "In control-plane mode it is optional when "
+            "--experiment-config-dir is set (the default experiment then "
+            "loads from <dir>/<experiment_id>.yaml like every other). "
+            "Operators who hand-edit this file do NOT affect non-default "
+            "experiments — each experiment's config is independent (#145)."
         ),
     )
     parser.add_argument("--host", default="127.0.0.1")
@@ -157,7 +162,22 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "Optional: when set, the executor module is registered "
             "and the user can claim execution tasks via the UI; when "
             "omitted, the executor module is not available and the "
-            "/executor/* routes return 404."
+            "/executor/* routes return 404. This is the deployment-default "
+            "experiment's clone; non-default experiments clone under "
+            "--repo-root (issue #145)."
+        ),
+    )
+    parser.add_argument(
+        "--repo-root",
+        type=Path,
+        default=None,
+        help=(
+            "Directory holding per-experiment bare clones "
+            "(<repo-root>/<experiment_id>.git) for non-default experiments "
+            "in control-plane mode (issue #145 §3.5). Must be a DURABLE "
+            "location (in Compose, a bind-mounted volume — the parent of "
+            "--repo-path is the container filesystem and would not "
+            "survive). Defaults to the parent of --repo-path when unset."
         ),
     )
     parser.add_argument(
@@ -293,7 +313,7 @@ class _ListeningAnnouncer:
 class _WebUIRuntime:
     """Constructed runtime objects ready for :func:`make_app` + uvicorn."""
 
-    config: ExperimentConfig
+    config: ExperimentConfig | None
     store_factory: StoreFactory
     repo: GitRepo | None
     repo_materializer: RepoMaterializer | None
@@ -329,8 +349,11 @@ def _build_repo_materializer(
 ) -> RepoMaterializer | None:
     """Materializer for non-default experiments' integrator clones (#145 §3.5).
 
-    Per-experiment bare clones live as siblings of ``--repo-path`` (i.e.
-    under its parent dir), at ``<parent>/<experiment_id>.git``. Returns
+    Per-experiment bare clones live under ``--repo-root`` (a durable,
+    operator-supplied directory), at ``<repo-root>/<experiment_id>.git``;
+    ``--repo-root`` defaults to the parent of ``--repo-path`` when unset
+    (fine for local/dev, but in Compose it MUST be a bind-mounted volume —
+    the container filesystem parent would not survive a restart). Returns
     ``None`` when the executor module is disabled (no ``--repo-path``).
     The deployment-default experiment keeps using the flat ``--repo-path``
     clone via ``app.state.repo``; the materializer is consulted only for
@@ -338,8 +361,9 @@ def _build_repo_materializer(
     """
     if args.repo_path is None:
         return None
+    repo_root = args.repo_root if args.repo_root is not None else args.repo_path.parent
     return RepoMaterializer(
-        repo_root=args.repo_path.parent,
+        repo_root=repo_root,
         forgejo_url=args.forgejo_url,
         credential_helper=args.credential_helper,
     )
@@ -370,6 +394,47 @@ def _validate_admin_store(
     return True
 
 
+def _resolve_default_config(
+    args: argparse.Namespace, log: Any
+) -> ExperimentConfig | None | int:
+    """Resolve the deployment-default experiment's config (issue #145 Decision 6).
+
+    Returns the parsed config, ``None`` (control-plane mode with no
+    ``--experiment-config`` — the default experiment then loads from
+    ``<--experiment-config-dir>/<id>.yaml`` like every other), or exit
+    code 1 on a misconfiguration. Single-experiment mode requires
+    ``--experiment-config``; control-plane mode requires at least one of
+    ``--experiment-config`` / ``--experiment-config-dir``.
+    """
+    has_control_plane = args.control_plane_url is not None
+    if args.experiment_config is not None:
+        config = load_experiment_config(args.experiment_config)
+        # Fail fast on a default-config / config-dir mismatch (§3.4).
+        if args.experiment_config_dir is not None:
+            dir_path = args.experiment_config_dir / f"{args.experiment_id}.yaml"
+            if dir_path.is_file() and load_experiment_config(dir_path) != config:
+                log.error(
+                    "--experiment-config disagrees with the default experiment's "
+                    "entry in --experiment-config-dir; reconcile them",
+                    experiment_id=args.experiment_id,
+                )
+                return 1
+        return config
+    if not has_control_plane:
+        log.error(
+            "--experiment-config is required in single-experiment mode "
+            "(no --control-plane-url)"
+        )
+        return 1
+    if args.experiment_config_dir is None:
+        log.error(
+            "control-plane mode requires --experiment-config or "
+            "--experiment-config-dir"
+        )
+        return 1
+    return None
+
+
 def _build_runtime(
     args: argparse.Namespace, log: Any
 ) -> _WebUIRuntime | int:
@@ -382,7 +447,9 @@ def _build_runtime(
     no-selection / single-experiment posture is validated exactly as
     before; non-default experiments are JIT-credentialed on first switch.
     """
-    config = load_experiment_config(args.experiment_config)
+    config = _resolve_default_config(args, log)
+    if isinstance(config, int):
+        return config
     log.info("waiting_for_task_store", url=args.task_store_url)
     # The readiness probe accepts 200/401/403 ("server is up") so the
     # web-ui can run before it has its per-worker credential. The factory

@@ -169,6 +169,10 @@ class BearerCache:
         self._cache[experiment_id] = credential.bearer
         return credential.bearer
 
+    def evict(self, experiment_id: str) -> None:
+        """Drop the cached bearer for ``experiment_id`` so it re-bootstraps."""
+        self._cache.pop(experiment_id, None)
+
     def clear(self) -> None:
         """Drop all cached bearers (the on-disk credentials persist)."""
         self._cache.clear()
@@ -231,6 +235,17 @@ class StoreFactory:
         self._cache[(experiment_id, role)] = client
         return client
 
+    def evict(self, experiment_id: str) -> None:
+        """Drop cached views + bearer for ``experiment_id`` (stale-401 recovery).
+
+        The next ``for_experiment`` re-bootstraps the worker credential.
+        Vended clients ride on the shared transport, so dropping them from
+        the cache without closing leaks nothing.
+        """
+        self._cache.pop((experiment_id, "worker"), None)
+        self._cache.pop((experiment_id, "admin"), None)
+        self._bearer_cache.evict(experiment_id)
+
     def close(self) -> None:
         """Close the shared ``httpx.Client`` and clear caches."""
         self._cache.clear()
@@ -271,6 +286,10 @@ class StaticStoreFactory:
         if role == "admin":
             return self._admin_store
         return self._store
+
+    def evict(self, experiment_id: str) -> None:  # noqa: ARG002
+        """No-op: the static factory holds one fixed store, nothing to evict."""
+        return None
 
     def close(self) -> None:
         """No-op: the static factory does not own the stores' lifecycles.

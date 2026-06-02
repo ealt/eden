@@ -350,6 +350,7 @@ mkdir -p \
     "${EDEN_EXPERIMENT_DATA_ROOT}/credentials/evaluator" \
     "${EDEN_EXPERIMENT_DATA_ROOT}/credentials/web-ui" \
     "${EDEN_EXPERIMENT_DATA_ROOT}/web-ui-configs" \
+    "${EDEN_EXPERIMENT_DATA_ROOT}/web-ui-repos" \
     "${EDEN_EXPERIMENT_DATA_ROOT}/logs/task-store-server" \
     "${EDEN_EXPERIMENT_DATA_ROOT}/logs/orchestrator" \
     "${EDEN_EXPERIMENT_DATA_ROOT}/logs/ideator-host" \
@@ -384,6 +385,7 @@ if ! chmod 0777 \
     "${EDEN_EXPERIMENT_DATA_ROOT}/credentials/evaluator" \
     "${EDEN_EXPERIMENT_DATA_ROOT}/credentials/web-ui" \
     "${EDEN_EXPERIMENT_DATA_ROOT}/web-ui-configs" \
+    "${EDEN_EXPERIMENT_DATA_ROOT}/web-ui-repos" \
     "${EDEN_EXPERIMENT_DATA_ROOT}/logs" \
     "${EDEN_EXPERIMENT_DATA_ROOT}/logs/task-store-server" \
     "${EDEN_EXPERIMENT_DATA_ROOT}/logs/orchestrator" \

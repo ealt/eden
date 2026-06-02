@@ -455,6 +455,12 @@ services:
       - /var/lib/eden/artifacts
       - --repo-path
       - /var/lib/eden/repo
+      # Issue #145: durable per-experiment clone dir for the switcher
+      # (non-default experiments clone <repo-root>/<id>.git here). Bind-
+      # mounted below — the parent of --repo-path is the container
+      # filesystem and would not survive a restart.
+      - --repo-root
+      - /var/lib/eden/web-ui-repos
       - --forgejo-url
       - ${FORGEJO_REMOTE_URL:?}
       - --credential-helper
@@ -488,8 +494,10 @@ services:
       - ${EDEN_EXPERIMENT_DATA_ROOT:?}/web-ui-repo:/var/lib/eden/repo
       - ${EDEN_EXPERIMENT_DATA_ROOT:?}/artifacts:/var/lib/eden/artifacts
       - ${EDEN_EXPERIMENT_DATA_ROOT:?}/credentials/web-ui:/var/lib/eden/credentials
-      # Issue #145: per-experiment config YAMLs for the switcher.
+      # Issue #145: per-experiment config YAMLs + per-experiment clones
+      # for the switcher.
       - ${EDEN_EXPERIMENT_DATA_ROOT:?}/web-ui-configs:/var/lib/eden/web-ui-configs
+      - ${EDEN_EXPERIMENT_DATA_ROOT:?}/web-ui-repos:/var/lib/eden/web-ui-repos
       - ${EDEN_FORGEJO_CREDS_DIR_HOST:?}/credential-helper.sh:/etc/eden/credential-helper.sh:ro
       # Issue #109: per-service log bind-mount.
       - ${EDEN_EXPERIMENT_DATA_ROOT:?}/logs/web-ui:/var/lib/eden/logs

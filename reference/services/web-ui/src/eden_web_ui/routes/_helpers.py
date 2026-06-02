@@ -27,6 +27,7 @@ from eden_service_common import load_experiment_config
 from eden_storage import Store
 from eden_storage.errors import NotFound
 from eden_storage.errors import NotFound as StorageNotFound
+from eden_wire import Unauthorized
 from fastapi import Request, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
 from pydantic import ValidationError
@@ -218,11 +219,30 @@ def resolve_active_experiment(request: Request) -> ResolvedExperiment:
     # not (yet) on the task-store-server.
     factory = app.state.store_factory
     try:
-        store = factory.for_experiment(selected, role="worker")
+        return _classify_experiment(factory, selected)
+    except Unauthorized:
+        # Stale / absent per-experiment credential against an auth-enabled
+        # task-store (Decision 8 Posture C/D, Risk 4). Drop the cached
+        # bearer + client and re-bootstrap once; a persisted-but-stale
+        # token reissues if an admin token is available.
+        factory.evict(selected)
+        try:
+            return _classify_experiment(factory, selected)
+        except Unauthorized as exc:
+            # No usable credential and no admin token to mint one — the
+            # plan's cannot-bootstrap-credential branch, NOT unseeded
+            # (a 401 is never inferred as unseeded; Decision 8 §C/D).
+            raise MissingAdminToken(selected) from exc
+
+
+def _classify_experiment(factory: Any, experiment_id: str) -> ResolvedExperiment:
+    """Probe seeded vs registered-but-unseeded for ``experiment_id``."""
+    try:
+        store = factory.for_experiment(experiment_id, role="worker")
         store.read_experiment_state()
     except NotFound:
-        return ResolvedExperiment(selected, unseeded=True)
-    return ResolvedExperiment(selected)
+        return ResolvedExperiment(experiment_id, unseeded=True)
+    return ResolvedExperiment(experiment_id)
 
 
 def active_config(request: Request, experiment_id: str) -> ExperimentConfig:
@@ -239,14 +259,18 @@ def active_config(request: Request, experiment_id: str) -> ExperimentConfig:
     default_config: ExperimentConfig | None = app.state.experiment_config
     config_dir: Path | None = app.state.experiment_config_dir
 
-    if app.state.control_plane is None:
-        assert default_config is not None  # single-exp mode requires --experiment-config
-        return default_config
+    # The deployment-default experiment prefers the startup config.
     if experiment_id == default_id and default_config is not None:
         return default_config
+    if app.state.control_plane is None:
+        # Single-experiment posture must have a startup config.
+        assert default_config is not None  # validated at CLI startup
+        return default_config
+    # Control-plane mode, non-default experiment (or the default with no
+    # startup config): load <config-dir>/<id>.yaml. We do NOT silently
+    # fall back to the default experiment's config — that would render
+    # the wrong objective / evaluation_schema (codex round-0 Bug 1).
     if config_dir is None:
-        if default_config is not None:
-            return default_config
         raise ExperimentConfigMissing(experiment_id)
 
     cache: dict[str, ExperimentConfig] = app.state.experiment_config_cache
@@ -409,15 +433,18 @@ def repo_for(request: Request, experiment_id: str) -> Any:
 _SWITCHER_TTL_SECONDS = 5.0
 
 
-def _cached_experiment_ids(request: Request) -> list[str]:
+def _cached_experiment_ids(request: Request) -> list[str] | None:
     """Return registered experiment ids, cached for 5s per process (§3.7).
 
     The switcher dropdown renders on every page, so an uncached
     ``list_experiments`` would hit the control plane once per request. A
     short in-process TTL collapses that to at most one call per 5s; a
-    stale 5s window is invisible to operators. On a control-plane error
-    the last good list is served (empty on first failure) so a transient
-    blip doesn't blank the switcher.
+    stale 5s window is invisible to operators. On a control-plane read
+    failure the last good list is served if one is cached; with a cold
+    cache (e.g. Posture D — no usable control-plane credential, or a
+    control-plane outage at first render) it returns ``None`` so the
+    caller HIDES the switcher rather than rendering an empty dropdown
+    (codex round-0 Risk 5).
     """
     control_plane = request.app.state.control_plane
     cache: dict[str, Any] = request.app.state.experiments_cache
@@ -425,9 +452,11 @@ def _cached_experiment_ids(request: Request) -> list[str]:
     if cache.get("expiry", 0.0) > now_monotonic:
         return cache["ids"]
     try:
-        ids = [e.experiment_id for e in control_plane.list_experiments()]
-    except Exception:  # noqa: BLE001 — serve stale on any read failure
-        ids = cache.get("ids", [])
+        ids: list[str] | None = [
+            e.experiment_id for e in control_plane.list_experiments()
+        ]
+    except Exception:  # noqa: BLE001 — serve stale, else signal "unavailable"
+        ids = cache.get("ids")  # None on cold cache → switcher hidden
     cache["expiry"] = now_monotonic + _SWITCHER_TTL_SECONDS
     cache["ids"] = ids
     return ids
@@ -436,18 +465,22 @@ def _cached_experiment_ids(request: Request) -> list[str]:
 def switcher_context(request: Request) -> dict[str, Any]:
     """Template context processor for the top-nav experiment switcher.
 
-    Active only when a control plane is configured AND the request
-    carries a session (signed in). Provides the registered-experiment
-    list, the operator's current selection, and the session CSRF token
-    for the per-experiment ``select`` POST forms.
+    Active only when a control plane is configured, the request carries a
+    session (signed in), AND the registry is readable. When control-plane
+    reads are unavailable (Posture D — no usable credential — or a
+    control-plane outage with a cold cache) the switcher is hidden rather
+    than rendered as an empty dropdown (codex round-0 Risk 5).
     """
     if request.app.state.control_plane is None:
         return {"switcher_experiments": None}
     session = get_session(request)
     if session is None:
         return {"switcher_experiments": None}
+    experiments = _cached_experiment_ids(request)
+    if experiments is None:
+        return {"switcher_experiments": None}
     return {
-        "switcher_experiments": _cached_experiment_ids(request),
+        "switcher_experiments": experiments,
         "switcher_selected": session.selected_experiment_id,
         "switcher_csrf": session.csrf,
     }

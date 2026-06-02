@@ -98,7 +98,7 @@ def make_app(
     *,
     store_factory: StoreFactory | StaticStoreFactory,
     experiment_id: str,
-    experiment_config: ExperimentConfig,
+    experiment_config: ExperimentConfig | None,
     worker_id: str,
     session_secret: str,
     claim_ttl_seconds: int,
