@@ -1,0 +1,527 @@
+# Issue #184 — Doc instructions are smoke-tested too (lite + heavy modes)
+
+GitHub issue: [#184](https://github.com/ealt/eden/issues/184). Labels:
+`documentation`, `enhancement`, `priority:2-planned`, `triage:needs-plan`.
+
+## 1. Context
+
+Operator-facing documentation drift is a recurring, demo-discovered bug class.
+CI today gates docs **format** (markdownlint, the `docs-lint` job) but never docs
+**content**: "this command no longer works", "this URL is stale", "this flag was
+renamed", "this instruction assumes context a prior section never established"
+all slip through until a live operator hits them. The 2026-05-23 demo session
+produced four such bugs ([#161](https://github.com/ealt/eden/issues/161) clone
+URL missing credentials, [#163](https://github.com/ealt/eden/issues/163) submit
+form `commit_sha` with no how-to,
+[#132](https://github.com/ealt/eden/issues/132) CLI artifacts unreadable by the
+web-ui, [#178](https://github.com/ealt/eden/issues/178) substrate-migration doc
+drift) — each invisible to the implementer who wrote the doc.
+
+Issue #184 proposes two complementary CI smokes:
+
+- **Lite** — extract bash blocks from the operator docs and validate them in CI
+  (catches wrong commands / stale paths / missing flags; cheap; seconds).
+- **Heavy** — a fresh-operator CI persona that drives the documented operator
+  workflow end-to-end against a live stack (catches multi-section drift where one
+  step assumes context another never establishes; expensive; minutes).
+
+This is the **CI mechanization** of the per-PR human discipline in
+[#180](https://github.com/ealt/eden/issues/180) (fresh-operator walkthrough,
+codified in [`CONTRIBUTING.md`](../../CONTRIBUTING.md) §"Fresh-operator
+walkthrough"). #180 is the human gate; #184 is the automated one.
+
+### 1.1 This is a CI / tooling / process chunk — not a protocol change
+
+The single most important grounding fact: **this chunk touches no normative
+surface.** No spec chapter, JSON Schema, Pydantic model, wire binding, event
+payload, or conformance scenario changes. The "contract" being introduced is a
+**doc-authoring convention** (how an operator-doc author marks a bash block as
+executable + supplies its CI substitutions) plus two CI jobs and their harness
+scripts. Consequences that ripple through every section below:
+
+- **Spec / schema / contract impact (§2): none.** Stated explicitly so
+  codex-review can confirm rather than hunt.
+- **Conformance impact (§6): none, and must stay none.** The heavy harness is
+  "conformance-adjacent" (it drives the live stack) but it is emphatically **not**
+  part of the conformance suite — it asserts *the reference deployment's docs*,
+  not *the IUT wire contract*. No `§`-citations, `CONFORMANCE_GROUP`s, or
+  `check_citations.py` entries change. Keeping the two harnesses architecturally
+  separate is a load-bearing risk (§9).
+- **Naming map (§4)** is about new tooling identifiers (script names, CI job
+  names, the annotation marker), validated against the glossary's *style* even
+  though none are EDEN protocol vocabulary; `rename-discipline` is unaffected.
+
+### 1.2 The docs' bash blocks are not self-contained — the core design problem
+
+Counts of fenced bash blocks in the two target docs:
+
+| Doc | ` ```bash ` blocks | Self-contained / runnable as-is? |
+|---|---|---|
+| [`docs/user-guide.md`](../user-guide.md) | 13 | Almost none |
+| [`docs/observability.md`](../observability.md) | 15 | A handful (the BYO-UI `docker run` blocks) |
+
+Nearly every block has one or more of:
+
+1. **Placeholders** the operator must fill: `<id>`, `<task-id>`, `<sha>`,
+   `<idea-id>`, `<worker-id>`, `<file>`, `/path/to/your/app/repo`. (e.g.
+   user-guide §2 health-check curl uses `<id>`; §8 admin boilerplate uses `<id>`.)
+2. **Cross-block shell variables** established in an *earlier* block: `$EDEN`
+   (user-guide §5 defines `EDEN=reference/scripts/manual-ui/eden-manual`, then §6
+   and §7 reuse `$EDEN` with no redefinition); `$BASE`, `${H[@]}`, `$ADMIN`
+   (user-guide §8 boilerplate block defines them; later blocks consume them);
+   `$DATA_ROOT` (user-guide §2 teardown).
+3. **Stateful sequencing**: `claim` must precede `submit`; `setup-experiment`
+   must precede `compose up`; `checkout` writes a working tree later blocks edit.
+4. **Illustrative-only content** that must NOT be executed: the YAML
+   experiment-config examples (user-guide §2), the JSON ideas-file example
+   (§5), the multi-experiment prose steps (§12).
+5. **Destructive operations**: `rm -rf "$DATA_ROOT"`, `docker compose down -v`
+   (user-guide §2 teardown, §11 resets) — runnable only inside a disposable CI
+   sandbox, and only in the right order.
+
+A naive "extract every ` ```bash ` block and run it in a fresh shell, assert no
+error" — the issue's first-cut framing — would **fail on essentially every
+block** (undefined `$EDEN`, unsubstituted `<id>`, an illustrative YAML block fed
+to `bash`). So the design's center of gravity is **not** "an extractor"; it is
+**block classification + a substitution/session model + a runnable-vs-illustrative
+contract authors opt into.** §3 builds this; §1.3 reframes what "lite" can
+honestly deliver.
+
+### 1.3 What "lite" can honestly deliver (reframing the issue's first cut)
+
+The issue describes lite as "execute the blocks in a fresh environment, assert
+they don't error." Reality (§1.2) forces a more useful decomposition, because
+most blocks need a **live stack** (a curl against `:8080`, an `eden-manual claim`)
+— and "needs a live stack" *is* heavy mode. The honest split is by **what a block
+depends on**, not by "lite vs heavy ambition":
+
+- **Tier L1 — static validation (no stack, no execution).** For *every*
+  block tagged executable: `bash -n` syntax-lint (catches the unbalanced-quote /
+  removed-`fi` class), plus author-declared assertions that don't need a runtime:
+  - **Flag/subcommand existence**: assert each `eden-manual <subcommand>` and each
+    documented flag (`--kind`, `--worker-id`, `--ideas-file`, `--status`,
+    `--field`, `--sha`, `--seed-from`, `--exec-mode`, …) still exists, by parsing
+    the CLI's own `--help` / argparse surface. This is the **highest-value,
+    cheapest** check — it directly catches the "flag was renamed" drift class
+    (the [#157](https://github.com/ealt/eden/issues/157) CLI-flags-moved-to-config
+    churn is exactly this) with no Docker.
+  - **Embedded-fixture validation**: the YAML config example (§2) validated
+    against `experiment-config.schema.json` (the same check `schema-validity`
+    already runs on the fixture); the JSON ideas-file example (§5) validated for
+    well-formedness and against the documented shape.
+  - **Path existence**: file/dir paths the docs name as repo-relative
+    (`reference/scripts/manual-ui/eden-manual`, `tests/fixtures/experiment/.eden/config.yaml`,
+    schema paths) resolve in the tree.
+- **Tier L2 — stack-free execution.** The genuinely runnable, non-destructive,
+  stack-independent blocks (the BYO-UI `docker run` invocations validate via
+  `--help`/`config`; `setup-experiment.sh --help`). Small set.
+
+Tier L1 is the bulk of lite's value and is what the lite job ships. Anything that
+needs the stack rolls up into heavy (§3.3). **This reframing is a deliberate
+scope refinement of the issue's literal "run every block" and is flagged for
+plan-review** (§2 decision 4).
+
+## 2. Decisions captured before drafting
+
+Following the issue's recommendations and the demo-gap analysis. **All five are
+open to override at plan-PR review** — surfaced here so codex-review and the
+operator challenge them rather than missing them in the diff.
+
+1. **Lite ships in this chunk; heavy is a tracked follow-up issue, not this
+   chunk's wave.** The issue itself says "Could land lite-only first; heavy as a
+   follow-up" and estimates heavy at ~1 week vs lite ~2 days. Heavy is
+   conformance-adjacent harness work with real flake surface (live stack, CSRF
+   scraping, quiescence timing — see the AGENTS.md compose-smoke pitfalls). Lite
+   delivers most of the demo-bug-catching value (flag/path/command drift) at a
+   fraction of the cost and risk. **This chunk = lite.** Heavy is filed as a new
+   GitHub issue at plan-merge (per the CLAUDE.md deferral rule) and planned
+   separately. §3.3 still designs heavy in enough detail that the follow-up issue
+   is well-specified and the lite design doesn't paint heavy into a corner.
+   *Alternative (both in one chunk) rejected for risk + reviewability; if review
+   prefers it, heavy becomes wave 3 here — call it out.*
+
+2. **The lite extractor is Python (`scripts/check-docs-commands.py`), not bash.**
+   The issue suggested `scripts/check-docs-commands.sh`. Parsing markdown
+   (fence detection, the annotation marker, info strings) is materially cleaner
+   and more testable in Python, and `scripts/` already houses Python gates
+   (`check-complexity.py`, `check-rename-discipline.py`, `spec-xref-check.py`,
+   `conformance-coverage.py`) with the established `python3 scripts/<x>.py`
+   invocation + CI `setup-python` posture. The *blocks it runs* are still bash;
+   only the harness is Python. *Naming flagged in §4.*
+
+3. **Executable blocks opt in via an HTML-comment annotation immediately above
+   the fence**, not via the fence info-string. Shape (the marker comment sits in
+   the preamble directly above the bash fence):
+
+   ````markdown
+   <!-- eden-doc-smoke: exec; needs=cli; subst: id=smoke-docs -->
+   ```bash
+   $EDEN list-tasks --kind ideation --state pending
+   ```
+   ````
+
+   Rationale: HTML comments are markdownlint-invisible (no MD040/info-string
+   fight, no change to GitHub's rendered output) and decouple the *machine
+   contract* (run-this, with-these-substitutions, in-this-session) from the
+   *human-facing* fence. The marker carries: a directive (`exec` |
+   `static` | `illustrative`), a `needs=` capability (`none` | `cli` |
+   `stack`), `subst:` placeholder values, and an optional `session=` id so a
+   sequence of blocks shares shell state. **Un-annotated bash blocks default to
+   `illustrative` (never executed)** — but the lite job *emits a report of every
+   un-annotated bash block* so silent under-coverage is visible, not assumed
+   (§3.4; the "no silent caps" discipline). *Alternative — info-string tagging
+   (` ```bash eden-smoke `) — rejected pending a markdownlint-tolerance check; the
+   HTML-comment carries structured args the info-string can't cleanly hold.*
+
+4. **Lite = Tier L1 (static) + Tier L2 (stack-free), per §1.3.** Not "run every
+   block against a fresh env." The high-value drift classes (renamed flag, stale
+   path, malformed embedded fixture, removed subcommand) are all L1-catchable
+   without Docker. *Deliberate refinement of the issue's wording; flagged.*
+
+5. **Target docs for this chunk: `docs/user-guide.md` + `docs/observability.md`
+   only.** The issue also names `.claude/skills/eden-manual-*/SKILL.md` (4 skills,
+   ~7–9 bash fences each). The skills are operator-facing but are a distinct
+   surface (Claude-driven, more prose-interleaved) and adding them widens the
+   annotation pass. **Skills are in scope for the annotation *convention* and
+   *may* be tagged opportunistically, but the committed coverage target is the two
+   `docs/` files.** Skill coverage that proves valuable rolls into the heavy
+   follow-up (the skills *are* the heavy-mode operator script). *Flagged.*
+
+These five are not re-litigated in codex-review absent a load-bearing
+contradiction.
+
+## 3. Design
+
+### D.1 The annotation contract (author-facing surface)
+
+A bash block participates in the lite smoke iff a `eden-doc-smoke:` HTML comment
+sits in the contiguous preamble immediately above its opening fence (mirrors the
+`# slop-allow:` preamble convention so authors already know the shape). Grammar:
+
+```text
+<!-- eden-doc-smoke: <directive>[; needs=<cap>][; session=<id>][; subst: k=v, k=v ...][; expect=<mode>] -->
+```
+
+- `<directive>` — `exec` (run it), `static` (syntax-lint + declared L1 checks
+  only, never run), or `illustrative` (explicitly skip; documents intent so the
+  un-annotated report stays meaningful).
+- `needs=` — `none` (default; stack-free) | `cli` (needs the `eden-manual`
+  argparse surface but no running stack) | `stack` (needs a live Compose stack
+  → **deferred to heavy**, lite records it as `skipped: needs=stack`).
+- `session=<id>` — blocks sharing an id run in one persistent shell so
+  `EDEN=…`/`ADMIN=…`/`$BASE` set in block N are visible in block N+1 (models the
+  real cross-block variable continuity of §1.2 item 2).
+- `subst: k=v` — placeholder substitutions applied before execution
+  (`id=smoke-docs` replaces `<id>`; `task-id=<captured>` can reference a
+  session-captured value in heavy). Lite uses static literals; the same mechanism
+  feeds heavy from live state.
+- `expect=` — `no-error` (default; non-zero exit fails) | `help-ok` (treat a
+  `--help`/usage exit as success) | a declared output matcher (L1 fixture checks).
+
+The grammar is parsed and **validated** by the extractor: a malformed marker, an
+unknown directive, or an `exec` block that references an undefined `subst`
+placeholder is a hard CI failure (so the annotation itself can't silently rot).
+
+### D.2 `scripts/check-docs-commands.py` — the lite extractor + runner
+
+A single-file Python tool (kept under the `complexity-gate` thresholds; decompose
+into `_parse_blocks` / `_run_static` / `_run_stack_free` / `_report` helpers).
+Responsibilities:
+
+1. **Parse** each target doc into an ordered block list, attaching any preamble
+   `eden-doc-smoke:` marker. Robust fence handling (` ``` ` open/close, info
+   strings, nested-looking content) — the reason this is Python not bash.
+2. **Classify** each bash block: tagged-exec / tagged-static / tagged-illustrative
+   / **un-annotated** (→ report bucket).
+3. **L1 static checks** on every exec+static block:
+   - `bash -n` syntax lint (run the block body through `bash -n`).
+   - **CLI surface check**: extract `eden-manual <subcmd>` tokens + `--flag`
+     tokens; assert each exists in the CLI's argparse surface. Mechanism: import
+     and introspect `eden-manual`'s parser, OR shell out to
+     `eden-manual <subcmd> --help` and parse — decide during impl based on whether
+     `eden-manual` exposes its parser importably (it's a system-`python3` script,
+     [`reference/scripts/manual-ui/eden-manual`](../../reference/scripts/manual-ui/eden-manual);
+     `--help` shelling is the safe default).
+   - **Embedded-fixture validation**: YAML/JSON blocks the marker tags
+     `static; expect=schema:<name>` are validated against the named schema via the
+     same `check-jsonschema` invocation `schema-validity` uses.
+   - **Path-existence check**: repo-relative paths the marker declares (or that a
+     conservative regex extracts) resolve in the tree.
+4. **L2 stack-free execution** of `exec; needs=none` blocks in a `mktemp -d`
+   sandbox, in `session=` order, with `subst:` applied. `expect=` gates pass/fail.
+5. **Report** (always, even on success): a table of every bash block ×
+   {ran, static-only, skipped-needs-stack, **un-annotated**}, written to stdout
+   and a CI step summary, so coverage is *visible* (§3.4).
+
+Exit non-zero on: any exec-block failure, any L1 check failure, any malformed
+marker. Exit zero (with a warning line) on un-annotated blocks by default; a
+`--strict` mode (used in CI once coverage is established) flips un-annotated bash
+blocks to failures so new undocumented blocks can't land silently.
+
+### D.3 Heavy mode (designed here; built in the #184-heavy follow-up)
+
+Heavy = "fresh-operator persona drives the documented CLI workflow against a live
+stack." The key realization from surveying the existing harnesses: **no current
+smoke drives the literal `eden-manual` CLI walkthrough** from user-guide §5/6/7.
+
+- [`smoke.sh`](../../reference/compose/healthcheck/smoke.sh) /
+  [`smoke-subprocess.sh`](../../reference/compose/healthcheck/smoke-subprocess.sh) —
+  headless full-auto loop; no operator commands.
+- [`smoke-manual-mode.sh`](../../reference/compose/healthcheck/smoke-manual-mode.sh) —
+  drives the wire via raw in-container `curl`, **not** the `eden-manual` script.
+- [`e2e.sh`](../../reference/compose/healthcheck/e2e.sh) +
+  [`e2e_drive.py`](../../reference/compose/healthcheck/e2e_drive.py) — drives the
+  **web-ui** ideator walkthrough + admin-reclaim via `httpx`/CSRF scraping; not
+  the CLI docs.
+
+So heavy's genuine new coverage is: **run the exact `eden-manual` commands
+documented in user-guide §5 (ideation) → §6 (execution: claim/checkout/push/
+submit) → §7 (evaluation) against a live stack, asserting the variant integrates**
+— which is precisely the path #132 / #161 / #163 lived on. Design:
+
+- A new `reference/compose/healthcheck/smoke-docs-walkthrough.sh` that reuses the
+  established staged-bring-up scaffolding (the `e2e.sh` cleanup trap, `mktemp -d`
+  data root, `STAGE1_SERVICES` race-avoidance pattern from the AGENTS.md
+  "competing always-on hosts" pitfall — bring up everything *except* the
+  competing worker hosts so the CLI can claim its own targets).
+- The walkthrough **sources the same `eden-doc-smoke` markers**: heavy is the
+  extractor's `needs=stack` executor with `subst:` fed from live state (the
+  `claim` step captures the real `task-id`/`variant_id` and injects them into the
+  later blocks' `<task-id>`/`<sha>` placeholders). This is why lite and heavy
+  share one annotation contract and one parser — heavy is lite's runner pointed at
+  a live stack with a state-capture substitution source, not a second codebase.
+- bash 3.2-compatible (AGENTS.md) — the script is a thin orchestrator; the Python
+  extractor does the parsing.
+- A new CI job `compose-smoke-docs-walkthrough` mirroring the
+  `compose-smoke-manual-mode` job shape (not branch-required initially; the
+  established "stay clean ~2 weeks then require" posture).
+
+The follow-up issue inherits this section verbatim as its starting spec.
+
+### D.4 Coverage visibility — the anti-silent-under-coverage discipline
+
+Per the "no silent caps" rule and the observability-must-not-hide lesson: a docs
+smoke that quietly covers 3 of 28 blocks while reporting green is *worse* than no
+smoke — it manufactures false confidence. So:
+
+- The extractor **always** prints a coverage table (every bash block, its
+  classification, and *why* it's skipped).
+- Un-annotated bash blocks are listed explicitly; `--strict` (CI default once the
+  initial annotation pass lands) makes them hard failures.
+- The CI job writes the table to `$GITHUB_STEP_SUMMARY` so a reviewer sees
+  coverage without opening logs.
+
+## 4. Naming map
+
+No EDEN **protocol** vocabulary is introduced or renamed; `rename-discipline` is
+unaffected. The new *tooling* identifiers, validated against
+[`docs/glossary.md`](../glossary.md) for style coherence with existing gates:
+
+| Surface | Identifier | Basis / sibling |
+|---|---|---|
+| Lite extractor script | `scripts/check-docs-commands.py` | sibling to `check-complexity.py` / `check-rename-discipline.py` (verb-noun `check-<thing>`); issue said `.sh`, see §2 decision 2 |
+| Lite CI job | `docs-commands` | sibling to the existing `docs-lint` job |
+| Heavy harness (follow-up) | `reference/compose/healthcheck/smoke-docs-walkthrough.sh` | sibling to `smoke-manual-mode.sh`; "walkthrough" matches CONTRIBUTING's "fresh-operator walkthrough" term |
+| Heavy CI job (follow-up) | `compose-smoke-docs-walkthrough` | sibling to `compose-smoke-manual-mode` |
+| Annotation marker | `<!-- eden-doc-smoke: … -->` | mirrors the `# slop-allow:` preamble-annotation convention |
+| `changes` filter bucket | reuse existing `docs` + add `scripts`/`compose` coverage | the lite job gates on `docs` ∪ `python`(scripts) changes |
+
+The marker keyword is `eden-doc-smoke` (not `eden-smoke`) to disambiguate from the
+compose `smoke-*` scripts and to read as "doc smoke-test annotation." No
+gerund/role/verb collisions with the protocol glossary.
+
+## 5. Migration / cleanup
+
+EDEN is pre-external-user (CLAUDE.md no-backwards-compat-shims posture). This is
+**purely additive tooling** — there is nothing to retire:
+
+- New script, new CI job(s), new annotation comments in two docs. No existing
+  command, flag, or doc structure is removed or renamed.
+- The annotation comments are inert to every existing consumer (markdownlint
+  ignores HTML comments; GitHub render hides them; humans skim past them).
+- No data, schema, or wire migration. No compat flag.
+- The `--strict` flip (un-annotated bash → failure) is staged: land the job in
+  permissive mode with the full annotation pass, *then* flip `--strict` in the
+  same PR once every existing block is classified (so the flip can't fail on
+  day one). Documented in the wave plan (§8).
+
+The only durable additions to the contributor contract: an AGENTS.md Commands-row
+for the lite gate and a CONTRIBUTING/AGENTS note on the annotation convention
+(§7) — discoverability per `feedback_codify_with_discoverability`.
+
+## 6. Conformance impact
+
+**None — and it must stay none.** Per [`09-conformance.md`](../../spec/v0/09-conformance.md)
+§6 the conformance suite asserts only the chapter-7 HTTP IUT contract. Docs-smoke
+asserts the *reference deployment's operator docs*, an entirely different axis:
+
+- No `§`-reference updates, no new/changed `conformance/scenarios/` files, no
+  `CONFORMANCE_GROUP` declarations, no [`check_citations.py`](../../conformance/src/conformance/tools/check_citations.py)
+  changes.
+- The heavy harness (follow-up) is "conformance-adjacent" only in that it drives a
+  live stack; it lives under `reference/compose/healthcheck/`, never under
+  `conformance/`. Conflating the two would falsely couple doc assertions to the
+  IUT contract — explicitly out of bounds (§9).
+
+## 7. Files to touch (lite chunk)
+
+**New tooling:**
+
+- `scripts/check-docs-commands.py` — the extractor + L1/L2 runner + coverage
+  report (§D.2). Single file, decomposed into helpers under the complexity gate.
+- `scripts/tests/` (or the established test location) — unit tests for the parser:
+  marker grammar, fence edge cases, classification, the un-annotated report,
+  `--strict` behavior, a malformed-marker hard-fail. Locate the right test home
+  during impl (the repo's `scripts/` has no tests dir today; either add
+  `scripts/tests/test_check_docs_commands.py` wired into `testpaths`, respecting
+  the AGENTS.md unique-basename rule, or a `reference/`-side test module).
+
+**Docs annotated (the coverage pass):**
+
+- [`docs/user-guide.md`](../user-guide.md) — add `eden-doc-smoke:` markers to its
+  13 bash blocks (classify each: exec/static/illustrative; declare `needs=`,
+  `subst:`, `session=`). The §5/§6/§7 CLI sequences get `session=` ids + `cli`
+  L1 flag checks; the §2 YAML examples get `static; expect=schema:experiment-config`;
+  the destructive teardown blocks get `illustrative` (or `needs=stack` for heavy).
+- [`docs/observability.md`](../observability.md) — annotate its 15 bash blocks;
+  the BYO-UI `docker run` blocks (§3.1/§3.2/§3.4) are `static`/`needs=stack`; the
+  `grep '^EDEN_ADMIN_TOKEN=' .env` idioms are `static` (no `.env` in lite).
+
+**CI:**
+
+- [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) — new `docs-commands`
+  job: `setup-python`, run `python3 scripts/check-docs-commands.py --strict`,
+  gated on `needs.changes.outputs.docs == 'true' || …python == 'true'` (the script
+  itself lives under `scripts/`, already in the `python` bucket — confirm the
+  `changes` filter covers both the script and the docs it reads; the existing
+  `docs` bucket already matches `docs/**`). Mirror the `docs-lint` job's
+  lightweight shape (no uv sync needed unless the CLI-surface check imports the
+  workspace — decide during impl; `--help` shelling avoids the dependency).
+
+**Contributor contract (discoverability):**
+
+- [`AGENTS.md`](../../AGENTS.md) — a Commands-table row for
+  `python3 scripts/check-docs-commands.py` (what it does: "validate the
+  executable bash blocks in the operator docs"); a short note under "Contribution
+  conventions" describing the `eden-doc-smoke:` annotation so doc authors know to
+  tag new blocks. Cross-ref from the existing docs-discipline surfaces.
+- [`CONTRIBUTING.md`](../../CONTRIBUTING.md) — tie the lite gate to the existing
+  "Fresh-operator walkthrough" section as its automated complement (#180 ↔ #184).
+
+**Chunk-completion bookkeeping (per AGENTS.md):**
+
+- [`CHANGELOG.md`](../../CHANGELOG.md) `[Unreleased]` entry; the heavy-mode
+  deferral references its new follow-up issue number.
+- [`docs/roadmap.md`](../roadmap.md) status line pointing at this plan path
+  (this chunk has a plan under `docs/plans/`, so the roadmap entry is the
+  plan-path shape, not a PR link).
+
+## 8. Chunked execution plan + validation gates
+
+Single impl PR (lite only; small-to-medium ~2 days per the issue). Internal waves:
+
+**Wave 1 — extractor + parser tests (no doc edits yet).**
+
+- Build `scripts/check-docs-commands.py`: parser, classifier, L1 static checks
+  (`bash -n`, CLI-surface, fixture-validate, path-existence), L2 stack-free
+  runner, coverage report, `--strict`.
+- Unit tests for the parser/grammar/classification (run against synthetic
+  fixtures, not the real docs, so wave 1 is self-contained).
+
+*Gate:* `uv run ruff check . && uv run pyright && uv run pytest -q`
+(new tests green); `python3 scripts/check-complexity.py` (extractor under
+thresholds).
+
+**Wave 2 — annotation pass over the two docs.**
+
+- Add `eden-doc-smoke:` markers to every bash block in `user-guide.md` +
+  `observability.md`; classify each; declare substitutions/sessions.
+- Run `python3 scripts/check-docs-commands.py` (permissive) locally; fix any L1
+  failures it surfaces — **these are real doc bugs and the whole point** (expect
+  to find at least the stale-path / renamed-flag class). File each non-trivial
+  doc bug it catches as its own issue if it's not a one-line fix.
+
+*Gate:* `python3 scripts/check-docs-commands.py` green; the coverage report shows
+zero un-annotated bash blocks in the two target docs;
+`markdownlint-cli2` still green (markers are comment-only).
+
+**Wave 3 — CI wiring + `--strict` flip + docs of the convention.**
+
+- Add the `docs-commands` CI job; flip the invocation to `--strict` (safe now —
+  wave 2 classified every block).
+- AGENTS.md Commands row + annotation-convention note; CONTRIBUTING cross-ref.
+- File the **heavy-mode follow-up issue** (carrying §D.3 as its spec) and
+  reference it in the CHANGELOG deferral line.
+- CHANGELOG `[Unreleased]` + roadmap line.
+
+*Gate (literal pre-push, per the AGENTS.md "Commands section is the gate" rule —
+the docs-touching subset plus the new gate):*
+
+```text
+npx --yes markdownlint-cli2@0.14.0 "**/*.md" "#node_modules" "#.venv" "#docs/archive/**" "#docs/plans/review/**"
+python3 scripts/check-docs-commands.py --strict
+uv run ruff check .
+uv run pyright
+uv run pytest -q
+python3 scripts/check-complexity.py
+python3 scripts/spec-xref-check.py
+python3 scripts/check-rename-discipline.py
+```
+
+No compose smokes are required for the **lite** chunk (it touches no compose/
+service surface) — that's the deliberate cost saving vs heavy. (Heavy's
+follow-up will run the full smoke quartet.)
+
+## 9. Risks / things to watch
+
+- **False confidence from low coverage (most load-bearing).** A green lite job
+  that only ran 4 of 28 blocks is actively harmful. The §D.4 coverage report +
+  `--strict` un-annotated gate is the mitigation; if review weakens `--strict`,
+  the job's value collapses. Treat the coverage table as a required artifact, not
+  a nicety.
+- **The annotation itself rots.** A `subst:` that references a placeholder no
+  longer in the block, or a `session=` typo, silently degrades coverage. Mitigate:
+  the extractor *validates* markers (malformed/dangling-subst = hard fail, §D.1),
+  and the parser has its own unit tests (wave 1).
+- **CLI-surface check brittleness.** Parsing `eden-manual --help` output with a
+  regex couples the check to help-text formatting. Prefer introspecting the
+  argparse parser if importable; if shelling to `--help`, match on flag *tokens*
+  (`--ideas-file`) not full usage lines, and keep the matcher loose enough to
+  survive help-text reflow. A too-strict matcher produces flaky CI; a too-loose
+  one misses renames. Tune during impl with both a positive (flag exists) and a
+  negative (renamed flag caught) test.
+- **Lite ≠ heavy boundary creep.** It's tempting to make lite "just spin up a
+  tiny stack" for a few more blocks. Resist — the moment lite needs Docker it has
+  become heavy, with heavy's flake surface and minutes-per-run cost, defeating the
+  cheap-fast-gate purpose. `needs=stack` blocks are *recorded and deferred*, never
+  run in lite.
+- **Conformance/heavy harness conflation.** The heavy follow-up must land under
+  `reference/compose/healthcheck/`, never `conformance/`. A reviewer skimming
+  "drives the stack, asserts behavior" might file it as a conformance scenario;
+  §6 is the guardrail.
+- **Competing-host race in heavy (follow-up, pre-flagged).** Per the AGENTS.md
+  pitfall, the always-on `ideator-host`/`executor-host`/`evaluator-host` drain the
+  seed before a manual CLI walkthrough can claim. Heavy must use the staged
+  bring-up pattern (`e2e.sh`'s `STAGE1_SERVICES` minus the competing host). Noted
+  now so the follow-up plan starts from it.
+- **bash 3.2 in the heavy script (follow-up).** Any new `healthcheck/*.sh` must
+  avoid `mapfile`/`declare -A` (AGENTS.md). The lite Python extractor sidesteps
+  this; the heavy orchestrator script inherits the constraint.
+- **`changes` filter correctness.** If the lite job is gated only on the `docs`
+  bucket, a PR that edits *only* `scripts/check-docs-commands.py` (the python
+  bucket) must still run it. Confirm the job's `if:` ORs `docs` and `python`, and
+  that editing the workflow file triggers `run_all` (it does, via `rootcfg`).
+
+## 10. Estimated effort
+
+| Activity | Estimate |
+|---|---|
+| Extractor + parser + L1/L2 runner + coverage report | ~0.75 day |
+| Parser/grammar unit tests | ~0.5 day |
+| Annotation pass over user-guide + observability (incl. fixing the doc bugs it surfaces) | ~0.5 day |
+| CI job + `--strict` flip + AGENTS/CONTRIBUTING notes + bookkeeping + file heavy follow-up | ~0.25 day |
+| Codex-review iterations (plan + impl) | ~0.5 day |
+| **Total (lite)** | **~2.5 days** |
+
+Matches the issue's "lite ~2 days." Heavy (~1 week per the issue) is the separate
+follow-up issue created at merge.
