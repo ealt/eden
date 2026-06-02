@@ -15,7 +15,7 @@ URL missing credentials, [#163](https://github.com/ealt/eden/issues/163) submit
 form `commit_sha` with no how-to,
 [#132](https://github.com/ealt/eden/issues/132) CLI artifacts unreadable by the
 web-ui, [#178](https://github.com/ealt/eden/issues/178) substrate-migration doc
-drift) — each invisible to the implementer who wrote the doc.
+drift) — each invisible to the developer who wrote the doc.
 
 Issue #184 proposes two complementary CI smokes:
 
