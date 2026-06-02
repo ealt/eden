@@ -57,7 +57,7 @@ Notes:
 - These are read views over the wire API. Filter changes do not mutate state.
 - Reclaim / reassign / terminate / dispatch-mode toggles do mutate, behind CSRF + the same authorization model as the wire API.
 - **Auth.** Every `/admin/*` page load requires the signed-in session's worker to be a transitive member of the `admins` group; non-admin sessions get a 403 forbidden page from the route-layer middleware (issue #144). The `setup-experiment.sh` script seeds the `admins` group with the web-ui's worker so the default Compose deployment already meets this requirement. Sign-ups created after a deployment is up are not added to `admins` by default and will hit the 403 page until an existing admin adds them via `/admin/groups/admins/`.
-- `/admin/experiments/` is only mounted when the web-ui is started with `--control-plane-url`. The default Compose stack omits this flag; the route returns 404 ("page does not exist") until a control-plane-server is wired up. To enable it on the demo stack, run a sibling control-plane container and recreate the web-ui with the [`compose.control-plane.yaml`](../reference/compose/compose.control-plane.yaml) overlay — see [§3.4](#34-enabling-the-multi-experiment-control-plane).
+- `/admin/experiments/` is only mounted when the web-ui is started with `--control-plane-url`. Since issue #147 the control-plane-server runs as a first-class always-on Compose service, but the web-ui's `--control-plane-url` is still opt-in via the `EDEN_CONTROL_PLANE_URL` env var (empty by default), so the route returns 404 ("page does not exist") on the default stack. To enable it, set `EDEN_CONTROL_PLANE_URL` and recreate the web-ui — see [§3.4](#34-enabling-the-multi-experiment-control-plane).
 
 ### 2.2 Forgejo Web UI (`http://localhost:3001`)
 
@@ -333,40 +333,24 @@ If you prefer a desktop tool over Adminer, connect directly to `localhost:5433` 
 
 ### 3.4 Enabling the multi-experiment control plane
 
-The `/admin/experiments/` route is gated on the web-ui being started with `--control-plane-url`. Phase 12c shipped the control-plane-server as a separate service that the default Compose stack does not start. To enable the route on a running demo stack:
+Since issue #147 the control-plane-server is a **first-class always-on Compose service** (`control-plane`, port 8081), Postgres-backed (a separate `eden_control_plane` database in the same instance, created by the postgres init hook). `setup-experiment.sh` provisions its store DSN. So the control plane is already running on any `docker compose up` stack — what's opt-in is whether the **web-ui** talks to it.
+
+The `/admin/experiments/` route is gated on the web-ui being started with `--control-plane-url`, which the web-ui CLI reads from the `EDEN_CONTROL_PLANE_URL` env var (empty by default → route stays 404). To enable the cross-experiment dashboard on a running stack:
 
 ```bash
-# 1. Spin up control-plane-server as a sibling container on the eden network.
-ADMIN=$(grep '^EDEN_ADMIN_TOKEN=' reference/compose/.env | cut -d= -f2)
-docker run --rm -d --name eden-demo-control-plane \
-  --network eden-reference_default \
-  -p 8081:8081 \
-  eden-reference:dev \
-  python -m eden_control_plane_server \
-    --store-url ':memory:' \
-    --host 0.0.0.0 --port 8081 \
-    --admin-token "$ADMIN" \
-    --task-store-url http://task-store-server:8080
-
-# 2. Tell the web-ui's overlay where to find it, then recreate web-ui only.
 cd reference/compose
-echo 'EDEN_CONTROL_PLANE_URL=http://eden-demo-control-plane:8081' >> .env
-docker compose --env-file .env \
-  -f compose.yaml -f compose.control-plane.yaml \
-  up -d --force-recreate --no-deps web-ui
+# Point the web-ui at the in-network control-plane service, then
+# recreate web-ui only. The control-plane admin token defaults to
+# EDEN_ADMIN_TOKEN inside the CLI, so no separate token is needed.
+echo 'EDEN_CONTROL_PLANE_URL=http://control-plane:8081' >> .env
+docker compose --env-file .env up -d --force-recreate --no-deps web-ui
 ```
 
-`compose.control-plane.yaml` is an overlay that re-declares the web-ui's `command:` with the two extra flags (`--control-plane-url` + `--control-plane-admin-token`). Compose replaces (not merges) list-shaped command keys, so the overlay carries the full command — keep it in lockstep with `compose.yaml` if web-ui flags change.
+`/admin/experiments/` now resolves (303 → sign-in if you're not authenticated, 200 once you are). The control-plane API itself listens at `http://localhost:${CONTROL_PLANE_HOST_PORT:-8081}/v0/control/*` (bearer-authed with the same admin token; `/healthz` is unauthenticated); fetch its `/openapi.json` with the bearer for the full surface. Note the registry is empty until an experiment is registered via `POST /v0/control/experiments` (the lease-handoff smoke and a lease-driven orchestrator do this).
 
-`/admin/experiments/` now resolves (303 → sign-in if you're not authenticated, 200 once you are). The control-plane API itself listens at `http://localhost:8081/v0/control/*` (14 endpoints; bearer-authed with the same admin token); fetch its `/openapi.json` with the bearer for the full surface.
-
-State-sync caveat: the demo command above uses `:memory:` storage, so the control-plane forgets its experiment registry on container restart. For a persistent deployment you'd point `--store-url` at Postgres (a separate database / schema from the task store), and likely run it as a first-class Compose service rather than a sibling container.
-
-Tear down:
+Tear down (revert the web-ui to the no-control-plane command):
 
 ```bash
-docker rm -f eden-demo-control-plane
-# Optional: revert the web-ui to the no-control-plane command.
 cd reference/compose
 sed -i.bak '/^EDEN_CONTROL_PLANE_URL=/d' .env && rm .env.bak
 docker compose --env-file .env up -d --force-recreate --no-deps web-ui

@@ -180,6 +180,17 @@ def make_app(
     """
     app = FastAPI(title="EDEN control plane", version="0")
 
+    @app.get("/healthz")
+    def healthz() -> dict[str, str]:
+        """Unauthenticated liveness probe.
+
+        Lives outside the ``/v0/control`` prefix, so the §13 auth
+        middleware (which only guards ``/v0/control/...``) lets it
+        through. Mirrors the web-ui's ``/healthz`` so the Compose
+        healthcheck can poll the control-plane the same way.
+        """
+        return {"status": "ok"}
+
     if admin_token is not None:
         _install_auth_middleware(app, admin_token=admin_token, store=store)
 

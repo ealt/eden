@@ -240,10 +240,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--control-plane-url",
-        default=None,
+        # Env fallback (#147): defaults to $EDEN_CONTROL_PLANE_URL, treating
+        # an empty value as unset. Lets the Compose web-ui service flip the
+        # cross-experiment surface on/off purely via `${EDEN_CONTROL_PLANE_URL:-}`
+        # without a conditional command override (retires compose.control-plane.yaml).
+        default=os.environ.get("EDEN_CONTROL_PLANE_URL") or None,
         help=(
             "Optional control-plane base URL (e.g. "
-            "'http://control-plane:8081'). When set, the web-ui exposes "
+            "'http://control-plane:8081'; defaults to $EDEN_CONTROL_PLANE_URL, "
+            "empty treated as unset). When set, the web-ui exposes "
             "the cross-experiment admin views at /admin/experiments/ "
             "(chapter 11 §2 / §3 / §4) and a top-nav 'experiments' "
             "link. When unset, the cross-experiment surface is hidden "

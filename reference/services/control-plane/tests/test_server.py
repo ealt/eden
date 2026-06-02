@@ -37,6 +37,17 @@ def client_noauth(store: InMemoryControlPlaneStore) -> Iterator[TestClient]:
 # ---------------------------------------------------------------------
 
 
+def test_healthz_unauthenticated_ok() -> None:
+    # /healthz lives outside /v0/control, so even with auth enabled the
+    # middleware lets it through unauthenticated (Compose healthcheck path).
+    store = InMemoryControlPlaneStore()
+    app = make_app(store, admin_token="secret", lease_duration_seconds=30)
+    with TestClient(app) as c:
+        r = c.get("/healthz")
+    assert r.status_code == 200
+    assert r.json() == {"status": "ok"}
+
+
 def test_register_experiment_creates_201(client_noauth: TestClient) -> None:
     r = client_noauth.post(
         "/v0/control/experiments",
