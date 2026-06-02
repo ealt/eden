@@ -433,6 +433,7 @@ async def submit(
         form,
         request=request,
         config=config,
+        variant_id=variant_id,
         uploaded=await _collect_uploads(form, field_name="artifact_files"),
     )
     if draft is None or errors:
@@ -469,6 +470,7 @@ def _parse_evaluator_submit_form(
     *,
     request: Request,
     config: ExperimentConfig,
+    variant_id: str,
     uploaded: list[UploadedFile],
 ) -> tuple[Any, Any, dict[str, Any]]:
     """Read the evaluator submit form and produce ``(draft, errors, form_state)``.
