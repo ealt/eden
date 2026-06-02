@@ -52,7 +52,7 @@ These are the load-bearing calls this plan makes. They are defensible defaults, 
 
 ### 3.1 New overlay: `reference/compose/compose.logging.yaml`
 
-Sibling to `compose.subprocess.yaml` / `compose.docker-exec.yaml` / `compose.control-plane.yaml` / `compose.multi-orchestrator.yaml`. Layered as:
+Sibling to `compose.subprocess.yaml` / `compose.docker-exec.yaml` / `compose.multi-orchestrator.yaml` / `compose.multi-experiment.yaml`. Layered as:
 
 ```bash
 cd reference/compose
@@ -166,7 +166,7 @@ No renames of existing identifiers. New identifiers introduced (validated agains
 
 | New identifier | Kind | Convention followed |
 |---|---|---|
-| `compose.logging.yaml` / `compose.logging-infra.yaml` | overlay files | `compose.<concern>.yaml` (matches `compose.subprocess.yaml`, `compose.docker-exec.yaml`, `compose.control-plane.yaml`, `compose.multi-orchestrator.yaml`) |
+| `compose.logging.yaml` / `compose.logging-infra.yaml` | overlay files | `compose.<concern>.yaml` (matches `compose.subprocess.yaml`, `compose.docker-exec.yaml`, `compose.multi-orchestrator.yaml`, `compose.multi-experiment.yaml`) |
 | `loki` / `alloy` / `grafana` | compose service names | upstream tool names, lowercase (matches `forgejo`, `postgres`) |
 | `EDEN_GRAFANA_ADMIN_PASSWORD` | env var (secret) | `EDEN_<THING>_<ROLE>` (matches `EDEN_READONLY_PASSWORD`, `EDEN_ADMIN_TOKEN`, `EDEN_SESSION_SECRET`) |
 | `EDEN_LOGGING_DOCKER_GID` | env var (infra-overlay required) | `EDEN_<CONCERN>_<THING>` — distinct from docker-exec's `EDEN_DOCKER_GID` so the infra overlay fails fast instead of inheriting the default `0` (§3.4) |

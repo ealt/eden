@@ -31,6 +31,7 @@ See [`../../docs/operations/experiment-data-durability.md`](../../docs/operation
 | `executor-host`  | `eden_executor_host`             | Scripted executor worker; writes work commits       |
 | `evaluator-host`    | `eden_evaluator_host`               | Scripted evaluator worker                              |
 | `web-ui`            | `eden_web_ui`                       | Backend-for-frontend Web UI on `localhost:${WEB_UI_HOST_PORT}` |
+| `control-plane`     | `eden_control_plane_server`         | Always-on chapter-11 control plane (registry + leases + state-sync) on `localhost:${CONTROL_PLANE_HOST_PORT:-8081}` |
 
 ### Setup-time services (10c)
 
@@ -215,6 +216,38 @@ after the stack is down. See
   `name:` field in `compose.yaml`); volumes are prefixed with that
   name. If you renamed the project, use `docker volume ls` to find
   the historical names.
+
+## Multi-experiment mode (control plane)
+
+The `control-plane` service (chapter 11) is always-on, but it is
+**opt-in** for the orchestrator and web-ui: with `EDEN_CONTROL_PLANE_URL`
+empty (the default), the orchestrator runs single-experiment and the
+web-ui hides the cross-experiment dashboard, so the control plane just
+starts cleanly and idles. Setting `EDEN_CONTROL_PLANE_URL=http://control-plane:8081`
+flips both into chapter-11 lease-driven mode (the orchestrator CLI reads
+the env var as the fallback for `--control-plane-url`).
+
+The control plane is Postgres-backed: a separate `eden_control_plane`
+database in the same instance (chapter 11 §3.4 Option A), created by the
+[`init-control-plane-db.sh`](init-control-plane-db.sh) postgres init
+hook. That hook runs **only on a fresh Postgres data dir** (upstream
+image behavior), so on a data root that predates this feature the
+database won't exist and `control-plane` will fail to start. To upgrade
+an existing data root, either `docker compose down -v` + re-run
+setup-experiment, or create the database manually:
+
+```bash
+docker compose --env-file .env exec postgres \
+  psql -U eden -d eden -c 'CREATE DATABASE eden_control_plane OWNER eden;'
+```
+
+The canonical reference for the lease lifecycle on this substrate is the
+[`smoke-multi-experiment.sh`](healthcheck/smoke-multi-experiment.sh)
+smoke (control-plane health, two lease-contending orchestrator replicas,
+and a lease-handoff chaos drill). Note the reference impl hosts **one**
+experiment per task-store-server; true multi-experiment hosting +
+cross-experiment isolation is tracked in
+[#254](https://github.com/ealt/eden/issues/254).
 
 ## Security note
 
