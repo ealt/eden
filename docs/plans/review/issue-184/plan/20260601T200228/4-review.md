@@ -1,0 +1,5 @@
+Confirmed. The contract is aligned now.
+
+`D.2` step 2 explicitly includes both fixture modes for `yaml`/`json` fences, and step 3 now specifies both validation paths: `schema:<name>` via pinned `check-jsonschema`, and `json-shape` via `json.loads` plus the inline structure assertion ([issue-184-doc-instructions-smoke-tested.md](/Users/ericalt/Documents/eden-worktrees/plan-issue-184-doc-instructions-smoke-tested/docs/plans/issue-184-doc-instructions-smoke-tested.md:274), [issue-184-doc-instructions-smoke-tested.md](/Users/ericalt/Documents/eden-worktrees/plan-issue-184-doc-instructions-smoke-tested/docs/plans/issue-184-doc-instructions-smoke-tested.md:297)). The §7 guidance for the ideas-file example also matches that contract ([issue-184-doc-instructions-smoke-tested.md](/Users/ericalt/Documents/eden-worktrees/plan-issue-184-doc-instructions-smoke-tested/docs/plans/issue-184-doc-instructions-smoke-tested.md:473)).
+
+I don’t see further plan-level issues from this review pass.

@@ -1,0 +1,42 @@
+--- /Users/ericalt/Documents/eden-worktrees/plan-issue-184-doc-instructions-smoke-tested/docs/plans/review/issue-184/plan/20260601T200228/2.md	2026-06-01 21:04:44
++++ docs/plans/issue-184-doc-instructions-smoke-tested.md	2026-06-01 21:08:44
+@@ -243,7 +243,10 @@
+   session-captured value in heavy). Lite uses static literals; the same mechanism
+   feeds heavy from live state.
+ - `expect=` — `no-error` (default; non-zero exit fails) | `help-ok` (treat a
+-  `--help`/usage exit as success) | a declared output matcher (L1 fixture checks).
++  `--help`/usage exit as success) | `schema:<name>` (validate a `yaml`/`json`
++  fence against `spec/v0/schemas/<name>.schema.json` via the pinned
++  `check-jsonschema`, §D.2.1) | `json-shape` (JSON well-formedness + an inline
++  documented-structure check, for CLI-input shapes with no spec schema).
+ 
+ The grammar is parsed and **validated** by the extractor; each of these is a hard
+ CI failure (so the annotation itself can't silently rot):
+@@ -457,12 +460,21 @@
+ - [`docs/user-guide.md`](../user-guide.md) — add `eden-doc-smoke:` markers to its
+   13 bash blocks (classify each: exec/static/illustrative; declare `needs=`,
+   `cmd=` when `needs=cli`, `subst:`, `session=`) **plus** the `yaml`/`json`
+-  fixture fences worth validating (the §2 config example, the §5 ideas-file
+-  example, the latter `expect=schema:experiment-config`) tagged
+-  `static; expect=schema:<name>`. The §5/§6/§7 CLI sequences get `session=` ids +
+-  `needs=cli; cmd=eden-manual`; the §2 setup-experiment block gets
+-  `cmd=setup-experiment`; the destructive teardown blocks get `illustrative` (or
+-  `needs=stack` for heavy).
++  fixture fences worth validating:
++  - the §2 experiment-config example (`yaml`) → `static; expect=schema:experiment-config`
++    (a real `spec/v0/schemas/` schema).
++  - the §5 ideas-file example (`json`) → `static; expect=json-shape` — **not** a
++    spec schema: the CLI ideas-file (`{"ideas": [{slug, priority, parent_commits,
++    content, content_files}]}`) is a CLI *input* shape with no matching
++    `spec/v0/schemas/` artifact (`idea.schema.json` is the *wire* `Idea` shape, a
++    different thing). Lite validates it for JSON well-formedness + the documented
++    top-level `{"ideas": [...]}` structure (an inline structural check in the
++    extractor), not against a JSON Schema. (If a CLI-input schema is ever
++    authored, switch this to `expect=schema:<it>`.)
++
++  The §5/§6/§7 CLI sequences get `session=` ids + `needs=cli; cmd=eden-manual`;
++  the §2 setup-experiment block gets `needs=cli; cmd=setup-experiment`; the
++  destructive teardown blocks get `illustrative` (or `needs=stack` for heavy).
+ - [`docs/observability.md`](../observability.md) — annotate its 15 bash blocks;
+   the BYO-UI `docker run` blocks (§3.1/§3.2/§3.4) are `static`/`needs=stack`; the
+   `grep '^EDEN_ADMIN_TOKEN=' .env` idioms are `static` (no `.env` in lite).

@@ -1,0 +1,206 @@
+--- /Users/ericalt/Documents/eden-worktrees/plan-issue-184-doc-instructions-smoke-tested/docs/plans/review/issue-184/plan/20260601T200228/0.md	2026-06-01 20:02:28
++++ docs/plans/issue-184-doc-instructions-smoke-tested.md	2026-06-01 20:56:07
+@@ -98,13 +98,28 @@
+ - **Tier L1 — static validation (no stack, no execution).** For *every*
+   block tagged executable: `bash -n` syntax-lint (catches the unbalanced-quote /
+   removed-`fi` class), plus author-declared assertions that don't need a runtime:
+-  - **Flag/subcommand existence**: assert each `eden-manual <subcommand>` and each
+-    documented flag (`--kind`, `--worker-id`, `--ideas-file`, `--status`,
+-    `--field`, `--sha`, `--seed-from`, `--exec-mode`, …) still exists, by parsing
+-    the CLI's own `--help` / argparse surface. This is the **highest-value,
+-    cheapest** check — it directly catches the "flag was renamed" drift class
+-    (the [#157](https://github.com/ealt/eden/issues/157) CLI-flags-moved-to-config
+-    churn is exactly this) with no Docker.
++  - **Flag/subcommand existence — per EDEN-authored command family.** The docs'
++    flags span *two* distinct EDEN CLIs, not one, and the validator needs a
++    per-family surface source (the marker's `cmd=` field, §D.1, names which):
++    - **`eden-manual`** subcommands + flags (`list-tasks`, `claim`, `checkout`,
++      `push`, `execution-submit`, `evaluation-submit`, `ideation-submit`, `show`;
++      `--kind`, `--state`, `--worker-id`, `--ideas-file`, `--status`, `--field`,
++      `--sha`, `--message`, `--description`) — checked against its argparse
++      surface (system-`python3` script; shell `eden-manual <sub> --help`).
++    - **`setup-experiment.sh`** flags (`--experiment-id`, `--admin-token`,
++      `--postgres-password`, `--env-file`, `--experiment-dir`, `--data-root`,
++      `--ideas-per-ideation`, `--exec-mode`, `--seed-from`,
++      `--no-auto-host-workers`) — checked against `setup-experiment.sh --help`
++      (a bash script; the user-guide §2 `--seed-from`/`--exec-mode` flags live
++      here, **not** on `eden-manual`).
++
++    `docker compose` / `curl` / `git` flags in the docs are third-party and
++    **not** flag-checked (they get `bash -n` only) — flag-existence checking is
++    scoped to EDEN-authored CLIs, where the rename-drift risk actually lives.
++    This is the **highest-value, cheapest** check — it directly catches the
++    "flag was renamed / moved to config" drift class (the
++    [#157](https://github.com/ealt/eden/issues/157) CLI-flags-to-config churn is
++    exactly this) with no Docker.
+   - **Embedded-fixture validation**: the YAML config example (§2) validated
+     against `experiment-config.schema.json` (the same check `schema-validity`
+     already runs on the fixture); the JSON ideas-file example (§5) validated for
+@@ -199,15 +214,18 @@
+ `# slop-allow:` preamble convention so authors already know the shape). Grammar:
+ 
+ ```text
+-<!-- eden-doc-smoke: <directive>[; needs=<cap>][; session=<id>][; subst: k=v, k=v ...][; expect=<mode>] -->
++<!-- eden-doc-smoke: <directive>[; needs=<cap>][; cmd=<family>][; session=<id>][; subst: k=v ...][; expect=<mode>] -->
+ ```
+ 
+ - `<directive>` — `exec` (run it), `static` (syntax-lint + declared L1 checks
+   only, never run), or `illustrative` (explicitly skip; documents intent so the
+   un-annotated report stays meaningful).
+-- `needs=` — `none` (default; stack-free) | `cli` (needs the `eden-manual`
+-  argparse surface but no running stack) | `stack` (needs a live Compose stack
+-  → **deferred to heavy**, lite records it as `skipped: needs=stack`).
++- `needs=` — `none` (default; stack-free) | `cli` (flag-existence checked against
++  an EDEN CLI's surface but no running stack) | `stack` (needs a live Compose
++  stack → **deferred to heavy**, lite records it as `skipped: needs=stack`).
++- `cmd=` — which EDEN command family the block exercises, for the L1
++  flag-existence check: `eden-manual` | `setup-experiment` (others, e.g.
++  `compose`, are syntax-linted only — no flag check, §1.3).
+ - `session=<id>` — blocks sharing an id run in one persistent shell so
+   `EDEN=…`/`ADMIN=…`/`$BASE` set in block N are visible in block N+1 (models the
+   real cross-block variable continuity of §1.2 item 2).
+@@ -235,16 +253,21 @@
+    / **un-annotated** (→ report bucket).
+ 3. **L1 static checks** on every exec+static block:
+    - `bash -n` syntax lint (run the block body through `bash -n`).
+-   - **CLI surface check**: extract `eden-manual <subcmd>` tokens + `--flag`
+-     tokens; assert each exists in the CLI's argparse surface. Mechanism: import
+-     and introspect `eden-manual`'s parser, OR shell out to
+-     `eden-manual <subcmd> --help` and parse — decide during impl based on whether
+-     `eden-manual` exposes its parser importably (it's a system-`python3` script,
+-     [`reference/scripts/manual-ui/eden-manual`](../../reference/scripts/manual-ui/eden-manual);
+-     `--help` shelling is the safe default).
++   - **CLI surface check — per `cmd=` family (§1.3).** Extract `<flag>` /
++     `<subcommand>` tokens and assert each exists in the declared family's surface:
++     - `cmd=eden-manual` → `eden-manual <subcmd> --help` (system-`python3` script,
++       [`reference/scripts/manual-ui/eden-manual`](../../reference/scripts/manual-ui/eden-manual);
++       it can't import workspace packages, so `--help` shelling is the only safe
++       path — confirm during impl whether its argparse is importable at all).
++     - `cmd=setup-experiment` →
++       [`setup-experiment.sh --help`](../../reference/scripts/setup-experiment/setup-experiment.sh)
++       (bash; the `--seed-from`/`--exec-mode`/`--data-root` flags live here).
++     - Other families (`compose`, raw `curl`) → no flag check, `bash -n` only.
+    - **Embedded-fixture validation**: YAML/JSON blocks the marker tags
+      `static; expect=schema:<name>` are validated against the named schema via the
+-     same `check-jsonschema` invocation `schema-validity` uses.
++     **identical pinned invocation `schema-validity` uses** —
++     `pipx run 'check-jsonschema==0.29.4' --schemafile spec/v0/schemas/<name>.schema.json <tmpfile>`
++     (the runtime/dependency contract is pinned in §D.2.1, not left open).
+    - **Path-existence check**: repo-relative paths the marker declares (or that a
+      conservative regex extracts) resolve in the tree.
+ 4. **L2 stack-free execution** of `exec; needs=none` blocks in a `mktemp -d`
+@@ -258,6 +281,33 @@
+ `--strict` mode (used in CI once coverage is established) flips un-annotated bash
+ blocks to failures so new undocumented blocks can't land silently.
+ 
++### D.2.1 Runtime / dependency contract (pinned — not "lightweight, TBD")
++
++The first draft hand-waved "lightweight job, maybe no `uv sync`" while also
++promising `check-jsonschema` validation, which has a real dependency. Pinned
++resolution — the lite job needs **exactly** what `docs-lint` + `schema-validity`
++already use, and **no `uv sync`**:
++
++- **`python3`** (via `actions/setup-python@v5`, matching the `schema-validity`
++  job) — runs `check-docs-commands.py` itself and `eden-manual <sub> --help`
++  (`eden-manual` is a system-`python3` script with no workspace imports, so bare
++  `python3` suffices; **no `uv sync`/workspace install**).
++- **`pipx`** to run the pinned `check-jsonschema==0.29.4` for embedded-fixture
++  validation — the *identical* tool+version `schema-validity` invokes
++  ([`ci.yml`](../../.github/workflows/ci.yml) `schema-validity` step). The
++  extractor shells out to it rather than importing `jsonschema`, so the lite job
++  inherits zero Python dependencies of its own.
++- **`bash`** (preinstalled) for `bash -n` and `setup-experiment.sh --help`.
++
++So the job is genuinely light (setup-python + pipx, no `uv sync`, no Docker) but
++its dependency list is now explicit and the headline command
++`python3 scripts/check-docs-commands.py --strict` is runnable as written both
++locally (where `pipx`/`python3` are on PATH) and in CI. If review prefers the
++extractor to `import jsonschema` directly instead of shelling to `pipx`, that
++trades the pin-parity-with-`schema-validity` property for a `uv`-managed dep —
++call it out; the shell-to-pinned-pipx path is chosen to keep the two
++schema-validating jobs byte-identical in what they enforce.
++
+ ### D.3 Heavy mode (designed here; built in the #184-heavy follow-up)
+ 
+ Heavy = "fresh-operator persona drives the documented CLI workflow against a live
+@@ -390,14 +440,30 @@
+ **CI:**
+ 
+ - [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) — new `docs-commands`
+-  job: `setup-python`, run `python3 scripts/check-docs-commands.py --strict`,
+-  gated on `needs.changes.outputs.docs == 'true' || …python == 'true'` (the script
+-  itself lives under `scripts/`, already in the `python` bucket — confirm the
+-  `changes` filter covers both the script and the docs it reads; the existing
+-  `docs` bucket already matches `docs/**`). Mirror the `docs-lint` job's
+-  lightweight shape (no uv sync needed unless the CLI-surface check imports the
+-  workspace — decide during impl; `--help` shelling avoids the dependency).
++  job: `setup-python` + `pipx run 'check-jsonschema==0.29.4'` (§D.2.1; **no
++  `uv sync`**), run `python3 scripts/check-docs-commands.py --strict`. **Gate on
++  `docs || python || compose`** — the third clause is load-bearing and was the
++  round-0 miss: the docs reference surfaces that live in the `compose` bucket
++  (`setup-experiment.sh` under `reference/scripts/**`, the `docker compose …`
++  commands under `reference/compose/**`, [`ci.yml`](../../.github/workflows/ci.yml)
++  lines 103–105), so a change to `setup-experiment.sh`'s flags or a compose
++  command can stale the docs while a `docs`/`python`-only gate green-skips this
++  job. Concretely:
+ 
++  ```yaml
++  if: >-
++    !cancelled() && (
++    needs.changes.result != 'success' ||
++    needs.changes.outputs.run_all == 'true' ||
++    needs.changes.outputs.docs == 'true' ||
++    needs.changes.outputs.python == 'true' ||
++    needs.changes.outputs.compose == 'true' )
++  ```
++
++  (`docs` covers the doc edits + the markdown; `python` covers `scripts/**` where
++  the extractor lives; `compose` covers the CLI/compose surfaces the docs
++  describe.) Mirror the `docs-lint` job's lightweight shape otherwise.
++
+ **Contributor contract (discoverability):**
+ 
+ - [`AGENTS.md`](../../AGENTS.md) — a Commands-table row for
+@@ -483,13 +549,17 @@
+   longer in the block, or a `session=` typo, silently degrades coverage. Mitigate:
+   the extractor *validates* markers (malformed/dangling-subst = hard fail, §D.1),
+   and the parser has its own unit tests (wave 1).
+-- **CLI-surface check brittleness.** Parsing `eden-manual --help` output with a
+-  regex couples the check to help-text formatting. Prefer introspecting the
+-  argparse parser if importable; if shelling to `--help`, match on flag *tokens*
+-  (`--ideas-file`) not full usage lines, and keep the matcher loose enough to
+-  survive help-text reflow. A too-strict matcher produces flaky CI; a too-loose
+-  one misses renames. Tune during impl with both a positive (flag exists) and a
+-  negative (renamed flag caught) test.
++- **CLI-surface check brittleness — across two families.** The check parses
++  `--help` output for *both* `eden-manual` (argparse) and `setup-experiment.sh`
++  (a bash usage block, §1.3), each with different help formatting. Regex-coupling
++  to help text is the trap. Match on flag *tokens* (`--ideas-file`,
++  `--seed-from`) not full usage lines; for `eden-manual` prefer argparse
++  introspection if importable. A too-strict matcher produces flaky CI; a too-loose
++  one misses renames. Tune during impl with, per family, a positive (flag exists)
++  and a negative (renamed flag caught) test. The two families also mean
++  `setup-experiment.sh` must keep a parseable `--help` — confirm it emits one
++  (it's invoked with a positional config today; verify a bare `--help` path
++  exists or add one as part of this chunk).
+ - **Lite ≠ heavy boundary creep.** It's tempting to make lite "just spin up a
+   tiny stack" for a few more blocks. Resist — the moment lite needs Docker it has
+   become heavy, with heavy's flake surface and minutes-per-run cost, defeating the
+@@ -507,10 +577,13 @@
+ - **bash 3.2 in the heavy script (follow-up).** Any new `healthcheck/*.sh` must
+   avoid `mapfile`/`declare -A` (AGENTS.md). The lite Python extractor sidesteps
+   this; the heavy orchestrator script inherits the constraint.
+-- **`changes` filter correctness.** If the lite job is gated only on the `docs`
+-  bucket, a PR that edits *only* `scripts/check-docs-commands.py` (the python
+-  bucket) must still run it. Confirm the job's `if:` ORs `docs` and `python`, and
+-  that editing the workflow file triggers `run_all` (it does, via `rootcfg`).
++- **`changes` filter must span three buckets, not one.** The lite job's drift
++  surface is broader than the docs themselves: a PR that edits *only*
++  `scripts/check-docs-commands.py` (`python` bucket) must run it, and — the
++  round-0 catch — a PR that edits *only* `setup-experiment.sh` or a compose
++  command (`compose` bucket) can stale the docs the job validates. The gate ORs
++  `docs || python || compose` (§7); editing the workflow file triggers `run_all`
++  via `rootcfg`. A `docs`-only gate is the silent-skip trap.
+ 
+ ## 10. Estimated effort
+ 
