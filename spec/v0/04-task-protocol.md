@@ -70,7 +70,7 @@ The `pending → claimed` transition MUST be atomic with respect to competing cl
 
 A successful claim issues a `claim` object ([`02-data-model.md`](02-data-model.md) §3.4) containing:
 
-- `worker_id` — the registered worker's id ([`02-data-model.md`](02-data-model.md) §6) on whose behalf the claim was made. The task store records this value as the canonical claim ownership; it is the sole identity the §4 submit transition matches against.
+- `worker_id` — the registered worker's opaque, system-minted id ([`02-data-model.md`](02-data-model.md) §6, §1.6; the `wkr_*` grammar) on whose behalf the claim was made. The task store records this value as the canonical claim ownership; it is the sole identity the §4 submit transition matches against.
 - `claimed_at` — the time the claim was issued.
 - `expires_at` — OPTIONAL. If present, the task store MAY reclaim the task when the current time exceeds this value (§5).
 
@@ -91,7 +91,7 @@ In addition to the §3.4 state precondition, a `claim(task_id, worker_id)` opera
 0. The experiment's `state == "running"` ([`02-data-model.md`](02-data-model.md) §2.5). A claim against a `pending` task whose experiment has been terminated MUST be rejected with `IllegalTransition` (wire mapping: 409 `eden://error/illegal-transition`); the pending task remains in storage but is unreachable.
 1. The task is in state `pending` (§3.4).
 2. `worker_id` names a worker registered for the experiment ([`02-data-model.md`](02-data-model.md) §6). A claim by a non-registered `worker_id` MUST be rejected with `WorkerNotRegistered`.
-3. `worker_id` satisfies `Task.target`:
+3. `worker_id` satisfies `Task.target` (where `target.id` is an opaque member identifier — a `wkr_*` or `grp_*` id per [`02-data-model.md`](02-data-model.md) §1.6 — and `target.kind` disambiguates the two; the comparisons below are unchanged in shape):
    - if `target` is absent → pass;
    - if `target.kind == "worker"` → pass iff `worker_id == target.id`;
    - if `target.kind == "group"` → pass iff `worker_id` is transitively a member of `target.id` ([`02-data-model.md`](02-data-model.md) §7.2).
@@ -214,13 +214,13 @@ The behavior depends on the task's current state:
 - **`claimed`** — composite commit equivalent to `reclaim(reason="operator") + target update`. The claim is cleared, the task returns to `pending`, the target is updated. Two events fire atomically: a `task.reclaimed` event with `cause == "operator"` ([`05-event-protocol.md`](05-event-protocol.md) §3.1) AND a `task.reassigned` event with the new target. Subscribers MUST observe both events together with the task's `pending` + new-target state; partial observability is forbidden by [`05-event-protocol.md`](05-event-protocol.md) §2.2.
 - **`submitted`, `completed`, `failed`** — rejected with `InvalidPrecondition` (wire mapping: 409 `eden://error/invalid-precondition`). A submitted task has produced an artifact whose attribution the orchestrator is in the middle of finalizing; reassignment would race that finalization. Terminal tasks are immutable per §4.4.
 
-The new target is validated like any other `Task.target`: it MUST satisfy the §3.5 schema (kind / id grammar); `register_worker` / `register_group` referenced by it MAY be absent at reassignment time (resolves to membership=false at the next claim attempt).
+The new target is validated like any other `Task.target`: it MUST satisfy the §3.5 schema (`kind` plus a `target.id` matching the opaque member-identifier grammar of [`02-data-model.md`](02-data-model.md) §1.6); the worker / group referenced by it MAY be absent at reassignment time (resolves to membership=false at the next claim attempt).
 
 ### 6.2 Authority
 
-`reassign_task` is restricted to callers in the `admins` group ([`02-data-model.md`](02-data-model.md) §7.5). The wire binding enforces this before invoking the Store; the Store assumes authority has been enforced upstream (§3.3 binding-layer-authentication discipline).
+`reassign_task` is restricted to callers in the reserved-name `admins` group ([`02-data-model.md`](02-data-model.md) §7.5) — the group resolved by its reserved **name** to its system-minted `grp_*` id, against which the caller's opaque `worker_id` is checked for transitive membership. The wire binding enforces this before invoking the Store; the Store assumes authority has been enforced upstream (§3.3 binding-layer-authentication discipline).
 
-The reassigning caller's identity is recorded in the `task.reassigned` event payload (`reassigned_by`) for audit. The protocol does not require the caller to be in the new target's worker / group; reassignment is an authority operation, not a self-target.
+The reassigning caller's identity is recorded in the `task.reassigned` event payload (`reassigned_by`, an actor identifier — `admin` or a `wkr_*` id per [`02-data-model.md`](02-data-model.md) §1.6) for audit. The protocol does not require the caller to be in the new target's worker / group; reassignment is an authority operation, not a self-target.
 
 ### 6.3 Effect on stale claims
 
@@ -238,7 +238,7 @@ A successful update emits exactly one `experiment.dispatch_mode_changed` event (
 
 ### 7.2 Authority
 
-`update_dispatch_mode` is restricted to callers in the `admins` group ([`02-data-model.md`](02-data-model.md) §7.5). The wire binding enforces this; the Store assumes authority has been enforced upstream.
+`update_dispatch_mode` is restricted to callers in the reserved-name `admins` group ([`02-data-model.md`](02-data-model.md) §7.5), resolved by name to its system-minted `grp_*` id and checked against the caller's opaque `worker_id`. The wire binding enforces this; the Store assumes authority has been enforced upstream.
 
 ### 7.3 Effect on in-flight orchestrator decisions
 
@@ -260,7 +260,7 @@ There is no `terminated → running` transition in v0. The protocol does not def
 
 ### 8.2 Authority
 
-`terminate_experiment` requires the caller to be in the `admins` OR `orchestrators` group ([`02-data-model.md`](02-data-model.md) §7.5). The caller MUST be a member of one of those two groups; a caller outside both receives 403 `eden://error/forbidden`. The wire binding for the operation is [`07-wire-protocol.md`](07-wire-protocol.md) §2.9 (`POST /v0/experiments/{E}/terminate`).
+`terminate_experiment` requires the caller to be in the `admins` OR `orchestrators` group ([`02-data-model.md`](02-data-model.md) §7.5), each resolved by its reserved name to its system-minted `grp_*` id and checked against the caller's opaque `worker_id`. The caller MUST be a member of one of those two groups; a caller outside both receives 403 `eden://error/forbidden`. The wire binding for the operation is [`07-wire-protocol.md`](07-wire-protocol.md) §2.9 (`POST /v0/experiments/{E}/terminate`).
 
 The two groups correspond to the two termination paths: an operator drives termination through an `admins` bearer, while the orchestrator commits its policy-driven termination ([`03-roles.md`](03-roles.md) §6.2 decision-type 0) through an `orchestrators` bearer. Gating on `orchestrators` as well as `admins` is what lets the orchestrator run decision-type 0 over the wire binding without being placed in `admins` (which would over-grant it `reassign_task` / `update_dispatch_mode` authority). This mirrors the `accept` / `reject` gating (§4.3) and the `emit_policy_error` gating ([`07-wire-protocol.md`](07-wire-protocol.md) §2.9), both `orchestrators`-group operations for the same [`03-roles.md`](03-roles.md) §6 rationale.
 
@@ -297,7 +297,7 @@ The task state machine is not the only lifecycle in the system. Ideas ([`02-data
 The protocol leaves to implementations:
 
 - The mechanism by which a worker discovers claimable tasks (polling, subscription, dispatch).
-- The representation of worker IDs and task IDs (within the §6.1 grammar of [`02-data-model.md`](02-data-model.md)).
+- The representation of task IDs (opaque, no grammar constraint). Worker / group / experiment IDs are constrained to the opaque, system-minted grammar of [`02-data-model.md`](02-data-model.md) §1.6 and are NOT implementation-chosen.
 - The timeout and reclamation policy, including whether to set `expires_at` by default.
 - Whether retries are automatic (new task on reclamation) or operator-driven.
 - Whether `submitted → completed` is fully synchronous with submit or a subsequent orchestrator step, as long as the observable state machine above is preserved.
@@ -331,7 +331,7 @@ The Store-layer typed errors raised on §3 / §4 enforcement form a closed vocab
 | `WorkerNotEligible` | `claim` | The worker is registered but does not satisfy `Task.target` per §3.5 step 3. |
 | `NotClaimed` | `submit` | The task is not in `claimed` state — it is `pending` (no claim), `submitted` with a different submission already in flight whose claim has been cleared, or terminal. |
 | `WrongClaimant` | `submit` | The supplied `worker_id` does not match `task.claim.worker_id`. The atomic match is performed as part of the submit transition; pre-flight binding-side checks would race. |
-| `ReservedIdentifier` | `register_worker`, `register_group` | The supplied id is one of the reserved values (`admin`, `system`, `internal`) per [`02-data-model.md`](02-data-model.md) §6.1's reservation list. Distinct from grammar-rejection: a syntactically invalid id surfaces as `InvalidPrecondition` (§6.1 grammar; chapter 07 §6.1 maps that to 400 `eden://error/bad-request`). |
-| `WorkerAlreadyRegistered` | `register_worker` | A different actor attempted to register a `worker_id` whose record already exists. (Idempotent re-registration by the same caller is a non-error per [`02-data-model.md`](02-data-model.md) §6.3.) |
+| `ReservedIdentifier` | `register_worker`, `register_group` | The supplied **name** is reserved: a worker name in `admin` / `system` / `internal` ([`02-data-model.md`](02-data-model.md) §6.1) or a group name in `admins` / `orchestrators` already minted at setup ([`02-data-model.md`](02-data-model.md) §7.5). Distinct from name-grammar rejection: an ill-formed name surfaces as `InvalidName` ([`02-data-model.md`](02-data-model.md) §1.7; chapter 07 §6.1 maps that to 422 `eden://error/invalid-name`). The `worker_id` / `group_id` is system-minted ([`02-data-model.md`](02-data-model.md) §1.6), so there is no caller-supplied-id grammar error. |
+| `InvalidName` | `register_worker`, `register_group` | The supplied `name` violates the display-name grammar ([`02-data-model.md`](02-data-model.md) §1.7). Chapter 07 §6.1 maps this to 422 `eden://error/invalid-name`. |
 | `CycleDetected` | `register_group`, group-mutation ops | The mutation would introduce a cycle in the group DAG ([`02-data-model.md`](02-data-model.md) §7.3). |
 | `InvalidPrecondition` | `reassign_task` (§6), `update_dispatch_mode` (§7) | Reassignment of a `submitted` or terminal task is rejected; an unrecognized `dispatch_mode` value is rejected. |

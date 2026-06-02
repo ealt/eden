@@ -13,7 +13,7 @@ Every event appended to a conforming event log MUST be a JSON object carrying:
 | `event_id` | yes | string | Unique identifier for this event within the log. Opaque. |
 | `type` | yes | string | Dotted type name (`^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$`). The normative registry is in §3. |
 | `occurred_at` | yes | timestamp | When the state change happened. UTC, trailing `Z`, RFC 3339 profile (`^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?Z$`). |
-| `experiment_id` | yes | string | The experiment the event belongs to. Events are scoped per experiment ([`02-data-model.md`](02-data-model.md) §4.3). |
+| `experiment_id` | yes | string (`exp_*`) | The experiment the event belongs to (opaque, system-minted id per [`02-data-model.md`](02-data-model.md) §1.6). Events are scoped per experiment ([`02-data-model.md`](02-data-model.md) §4.3). |
 | `data` | yes | object | Type-specific payload. Shape is fixed by the registry entry for `type` (§3). |
 
 The envelope is closed over these fields for conforming events; a conforming log MAY persist additional audit metadata alongside each event, but MUST NOT expose it under any of the five envelope keys. Implementations MAY include additional top-level keys outside the envelope (e.g. `sequence`, `recorded_at`); subscribers relying only on the envelope MUST remain correct regardless.
@@ -88,11 +88,11 @@ Payload field definitions:
 
 - `task_id` — the `task_id` of the transitioning task.
 - `kind` — the task's `kind` ([`02-data-model.md`](02-data-model.md) §3.1); one of `ideation`, `execution`, `evaluation`.
-- `worker_id` — the `claim.worker_id` recorded on the successful claim ([`04-task-protocol.md`](04-task-protocol.md) §3.2).
+- `worker_id` — the `claim.worker_id` recorded on the successful claim ([`04-task-protocol.md`](04-task-protocol.md) §3.2); an opaque, system-minted `wkr_*` id ([`02-data-model.md`](02-data-model.md) §1.6).
 - `reason` — for `task.failed`: one of the strings `"worker_error"` (the worker's submission declared failure), `"validation_error"` (the orchestrator rejected the result as malformed or non-conforming), or `"policy_limit"` (a policy such as retry budget caused the failure). The literal set is closed for v0; an implementation that needs finer granularity MAY add a separate operator-level event under its own type (§3.6). For `task.reassigned`: a free-form string (typical: `"operator"`, `"failed_worker"`, `"misrouted"`); not enumerated by the protocol.
 - `cause` — one of `"expired"` (claim `expires_at` passed), `"operator"` (explicit operator action), or `"health_policy"` (task store health policy declared the worker unreachable). The literal set is closed for v0 on the same terms as `reason`.
-- `new_target` — the `Task.target` value installed by the reassignment ([`02-data-model.md`](02-data-model.md) §3.5). `null` for "any worker"; otherwise an object with `kind` (`"worker"` / `"group"`) and `id`.
-- `reassigned_by` — the `worker_id` of the caller that invoked `reassign_task` ([`04-task-protocol.md`](04-task-protocol.md) §6), drawn from the binding's authenticated principal. The caller MUST be in the `admins` group per [`04-task-protocol.md`](04-task-protocol.md) §6.2.
+- `new_target` — the `Task.target` value installed by the reassignment ([`02-data-model.md`](02-data-model.md) §3.5). `null` for "any worker"; otherwise an object with `kind` (`"worker"` / `"group"`) and `id` (an opaque member identifier — `wkr_*` or `grp_*` per [`02-data-model.md`](02-data-model.md) §1.6).
+- `reassigned_by` — an actor identifier (the literal `admin` or a `wkr_*` id per [`02-data-model.md`](02-data-model.md) §1.6) crediting the caller that invoked `reassign_task` ([`04-task-protocol.md`](04-task-protocol.md) §6), drawn from the binding's authenticated principal. The caller MUST be in the `admins` group per [`04-task-protocol.md`](04-task-protocol.md) §6.2.
 
 The payload MAY include additional fields beyond those required; subscribers MUST tolerate them. A conforming orchestrator SHOULD include the submitting worker's `worker_id` on `task.submitted`, `task.completed`, and `task.failed` events when known, as an operational convenience — but this is not required because the worker-task binding is already recoverable from the preceding `task.claimed` event.
 
@@ -150,9 +150,9 @@ Payload field definitions:
 
 - `dispatch_mode` — the **resulting** `dispatch_mode` object on the experiment after the merge ([`02-data-model.md`](02-data-model.md) §2.4). Includes every key (defaults applied), so a subscriber that resyncs from this event observes the full post-update state without needing the prior value.
 - `changed` — an object mapping each key whose value flipped to its new value (subset of `dispatch_mode`). Empty if the update was a no-op (every supplied key already matched the stored value); in that case the implementation MAY skip the event entirely per [`04-task-protocol.md`](04-task-protocol.md) §7.1.
-- `updated_by` — the `worker_id` of the caller that invoked `update_dispatch_mode`. The caller MUST be in the `admins` group per [`04-task-protocol.md`](04-task-protocol.md) §7.2.
+- `updated_by` — an actor identifier (the literal `admin` or a `wkr_*` id per [`02-data-model.md`](02-data-model.md) §1.6) crediting the caller that invoked `update_dispatch_mode`. The caller MUST be in the `admins` group per [`04-task-protocol.md`](04-task-protocol.md) §7.2.
 - `reason` — free-form string supplied by the caller of `terminate_experiment` (operator-driven) or by the termination policy's `Terminate(reason)` return (policy-driven). The protocol does not constrain the format; deployments use it as a human-readable explanation. The first commit's `reason` is the one recorded; subsequent idempotent calls' `reason` strings are discarded per [`04-task-protocol.md`](04-task-protocol.md) §8.1.
-- `terminated_by` — the `worker_id` of the principal credited with the transition. For operator-driven termination this is the authenticated `admins` caller. For policy-driven termination this is the `worker_id` of the orchestrator instance whose policy callable returned `Terminate`.
+- `terminated_by` — an actor identifier (the literal `admin` or a `wkr_*` id per [`02-data-model.md`](02-data-model.md) §1.6) crediting the principal of the transition. For operator-driven termination this is the authenticated `admins` caller. For policy-driven termination this is the opaque `worker_id` of the orchestrator instance whose policy callable returned `Terminate`.
 - `policy_kind` — a string identifying which policy kind raised. v0 defines only `"termination"`; future decision types that introduce policy callables MAY add new values.
 - `error_type` — the exception class name (e.g. `"ValueError"`, `"KeyError"`); free-form per implementation language.
 - `error_message` — the exception's `str()` representation; free-form.

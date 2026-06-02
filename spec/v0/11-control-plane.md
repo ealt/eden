@@ -24,7 +24,8 @@ Each registered experiment carries:
 
 | Field | Type | Description |
 |---|---|---|
-| `experiment_id` | string | Matches [`02-data-model.md`](02-data-model.md) §1.1 identifier grammar. Unique within the deployment. |
+| `experiment_id` | string (`exp_*`) | Opaque, system-minted id matching the [`02-data-model.md`](02-data-model.md) §1.6 grammar; the control plane mints it at `register_experiment`. Unique within the deployment by construction. |
+| `name` | string \| null | OPTIONAL operator-supplied display label ([`02-data-model.md`](02-data-model.md) §1.7) so cross-experiment admin views can render a human label. Resolvable via the `?name=` lookup ([`07-wire-protocol.md`](07-wire-protocol.md) §15.1). |
 | `config_uri` | URI string | URI pointing at the experiment-config resource ([`02-data-model.md`](02-data-model.md) §2). The control plane does not interpret the URI; operators choose a scheme that the orchestrator can resolve. |
 | `created_at` | timestamp | Wall-clock time at which the registry entry was created. Independent of the task-store-server's `experiment.created_at`; the two MAY differ when an experiment is registered before its task-store-server side is populated, or imported with its task-store-server side preceding the registry entry. |
 | `last_known_state` | enum | `"running"` or `"terminated"`. A cached projection of the task-store-server's authoritative `experiment.state` ([`02-data-model.md`](02-data-model.md) §2.5). The control plane updates this field per the §3 sync rules. |
@@ -36,7 +37,7 @@ The schema is [`schemas/lease.schema.json`](schemas/lease.schema.json) for the `
 
 The registry supports four operations:
 
-- `register_experiment(experiment_id, config_uri)` — admin-gated. Creates a new entry with `created_at = now`, `last_known_state = "running"`, `lease = null`. Returns the new entry. Idempotent on the existing `experiment_id`: a second call with the same `experiment_id` returns the existing entry without mutating `created_at` or `config_uri`. A second call with a DIFFERENT `config_uri` MUST return 409 `eden://error/already-exists` rather than silently overwriting.
+- `register_experiment(name?, config_uri)` — admin-gated. **Mints a fresh opaque `exp_*`** ([`02-data-model.md`](02-data-model.md) §1.6); the caller does NOT supply an id. Creates a new entry with the minted `experiment_id`, the optional display `name` ([`02-data-model.md`](02-data-model.md) §1.7; an ill-formed name MUST be rejected with 422 `eden://error/invalid-name`), `created_at = now`, `last_known_state = "running"`, `lease = null`. Returns the new entry. Because the id is system-minted, every call creates a distinct entry — there is no idempotent re-registration by id (the pre-rename caller-supplied-id idempotency is retired). The import path supplies the experiment id it already minted on the task-store side rather than minting a second one; see §7.
 - `unregister_experiment(experiment_id)` — admin-gated. Removes the entry. MUST reject with 409 `eden://error/invalid-precondition` when `last_known_state != "terminated"` OR when an active lease exists (§4.4 "active" definition). Operators MUST terminate the experiment via the operator-driven wire op ([`07-wire-protocol.md`](07-wire-protocol.md) §2.9) before unregistering.
 - `list_experiments()` — read. Returns every registered experiment, including its current lease. Authentication required (admin OR registered control-plane worker per Decision 12 below).
 - `read_experiment_metadata(experiment_id)` — read. Returns one registry entry. Authentication required as for `list_experiments`. The response MAY carry a `warnings` array surfacing operator-visible state-sync degradation per §3.4.
@@ -93,14 +94,16 @@ Leases serve two operational goals:
 ```text
 ExperimentLease {
   lease_id          : string      (opaque; assigned by control plane)
-  experiment_id     : string      (matches the registry entry)
-  holder            : worker_id   (the orchestrator replica's deployment-scoped worker_id)
+  experiment_id     : string      (opaque exp_*; matches the registry entry)
+  holder            : worker_id   (opaque wkr_*; the orchestrator replica's deployment-scoped worker_id)
   holder_instance   : string      (per-process UUID; §4.7)
   acquired_at       : timestamp   (when this lease was issued)
   expires_at        : timestamp   (acquired_at + lease_duration initially)
   renewed_at        : timestamp   (most recent successful renew, or acquired_at if never renewed)
 }
 ```
+
+`experiment_id` and `holder` are opaque, system-minted ids (the `exp_*` and `wkr_*` grammars of [`02-data-model.md`](02-data-model.md) §1.6); `lease_id` / `holder_instance` are opaque control-plane-internal values.
 
 The schema is [`schemas/lease.schema.json`](schemas/lease.schema.json).
 
@@ -120,7 +123,7 @@ The "at most one active lease per experiment" invariant is the load-bearing cont
 
 ### 4.5 Operations
 
-- `acquire_lease(experiment_id, holder, holder_instance)` — worker-gated; caller MUST be in the deployment-scoped `orchestrators` group (§6 below); the `holder` field MUST equal the authenticated `worker_id`. Atomically:
+- `acquire_lease(experiment_id, holder, holder_instance)` — worker-gated; caller MUST be in the deployment-scoped reserved-name `orchestrators` group (§6 below), resolved by name to its system-minted `grp_*` id; the `holder` field MUST equal the authenticated opaque `worker_id`. Atomically:
   - If no lease exists for the experiment OR the current lease is expired (`expires_at < now`), creates a new lease record (replacing any expired one), returns the new lease.
   - Otherwise, returns 409 `eden://error/lease-held-by-other`.
   Also triggers an on-demand state refresh per §3.3.
@@ -215,10 +218,10 @@ On graceful shutdown (SIGTERM), the orchestrator MUST `release_lease` for every 
 
 The chapter 02 §6 worker registry is **per-experiment**: a `worker_id` is unique within an experiment, not deployment-wide. A control plane needs **deployment-scoped** identity for orchestrator replicas: a single replica MAY hold leases across multiple experiments, so its identity MUST transcend any single experiment.
 
-The control plane therefore maintains its own deployment-scoped worker registry, distinct from the per-experiment registries hosted by the task-store-server. The registry's shape and operations mirror chapter 02 §6 / §7 and [`07-wire-protocol.md`](07-wire-protocol.md) §6 / §7 verbatim, with the following differences:
+The control plane therefore maintains its own deployment-scoped worker registry, distinct from the per-experiment registries hosted by the task-store-server. The registry's shape and operations mirror chapter 02 §6 / §7 and [`07-wire-protocol.md`](07-wire-protocol.md) §6 / §7 verbatim — `register_worker` / `register_group` **mint** opaque `wkr_*` / `grp_*` ids ([`02-data-model.md`](02-data-model.md) §1.6), take optional display names ([`02-data-model.md`](02-data-model.md) §1.7), expose the `?name=` lookup, and enforce reserved **names** (rejecting with 409 `reserved-identifier` / 422 `invalid-name`) — with the following differences:
 
-- The registry is **deployment-scoped**: `worker_id` is unique across the deployment, not within an experiment. Wire paths under [`07-wire-protocol.md`](07-wire-protocol.md) §15 are deployment-rooted (`/v0/control/workers/...`), not experiment-rooted.
-- The group registry is **deployment-scoped** identically. The reserved-group identifiers from [`02-data-model.md`](02-data-model.md) §7.5 (`admins`, `orchestrators`) apply at the deployment scope; the per-experiment registries hosted by the task-store-server have their own (independent) `admins` / `orchestrators` groups.
+- The registry is **deployment-scoped**: `worker_id` is unique across the deployment by construction (system-minted), not within an experiment. Wire paths under [`07-wire-protocol.md`](07-wire-protocol.md) §15 are deployment-rooted (`/v0/control/workers/...`), not experiment-rooted.
+- The group registry is **deployment-scoped** identically. The reserved group **names** from [`02-data-model.md`](02-data-model.md) §7.5 (`admins`, `orchestrators`) apply at the deployment scope; these reserved groups are minted at control-plane bootstrap with system-minted `grp_*` ids whose `name` equals the reserved literal, resolved by name. The per-experiment registries hosted by the task-store-server have their own (independent) reserved-name groups.
 - The authority model: `register_worker` / `reissue_credential` / `register_group` / `add_to_group` / `remove_from_group` / `delete_group` are admin-gated. `verify_worker_credential` (the deployment-scoped `whoami` probe) is worker-gated. `list_workers` / `read_worker` / `list_groups` / `read_group` are admin-gated.
 
 The control plane's `acquire_lease` / `renew_lease` / `release_lease` ops authenticate against the deployment-scoped registry. The task-store-server's per-experiment ops authenticate against the per-experiment registry. An orchestrator replica that holds leases for K experiments therefore has K+1 credentials: one deployment-scoped credential for control-plane ops, plus one per-experiment credential for each task-store-server it touches. The two credential domains are independent — rotating one does NOT invalidate the other.
@@ -227,7 +230,7 @@ The double-registration model is unfortunate complexity. A future spec lineage M
 
 ## 7. Experiment registration on import
 
-The portable-checkpoint import op ([`10-checkpoints.md`](10-checkpoints.md) §7 / [`07-wire-protocol.md`](07-wire-protocol.md) §14.2) creates an experiment in the task-store-server. In a deployment that runs the control plane, the import handler MUST ALSO call `register_experiment(experiment_id, config_uri)` after the task-store-server commit succeeds.
+The portable-checkpoint import op ([`10-checkpoints.md`](10-checkpoints.md) §7 / [`07-wire-protocol.md`](07-wire-protocol.md) §14.2) creates an experiment in the task-store-server, minting (or accepting the `as_experiment_id` override for) the imported experiment's opaque `exp_*`. In a deployment that runs the control plane, the import handler MUST ALSO create the registry entry for that **same** `exp_*` after the task-store-server commit succeeds — the registry entry adopts the import-minted id rather than minting a second one, so the control-plane entry and the task-store experiment share one identity.
 
 The two ops are NOT atomic across the two services; true two-phase commit across independent Postgres connections is out of scope for v0. The import handler treats control-plane registration failure as a **partial success**:
 
@@ -235,9 +238,9 @@ The two ops are NOT atomic across the two services; true two-phase commit across
 - The control plane registry entry is absent.
 - The import response's `warnings` array MUST include an entry naming the registration failure with operator-actionable text (e.g., `"control-plane-register-failed: <error detail>; recover with POST /v0/control/experiments"`).
 
-The operator's recovery is an explicit `POST /v0/control/experiments` with the experiment id from the warning. Without recovery, the imported experiment exists in the task-store-server but is invisible to `list_experiments`, so orchestrator replicas will not acquire leases for it. This is a deliberate weak-contract choice; the alternative (block the import on control-plane availability) was rejected because it couples export/import to control-plane uptime more tightly than necessary.
+The operator's recovery is an explicit `POST /v0/control/experiments` carrying the import-minted experiment id from the warning (the registry entry adopts that id; the control-plane create accepts the already-allocated `exp_*` for this import-recovery path). Without recovery, the imported experiment exists in the task-store-server but is invisible to `list_experiments`, so orchestrator replicas will not acquire leases for it. This is a deliberate weak-contract choice; the alternative (block the import on control-plane availability) was rejected because it couples export/import to control-plane uptime more tightly than necessary.
 
-A natively-created experiment (operator-driven `register_experiment` followed by `create_task(kind=ideation)`) follows the inverse order: control-plane registration first, then task-store-server population.
+A natively-created experiment follows the inverse order: the operator calls `register_experiment(name?, config_uri)`, the control plane mints the `exp_*`, and the operator then drives task-store-server population (`create_task(kind=ideation)`, etc.) against that minted id.
 
 ## 8. Implementation latitude
 
