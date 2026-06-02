@@ -1,0 +1,295 @@
+--- docs/plans/review/issue-183/plan/20260601T200522/0.md	2026-06-01 20:05:22
++++ docs/plans/issue-183-cross-mode-ci-smoke-matrix.md	2026-06-01 21:09:30
+@@ -46,7 +46,7 @@
+ | **subprocess × multi-experiment** | The production-like multi-tenant shape: real subprocess worker hosts (the user's `ideation.py`/`execution.py`/`evaluation.py`) driven by a multi-experiment lease-holding orchestrator. The shape an operator would actually deploy. | **Cell 1 — primary** (§3.2) |
+ | **docker-exec × multi-experiment** | DooD's `--exec-volume`/`--exec-bind` plumbing + the per-experiment `_2`-suffixed volumes from #147 intersect here. AGENTS.md's DooD `name:` volume-resolution trap is *exactly* the kind of bug that only fires at this intersection. | **Cell 2 — secondary** (§3.3) |
+ | **explicit control-plane / lease primitive** (issue job #3) | The control-plane is "incidental" to most smokes today. | **Folded** — every multi cell uses the control-plane, and #147's lease-handoff chaos drill is the dedicated lease exercise. No separate `compose-smoke-control-plane` job (§2 Decision 3). |
+-| **auth-disabled** (issue job #4) | Originally: catch divergence between the conformance harness's auth-disabled mode and production auth-on mode. | **Re-scoped / open question** — the premise is now stale; see §2 Decision 4. |
++| **auth-disabled** (issue job #4) | Originally: catch divergence between the conformance harness's auth-disabled mode and production auth-on mode. | **Dropped** — premise is stale (#148) and a faithful Compose cell is a substrate change, not a smoke add-on; see §2 Decision 4 + §3.4. Spun out to a future issue if pursued. |
+ 
+ ### 1.3 Why the auth-disabled premise is now stale
+ 
+@@ -61,8 +61,10 @@
+ 
+ These are the load-bearing calls; §3 unpacks the in-scope ones.
+ 
+-1. **#147 is a hard predecessor; #183 builds on its substrate, does not re-derive it.** The multi-experiment Compose service topology, the `compose.multi-experiment.yaml` overlay, the `setup-experiment --register-additional-experiment` ergonomics, and the lease chaos drill all ship with #147. #183 adds exec-mode overlays on top. If #147 has not merged when #183 starts, #183 blocks. (Alternative — subsume #147 into #183 as wave 0 — rejected: #147 is independently valuable, already has a committed plan, and the issue itself names #147 as "lands first.")
++1. **#147 is a hard predecessor; #183 builds on its substrate, does not re-derive it.** The multi-experiment Compose service topology, the `compose.multi-experiment.yaml` overlay, the `setup-experiment --register-additional-experiment` ergonomics, and the lease chaos drill all ship with #147. If #147 has not merged when #183 starts, #183 blocks. (Alternative — subsume #147 into #183 as wave 0 — rejected: #147 is independently valuable, already has a committed plan, and the issue itself names #147 as "lands first.")
+ 
++   **Correction to a tempting-but-false simplification: the matrix is NOT "pure overlay composition" — the exp-2 host trio needs explicit exec-mode handling (§3.1.1).** `compose.subprocess.yaml` and `compose.docker-exec.yaml` patch only the exp-1 trio (`ideator-host` / `executor-host` / `evaluator-host`) — they add `--mode subprocess` / the DooD socket mount to *those* `command:` blocks and nothing else ([`compose.subprocess.yaml`](../../reference/compose/compose.subprocess.yaml), [`compose.docker-exec.yaml`](../../reference/compose/compose.docker-exec.yaml)). #147's exp-2 trio (`ideator-host-2` / `executor-host-2` / `evaluator-host-2`) is defined as **scripted-mode**. So layering `compose.multi-experiment.yaml` with the existing exec-mode overlays leaves exp-B in scripted mode while exp-A runs subprocess/docker — which would silently *not test the cell at all*. The exp-2 trio must be made exec-mode-aware; §3.1.1 specifies how (preferred: an env-driven entrypoint wrapper on the `-2` trio, a #147 coordination item; fallback: thin `-2`-trio exec-mode overlays shipped by #183). This is a real impl item — the cells are **not** zero-impl.
++
+ 2. **The matrix grows via a shared sourced shell library, not copy-pasted per-cell scripts.** The new multi-experiment cells (scripted/subprocess/docker × multi) are ~90% identical: same two-experiment provisioning, same bring-up, same cross-experiment isolation assertions, same lease drill, same cleanup. Three hand-written ~15 KB scripts would be exactly the cross-file duplication the [code-quality audit](../audits/2026-05-20-code-quality-audit.md) flagged (5 near-identical duplicate blocks). Instead: a sourced, non-executable library [`reference/compose/healthcheck/lib/multi-experiment-common.sh`](../../reference/compose/healthcheck/lib/) holds the common flow; each cell is a thin wrapper that `source`s it and selects its overlay set.
+ 
+    - **This respects the issue's out-of-scope boundary.** The issue scopes out *"refactoring CI to share substrate setup across [the existing] smokes."* The shared library covers only the **new multi-experiment family** (born together); the existing 8 single-experiment smokes are untouched. Sharing new code from birth is not refactoring existing code.
+@@ -71,11 +73,11 @@
+ 
+ 3. **No standalone `compose-smoke-control-plane` job.** The issue's job #3 ("explicit control-plane up + lease primitive exercise") is delivered by #147's lease-handoff chaos drill plus the fact that *every* cell in this matrix runs the control-plane (multi-experiment ⇒ control-plane present). A control-plane-only job would duplicate #147's drill and the chapter-11 conformance scenarios. The lease primitive is exercised in each new multi cell's bring-up assertions (2 leases held by the orchestrator) and re-exercised by the chaos drill the library carries.
+ 
+-4. **Auth-disabled cell: defer pending a deployment-posture decision; recommend a minimal startup-only smoke or dropping it — NOT the full multi-worker smoke.** Per §1.3, the originally-proposed full auth-disabled smoke would (a) duplicate no real production shape and (b) run a degenerate single-identity topology. Two viable dispositions, surfaced for operator/codex selection (§8 risk 5):
+-   - **Drop entirely.** Auth-disabled stays covered where it already is — unit + wire + in-process tests. The matrix is auth-on-only. Document the rationale. *(Recommended if auth-disabled is purely a test convenience.)*
+-   - **Minimal startup-only smoke.** Add a thin `compose-smoke-auth-disabled` that asserts only: the Compose stack boots with `--admin-token` omitted across services, and a single anonymous worker drives one experiment to quiescence. Explicitly **not** a multi-worker / eligibility / multi-experiment exercise. Catches the "does Compose even boot without auth" regression class. Requires a small impl cost (make `--admin-token` conditional in `compose.yaml` + an `EDEN_AUTH_DISABLED` env knob; §3.4). *(Recommended only if auth-disabled is a supported deployment posture.)*
++4. **Auth-disabled cell: recommend DROPPING it from the Compose matrix; it is not a low-cost add-on and there is no production shape it covers.** Per §1.3 the originally-proposed full auth-disabled smoke runs a degenerate single-identity topology and no longer catches any harness-vs-production divergence. Round-0 codex review surfaced that **even a "minimal" auth-disabled Compose smoke is materially larger than first scoped**, for two concrete reasons:
++   - **Auth is hardcoded across far more than #147's wrappers.** The base [`compose.yaml`](../../reference/compose/compose.yaml) passes `--admin-token ${EDEN_ADMIN_TOKEN:?}` to task-store-server *and* every worker host (lines 180, 254, 320, 356, 398, 437); [`compose.subprocess.yaml`](../../reference/compose/compose.subprocess.yaml) and [`compose.docker-exec.yaml`](../../reference/compose/compose.docker-exec.yaml) re-pass it in their patched `command:` blocks too. #147's wrappers cover only orchestrator + web-ui. So an auth-disabled deployment requires conditionalizing `--admin-token` across ~6+ services and both exec-mode overlays — a substrate change, not a wrapper tweak.
++   - **The standard topology can't express "a single anonymous worker."** Compose always starts the full ideator/executor/evaluator host set; under auth-disabled they all collapse to the `"anonymous"` sentinel, so there is no clean single-identity assertion to make against the normal stack. A faithful minimal smoke would need a bespoke stripped-down single-host Compose definition.
+ 
+-   This plan carries the minimal-startup-only design in §3.4 as the larger of the two so the scope is visible, and marks the cell **lowest priority / independently droppable** (wave 3). The full auth-disabled smoke is **not** in scope under any disposition.
++   **Disposition.** Drop the auth-disabled Compose cell from #183. Auth-disabled stays covered where it already lives — unit + wire + in-process tests ([`reference/packages/eden-wire/tests/`](../../reference/packages/eden-wire/tests/), the web-ui e2e fixtures). If a Compose auth-disabled smoke is later judged worth its cost, it is its **own issue and chunk** (bespoke single-worker auth-off substrate), explicitly NOT folded into this matrix as a wave-3 add-on. §3.4 documents what that future chunk would entail so the cost is on record. **This is the one decision worth operator confirmation before finalizing** (§8 risk 5): drop (recommended) vs. spin out as a separate issue.
+ 
+ 5. **CI jobs follow the not-required-then-bump posture.** Same as `compose-smoke-checkpoint` / `compose-smoke-multi-orchestrator`: each new job is added unrequired, path-gated on the `compose` bucket ([`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) `changes` filter), and bumped to required-status ~2 weeks after staying clean on `main`. Documented in the impl PR.
+ 
+@@ -98,17 +100,32 @@
+ #   me_provision_two_experiments # setup-experiment exp-A + --register-additional-experiment exp-B
+ #   me_bring_up                  # docker compose "${OVERLAYS[@]}" up -d --wait
+ #   me_assert_two_leases         # control-plane /v0/control/leases shows 2 held by orchestrator
+-#   me_wait_quiescence           # orchestrator exits 0 (both experiments drained)
++#   me_lease_handoff_drill       # MID-FLIGHT: kill holder while work in progress; 2nd replica acquires both
++#   me_wait_quiescence           # orchestrator exits 0 (both experiments drained — under the 2nd replica)
+ #   me_assert_cross_experiment_isolation  # disjoint task/variant/idea ids; per-experiment floors
+-#   me_lease_handoff_drill       # kill lease holder; second replica acquires both leases
+ #   me_assert_terminal_state     # both experiments last_known_state == terminated
+ ```
+ 
+ Each cell wrapper is then ~20 lines: set `OVERLAYS` + `SETUP_EXTRA_ARGS`, source the library, call the functions in order, register the `cleanup` trap. The bash-3.2 discipline (AGENTS.md "Adding a new CI job") is enforced in the library once, not re-litigated per cell.
+ 
++**Call ordering is load-bearing — the lease-handoff drill MUST run before quiescence, not after.** #147's chaos drill ([its plan §3.3 Phase 5](issue-147-compose-smoke-multi-experiment.md)) kills the lease holder *while work is still in flight*. If the library waited for quiescence first, the orchestrator would already have exited cleanly (it exits 0 when all held leases drain) and there would be **no held leases left to hand off** — the drill would assert against an empty lease table and silently stop testing the failure mode it exists for. The library therefore sequences `me_assert_two_leases → me_lease_handoff_drill → me_wait_quiescence`, and the wrapper examples below follow that order. The drill is responsible for ensuring there is still pending work when it kills the holder (the `MAX_TOTAL=2` cap leaves enough in-flight work that the kill lands before quiescence; if CI proves too fast, the drill gates on observing ≥1 still-`running` experiment before the kill).
++
++#### 3.1.1 Making the exp-2 host trio exec-mode-aware
++
++Per Decision 1, the existing exec-mode overlays only patch the exp-1 trio, so the exp-2 trio needs its own exec-mode handling. Two shapes, in preference order:
++
++- **Preferred — env-driven entrypoint wrapper on the `-2` trio (a #147 coordination item, §11).** #147 already introduces entrypoint wrappers for the orchestrator/web-ui to gate flags on env. Extend the same mechanism to the `-2` host trio: each `*-host-2` service invokes a wrapper that reads `EDEN_EXEC_MODE_2` (defaulting to match exp-1's mode) and assembles the host CLI with `--mode subprocess` / the DooD flags / scripted as appropriate. Then a matrix cell selects the exp-2 exec mode purely through `setup-experiment` (which stamps `EDEN_EXEC_MODE_2`), and **no extra overlay file is needed**. This keeps overlay-file count flat and is symmetric with how #147 already env-gates the orchestrator. Requires #147 to land the `-2` trio wrapper-driven (or #183 to add it in wave 1).
++- **Fallback — thin `-2`-trio exec-mode overlays shipped by #183.** If the `-2` trio lands scripted-only and wrapper-retrofitting is undesirable, #183 ships `compose.multi-experiment.subprocess.yaml` (patches the three `*-host-2` `command:` blocks to subprocess mode) and `compose.multi-experiment.docker.yaml` (adds the DooD socket mount + `group_add` + `--mode docker` to the `-2` trio). Cells then layer e.g. `-f compose.yaml -f compose.subprocess.yaml -f compose.multi-experiment.yaml -f compose.multi-experiment.subprocess.yaml`. More overlay files, but clean layering and no #147 change beyond the base `-2` trio.
++
++The wrapper examples in §3.2 / §3.3 assume the **preferred** env-driven shape (exec mode selected via `setup-experiment`, `OVERLAYS` carries only the base + exp-1 exec-mode overlay + multi-experiment overlay). Under the fallback shape, each cell's `OVERLAYS` array gains the corresponding `-2`-trio overlay. The choice is the first thing wave 1 settles with #147 (§11).
++
+ ### 3.2 Cell 1 (primary) — `smoke-subprocess-multi-experiment.sh`
+ 
+ ```bash
++# --exec-mode subprocess applies to BOTH trios: it threads compose.subprocess.yaml
++# (exp-1 trio) AND stamps EDEN_EXEC_MODE_2=subprocess for the wrapper-driven exp-2
++# trio (§3.1.1 preferred shape). Under the fallback shape, OVERLAYS also gains
++# -f compose.multi-experiment.subprocess.yaml.
+ OVERLAYS=(-f compose.yaml -f compose.subprocess.yaml -f compose.multi-experiment.yaml)
+ SETUP_EXTRA_ARGS=(--exec-mode subprocess)
+ SMOKE_NAME="subprocess-multi-experiment"
+@@ -117,58 +134,53 @@
+ me_provision_two_experiments        # both experiments use the fixture ideation.py/execution.py/evaluation.py
+ me_bring_up
+ me_assert_two_leases
++me_lease_handoff_drill               # MID-FLIGHT (before quiescence) — see §3.1 ordering note
+ me_wait_quiescence
+ me_assert_cross_experiment_isolation
+-me_lease_handoff_drill
+ me_assert_terminal_state
+ echo "PASS: subprocess × multi-experiment"
+ ```
+ 
+-What this exercises that no existing cell does: real long-running subprocess worker hosts (the fixture's `ideation.py` etc., per [`compose.subprocess.yaml`](../../reference/compose/compose.subprocess.yaml)) under a multi-experiment lease-holding orchestrator. The subprocess JSON-line protocol's `attach_stdin` posture, the per-experiment `_2`-suffixed substrate paths, and the lease loop all run together for the first time. **The "real deployment under multi-tenancy" shape.**
++What this exercises that no existing cell does: real long-running subprocess worker hosts (the fixture's `ideation.py` etc., per [`compose.subprocess.yaml`](../../reference/compose/compose.subprocess.yaml)) **for both experiments** (§3.1.1) under a multi-experiment lease-holding orchestrator. The subprocess JSON-line protocol's `attach_stdin` posture, the per-experiment `_2`-suffixed substrate paths, and the lease loop all run together for the first time. **The "real deployment under multi-tenancy" shape.**
+ 
+ ### 3.3 Cell 2 (secondary) — `smoke-docker-multi-experiment.sh`
+ 
+ ```bash
++# --exec-mode docker threads compose.docker-exec.yaml for the exp-1 trio AND
++# stamps EDEN_EXEC_MODE_2=docker for the wrapper-driven exp-2 trio (§3.1.1).
++# The exp-2 trio's wrapper must also receive the DooD socket mount + group_add —
++# under the preferred shape that lives on the -2 services in compose.multi-experiment.yaml
++# gated on EDEN_EXEC_MODE_2; under the fallback shape it's in compose.multi-experiment.docker.yaml.
+ OVERLAYS=(-f compose.yaml -f compose.subprocess.yaml -f compose.docker-exec.yaml -f compose.multi-experiment.yaml)
+ SETUP_EXTRA_ARGS=(--exec-mode docker)
+ SMOKE_NAME="docker-multi-experiment"
+ source "$(dirname "$0")/lib/multi-experiment-common.sh"
+-# ... same call sequence, plus:
+-me_assert_no_orphan_exec_containers   # reuse smoke-subprocess-docker.sh's orphan-reaping assertion
++# ... same call sequence as Cell 1 (drill mid-flight, before quiescence), plus:
++me_assert_no_orphan_exec_containers   # reuse smoke-subprocess-docker.sh's orphan-reaping assertion, per experiment
+ ```
+ 
+ What this exercises: DooD sibling-container spawns (`--exec-mode docker`) for **two** experiments simultaneously. The load-bearing intersection (and the most likely real-bug-or-flake source) is the AGENTS.md DooD `name:` volume-resolution trap crossed with #147's per-experiment `_2`-suffixed volumes: every forwarded volume for exp-B's worker hosts must carry an explicit `name:` matching the wrap's literal, or the DooD spawn resolves to a fresh empty volume. The cidfile-dir bind-at-same-path discipline and the spawned-child uid pinning (AGENTS.md DooD traps) also apply per-experiment. This cell is where those break if exp-B's substrate naming was done wrong in #147 — **exactly the cross-mode latent-bug class the issue is about.**
+ 
+-### 3.4 Cell 3 (lowest priority, droppable) — `smoke-auth-disabled.sh` (minimal startup-only)
++### 3.4 Auth-disabled — dropped from #183; scoped here for the future-issue record
+ 
+-**Carried only if Decision 4 selects the minimal-startup posture.** Requires a small impl change to make auth optional in Compose:
++Per Decision 4, the auth-disabled Compose cell is **not** in #183. This subsection records what a future standalone chunk would entail, so the deferral is tracked (AGENTS.md deferral-tracking rule — filed as a GH issue at plan-merge, §4.2) and the cost is on record rather than rediscovered.
+ 
+-- `compose.yaml`: thread `--admin-token` conditionally. Reuse #147's entrypoint-wrapper mechanism (§3.1.3 of [#147's plan](issue-147-compose-smoke-multi-experiment.md)) — the wrapper omits `--admin-token` when `EDEN_AUTH_DISABLED=1`. When unset (default), behavior is unchanged. This is the cleanest shape because #147 already introduces the wrapper; #183 extends it rather than adding a new mechanism.
+-- `setup-experiment.sh`: an `--auth-disabled` flag that sets `EDEN_AUTH_DISABLED=1` in `.env` and skips admin-token generation.
++A faithful Compose auth-disabled smoke is a substrate change, not a smoke addition:
+ 
+-The smoke itself (scripted × single × auth-off):
++- **Conditionalize `--admin-token` everywhere it's hardcoded**, not just the orchestrator/web-ui wrappers #147 adds: task-store-server + all three worker hosts in [`compose.yaml`](../../reference/compose/compose.yaml), plus the re-passed flags in [`compose.subprocess.yaml`](../../reference/compose/compose.subprocess.yaml) and [`compose.docker-exec.yaml`](../../reference/compose/compose.docker-exec.yaml). Gated on a new `EDEN_AUTH_DISABLED=1` knob; default-off keeps every existing smoke unchanged.
++- **A bespoke single-host topology.** The standard stack starts the full ideator/executor/evaluator host set, all collapsing to the `"anonymous"` sentinel under auth-off (§1.3). To make a meaningful single-identity assertion, the smoke needs a stripped-down Compose definition with one worker host (or it must accept that "anonymous" is shared and assert only stack-boot + single-experiment quiescence, which is a weak signal).
++- `setup-experiment.sh --auth-disabled` to stamp the knob and skip admin-token generation.
+ 
+-```bash
+-OVERLAYS=(-f compose.yaml)   # auth-disabled is env-gated, not a separate overlay
+-# setup-experiment ... --auth-disabled
+-# bring up; assert:
+-#   - task-store-server boots with NO auth middleware (a /v0/ call with no Authorization header succeeds)
+-#   - the single anonymous worker drives one experiment to >=2 variant.integrated
+-#   - quiescence reached
+-echo "PASS: auth-disabled startup"
+-```
++The only regression class this would catch beyond the existing unit/wire coverage is "does the Compose stack boot and reach quiescence with auth turned off" — a low-frequency regression against an explicitly non-production mode. That weak value against substantial substrate cost is why it's dropped, not deferred-into-this-chunk. The future issue (if filed) owns the decision of whether the bespoke single-host substrate is worth building.
+ 
+-Explicitly **not** asserted: multi-worker identity, eligibility, multi-experiment. Those are structurally impossible under the `"anonymous"` sentinel (§1.3) and belong to auth-on cells.
+-
+ ### 3.5 CI jobs
+ 
+-Three jobs (or two if Decision 4 drops auth-disabled), each mirroring the `compose-smoke-checkpoint` block ([`.github/workflows/ci.yml`](../../.github/workflows/ci.yml)): `runs-on: ubuntu-latest`, `needs: changes`, `if:` path-gated on the `compose` bucket, `timeout-minutes: 25` (the multi cells run ~11–13 containers; bump from the 20-minute multi-experiment timeout to absorb the extra exec-mode containers), one step that runs the cell script. Not required by branch protection initially (Decision 5).
++Two jobs (auth-disabled dropped per Decision 4), each mirroring the `compose-smoke-checkpoint` block ([`.github/workflows/ci.yml`](../../.github/workflows/ci.yml)): `runs-on: ubuntu-latest`, `needs: changes`, `if:` path-gated on the `compose` bucket, `timeout-minutes: 25` (the multi cells run ~11–13 containers; bump from the 20-minute multi-experiment timeout to absorb the extra exec-mode containers), one step that runs the cell script. Not required by branch protection initially (Decision 5).
+ 
+ | Job | Script | Timeout |
+ |---|---|---|
+ | `compose-smoke-subprocess-multi-experiment` | `smoke-subprocess-multi-experiment.sh` | 25 min |
+ | `compose-smoke-docker-multi-experiment` | `smoke-docker-multi-experiment.sh` | 25 min |
+-| `compose-smoke-auth-disabled` *(conditional on Decision 4)* | `smoke-auth-disabled.sh` | 15 min |
+ 
+ ### 3.6 Documentation
+ 
+@@ -185,18 +197,17 @@
+ 
+ **Code (reference impl):**
+ 
+-- *(Cell 3 only, conditional)* Extend #147's entrypoint wrapper to omit `--admin-token` under `EDEN_AUTH_DISABLED=1`; `setup-experiment --auth-disabled` flag. No other impl changes — Cells 1 & 2 are pure overlay composition.
++- **Make the exp-2 host trio exec-mode-aware (§3.1.1).** This is the one non-trivial impl item: the existing exec-mode overlays don't touch the `-2` trio (Decision 1). Preferred shape is an env-driven entrypoint wrapper on the `-2` services landed via #147 coordination (§11); fallback is `-2`-trio exec-mode overlays shipped by #183. **Cells 1 & 2 are therefore NOT pure overlay composition** — the `-2` trio's exec mode is real work.
+ 
+ **Smoke library + cells:**
+ 
+ - New `reference/compose/healthcheck/lib/multi-experiment-common.sh` (sourced library; §3.1). Coordinated with #147 (§11).
+ - New `smoke-subprocess-multi-experiment.sh` (§3.2).
+ - New `smoke-docker-multi-experiment.sh` (§3.3).
+-- *(Conditional)* New `smoke-auth-disabled.sh` (§3.4).
+ 
+ **CI:**
+ 
+-- 2–3 new jobs in [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) (§3.5). Not branch-protected initially.
++- 2 new jobs in [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) (§3.5). Not branch-protected initially.
+ 
+ **Docs:**
+ 
+@@ -208,7 +219,7 @@
+ 
+ - **Full `3 × 2 × 2` cross-product.** Per the issue: pairwise pragmatic shape only.
+ - **Standalone `compose-smoke-control-plane` job** (issue job #3). Folded into the multi cells + #147's lease drill (Decision 3).
+-- **Full multi-worker auth-disabled smoke** (issue job #4 at original scope). Structurally degenerate (§1.3); at most the minimal startup-only variant (Decision 4).
++- **Any auth-disabled Compose smoke** (issue job #4). Dropped from #183 entirely (Decision 4): the premise is stale (#148) and a faithful cell is a substrate change requiring auth-conditionalization across ~6+ services + a bespoke single-host topology (§3.4), against weak incremental value over existing unit/wire coverage. **File a tracking issue at plan-merge** (AGENTS.md deferral rule) capturing §3.4's scope so the decision is revisitable, not lost.
+ - **Refactoring the existing 8 single-experiment smokes to share substrate setup.** The issue's explicit out-of-scope item; the shared library covers only the new multi-experiment family (Decision 2). A future "unify all smoke substrate setup" refactor is its own issue — **file it** when the library proves its shape across the new cells.
+ - **N-experiment generalization beyond N=2.** Inherited from #147's `_2`-suffix bound.
+ - **Stress / load testing.** Per the issue: correctness coverage, not load.
+@@ -226,11 +237,10 @@
+ | `reference/compose/healthcheck/lib/multi-experiment-common.sh` (new) | Sourced library holding the multi-experiment smoke flow (§3.1). Coordinated with #147 (§11). |
+ | `reference/compose/healthcheck/smoke-subprocess-multi-experiment.sh` (new) | Cell 1 wrapper (§3.2). |
+ | `reference/compose/healthcheck/smoke-docker-multi-experiment.sh` (new) | Cell 2 wrapper (§3.3). |
+-| `reference/compose/healthcheck/smoke-auth-disabled.sh` (new, conditional) | Cell 3 minimal startup smoke (§3.4). |
+ | `reference/compose/healthcheck/smoke-multi-experiment.sh` (#147's, refactor) | *(If #147 landed it as a monolith)* refactor to source the library (§3.1, §11). |
+-| [`reference/compose/compose.yaml`](../../reference/compose/compose.yaml) (conditional) | *(Cell 3 only)* entrypoint wrapper omits `--admin-token` under `EDEN_AUTH_DISABLED=1`. |
+-| [`reference/scripts/setup-experiment/setup-experiment.sh`](../../reference/scripts/setup-experiment/setup-experiment.sh) (conditional) | *(Cell 3 only)* `--auth-disabled` flag. |
+-| [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) | 2–3 new `compose-smoke-*` jobs (§3.5). |
++| exp-2 trio exec-mode handling (§3.1.1) | **Preferred:** env-driven entrypoint wrapper on `*-host-2` services (in #147's [`compose.multi-experiment.yaml`](issue-147-compose-smoke-multi-experiment.md) — #147 coordination, §11). **Fallback:** new `compose.multi-experiment.subprocess.yaml` + `compose.multi-experiment.docker.yaml` overlays shipped by #183. |
++| [`reference/scripts/setup-experiment/setup-experiment.sh`](../../reference/scripts/setup-experiment/setup-experiment.sh) | Stamp `EDEN_EXEC_MODE_2` for the exp-2 trio under the preferred shape (so `--exec-mode` applies to both experiments). |
++| [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) | 2 new `compose-smoke-*` jobs (§3.5). |
+ | `docs/operations/ci-smoke-matrix.md` (new) | The coverage-matrix doc + policy (§3.6). |
+ | [`docs/operations/README.md`](../operations/README.md) | Link the new matrix doc. |
+ | [`AGENTS.md`](../../AGENTS.md) | New "Commands" rows. |
+@@ -248,28 +258,27 @@
+ 
+ Gated on #147 impl having merged (Decision 1). Then one impl PR with three sequential waves (a reviewer can isolate failures per wave):
+ 
+-**Wave 1 — Shared library + Cell 1 (subprocess × multi).** *(Covers Decisions 1, 2, 6 + §3.1, §3.2.)*
++**Wave 1 — exp-2 exec-mode mechanism + shared library + Cell 1 (subprocess × multi).** *(Covers Decisions 1, 2, 6 + §3.1, §3.1.1, §3.2.)*
+ 
+-- Extract / create `lib/multi-experiment-common.sh` (coordinated with #147's `smoke-multi-experiment.sh`; refactor it to source the library if it landed monolithic).
++- **Settle the exp-2 trio exec-mode shape with #147 (§3.1.1, §11):** preferred env-driven wrapper landed in #147, or the fallback `-2`-trio overlays shipped here. This is the gating sub-step — Cell 1 can't drive exp-B in subprocess mode without it.
++- Extract / create `lib/multi-experiment-common.sh` (coordinated with #147's `smoke-multi-experiment.sh`; refactor it to source the library if it landed monolithic). Encode the load-bearing call order (drill mid-flight, before quiescence — §3.1).
+ - New `smoke-subprocess-multi-experiment.sh`.
+ - New `compose-smoke-subprocess-multi-experiment` CI job (unrequired).
+-- **Validation gate:** the cell passes in CI; #147's `compose-smoke-multi-experiment` still passes (regression — the library extraction must not change its behavior); all existing 8 smokes unaffected. Local-repro: run the cell on macOS bash 3.2 cold-start + leftover-data-root (AGENTS.md local-repro discipline).
++- **Validation gate:** the cell passes in CI **and a positive control confirms exp-B actually ran subprocess mode** (assert the exp-2 host logs show the subprocess JSON-line protocol, not scripted in-process — guards against the §3.1.1 silent-scripted-fallback failure); #147's `compose-smoke-multi-experiment` still passes (the library extraction must not change its behavior); all existing 8 smokes unaffected. Local-repro: run the cell on macOS bash 3.2 cold-start + leftover-data-root (AGENTS.md local-repro discipline).
+ 
+ **Wave 2 — Cell 2 (docker-exec × multi).** *(Covers §3.3.)*
+ 
+-- New `smoke-docker-multi-experiment.sh` (sources the library + the orphan-container assertion from `smoke-subprocess-docker.sh`).
++- New `smoke-docker-multi-experiment.sh` (sources the library + the orphan-container assertion from `smoke-subprocess-docker.sh`); exp-2 trio in docker mode via the §3.1.1 mechanism from wave 1.
+ - New `compose-smoke-docker-multi-experiment` CI job (unrequired).
+-- **Validation gate:** the cell passes; specifically asserts no orphan exec containers post-quiescence per experiment, and the per-experiment `_2`-suffixed DooD volumes resolve correctly (the `name:` trap). This is the wave most likely to surface a real #147-substrate bug — if it does, that bug is filed and fixed (root-cause, not worked around).
++- **Validation gate:** the cell passes; specifically asserts no orphan exec containers post-quiescence per experiment, that exp-B's spawns are real DooD siblings, and the per-experiment `_2`-suffixed DooD volumes resolve correctly (the `name:` trap). This is the wave most likely to surface a real #147-substrate bug — if it does, that bug is filed and fixed (root-cause, not worked around).
+ 
+-**Wave 3 — Cell 3 (auth-disabled) + docs.** *(Covers Decisions 4, 5 + §3.4, §3.6.)*
++**Wave 3 — Docs.** *(Covers Decision 5 + §3.6; auth-disabled dropped per Decision 4.)*
+ 
+-- *(Conditional on Decision 4)* auth-optional Compose wiring + `setup-experiment --auth-disabled` + `smoke-auth-disabled.sh` + CI job.
+-- New `docs/operations/ci-smoke-matrix.md` (with the current cells filled in).
+-- AGENTS.md / README rows; `CHANGELOG.md [Unreleased]`; `docs/roadmap.md` flip.
++- New `docs/operations/ci-smoke-matrix.md` (with the current cells filled in + the coverage policy).
++- AGENTS.md "Commands" rows; `reference/compose/README.md` note; `CHANGELOG.md [Unreleased]`; `docs/roadmap.md` flip.
++- File the auth-disabled future-issue (§3.4 scope) per the deferral-tracking rule.
+ - **Validation gate:** the full pre-push command quartet from AGENTS.md "Commands" (lint / typecheck / pytest / the relevant smokes) passes; markdownlint clean; the new cells + existing smokes all green.
+ 
+-Wave 3's auth-disabled portion is independently droppable (Decision 4) without affecting waves 1–2.
+-
+ ## 8. Risks
+ 
+ 1. **GitHub Actions runner resource pressure.** Cell 1 (subprocess × multi) runs ~11–13 containers (2 experiments × 3 worker hosts + control-plane + orchestrator + postgres + forgejo + task-store-server + web-ui); Cell 2 adds DooD sibling containers on top. Memory/CPU pressure is the most likely flake source. **Mitigation:** `MAX_TOTAL=2` per experiment (Decision 6), reference (not LLM) workers, 25-minute timeout. If still flaky, split the lease chaos drill into a separate job (base cell goes required first; chaos drill is a follow-on job) — mirrors #147 risk 5's fallback.
+@@ -280,18 +289,20 @@
+ 
+ 4. **Subprocess stdout back-pressure across many containers.** AGENTS.md's `subprocess.PIPE` 64 KiB-buffer wedge: with ~13 containers each logging JSON per request, undrained pipes can wedge a service mid-handler and surface as a spurious `ReadTimeout`. **Mitigation:** the library's bring-up uses Compose-managed logging (no `subprocess.PIPE` in the smoke itself — Compose handles container stdout); the smoke reads state via wire calls, not piped stdout. This risk is mostly inherited-and-already-mitigated from the existing smokes' shape.
+ 
+-5. **Auth-disabled scope (Decision 4) — open question surfaced.** Whether to include any auth-disabled cell hinges on whether auth-disabled is a supported **deployment** posture or purely a test convenience. **This is the one decision worth operator/codex confirmation before wave 3.** Recommendation: drop entirely unless someone names a deployment that runs auth-off; if kept, minimal-startup-only (§3.4). The full multi-worker auth-disabled smoke is rejected under any reading (degenerate single-identity).
++5. **Auth-disabled scope (Decision 4) — open question surfaced for operator confirmation.** #183 drops the auth-disabled Compose cell (recommended): premise stale (#148), substrate cost high (§3.4), value weak. The one judgment the operator should confirm before finalizing is whether even a spun-out future issue is worth filing, or whether auth-disabled Compose coverage should be declared a permanent non-goal. Either way, no auth-disabled work lands in #183.
+ 
+-6. **Issue-boundary vs. duplication tension (Decision 2).** Codex-review may read the shared library as "refactoring CI substrate setup" (the issue's out-of-scope item) OR read per-cell scripts as duplication (the codebase's slop discipline). **Mitigation:** the plan resolves this explicitly — the library covers only the *new* multi-experiment family (born together, not a refactor of the protected existing 8). Surfaced here so the reviewer challenges the framing rather than missing it.
++6. **Silent-scripted-fallback on the exp-2 trio (§3.1.1).** The subtlest failure: if the exp-2 exec-mode mechanism is wired wrong, exp-B silently runs scripted while exp-A runs subprocess/docker, and the smoke still passes (both experiments quiesce) — so the cell *looks* green while testing nothing new. **Mitigation:** the wave-1 / wave-2 validation gates include a positive control asserting exp-B's host logs show the intended exec mode (subprocess JSON-line protocol / real DooD sibling), not in-process scripted. Without that control, the whole matrix-cell is a false-confidence trap.
+ 
+-7. **Matrix-doc staleness.** `ci-smoke-matrix.md` is only useful if kept current. **Mitigation:** the doc's own policy section states the rule (new exec mode / topology ⇒ new row); a lightweight CI check that every `compose-smoke-*` job appears in the matrix table is a sensible **follow-up** (file as issue — AGENTS-only guidance is weaker than a guardrail, per the codification discipline). Not in this chunk's scope, but the doc's policy section names it.
++7. **Issue-boundary vs. duplication tension (Decision 2).** Codex-review may read the shared library as "refactoring CI substrate setup" (the issue's out-of-scope item) OR read per-cell scripts as duplication (the codebase's slop discipline). **Mitigation:** the plan resolves this explicitly — the library covers only the *new* multi-experiment family (born together, not a refactor of the protected existing 8). Surfaced here so the reviewer challenges the framing rather than missing it.
+ 
++8. **Matrix-doc staleness.** `ci-smoke-matrix.md` is only useful if kept current. **Mitigation:** the doc's own policy section states the rule (new exec mode / topology ⇒ new row); a lightweight CI check that every `compose-smoke-*` job appears in the matrix table is a sensible **follow-up** (file as issue — AGENTS-only guidance is weaker than a guardrail, per the codification discipline). Not in this chunk's scope, but the doc's policy section names it.
++
+ ## 9. Migration / cleanup
+ 
+ Per AGENTS.md "No backwards-compatibility shims in greenfield / pre-external-user projects":
+ 
+-- **No retirements.** This plan is purely additive (new library + cells + jobs + doc). The only "migration" is the conditional wave-1 refactor of #147's `smoke-multi-experiment.sh` to source the shared library — that's a same-PR clean refactor, no shim, no deprecation window.
+-- *(Cell 3 only)* the `EDEN_AUTH_DISABLED` env knob defaults off; no v0/v1 split, no compat shim — auth stays on unless explicitly disabled.
++- **No retirements.** This plan is purely additive (new library + cells + jobs + doc, plus the exp-2 exec-mode mechanism). The only "migration" is the conditional wave-1 refactor of #147's `smoke-multi-experiment.sh` to source the shared library — that's a same-PR clean refactor, no shim, no deprecation window.
++- The exp-2 exec-mode mechanism (env-driven wrapper or fallback overlays, §3.1.1) defaults to matching exp-1's mode; existing single-experiment smokes never set `EDEN_EXEC_MODE_2`, so they're unaffected. No compat shim.
+ - **Substrate-audit discipline** (AGENTS.md "Substrate migrations need a same-PR audit") applies lightly: if wave 1 extracts the library from #147's monolith, grep for any reference to the old function/script shape and update in the same commit.
+ 
+ ## 10. Naming map
+@@ -302,10 +313,10 @@
+ |---|---|
+ | `smoke-subprocess-multi-experiment.sh` / `compose-smoke-subprocess-multi-experiment` | `smoke-<cell>.sh` / `compose-smoke-<cell>` (parallel to `smoke-subprocess-docker.sh` / `compose-smoke-subprocess-docker`) |
+ | `smoke-docker-multi-experiment.sh` / `compose-smoke-docker-multi-experiment` | same |
+-| `smoke-auth-disabled.sh` / `compose-smoke-auth-disabled` (conditional) | same |
+ | `lib/multi-experiment-common.sh` | sourced-library convention (new `lib/` subdir under `healthcheck/`) |
+ | `docs/operations/ci-smoke-matrix.md` | `docs/operations/<topic>.md` (parallel to `multi-orchestrator.md`, `dispatch-mode.md`) |
+-| `EDEN_AUTH_DISABLED` (conditional) | `EDEN_<SCREAMING_SNAKE>` env-var convention; boolean `=1` opt-in (parallel to `EDEN_ORCHESTRATOR_MULTI_EXPERIMENT` from #147) |
++| `EDEN_EXEC_MODE_2` (preferred §3.1.1 shape) | `EDEN_<SCREAMING_SNAKE>` env-var convention; per-experiment-2 `_2` suffix (parallel to `EDEN_EXPERIMENT_ID_2` from #147) |
++| `compose.multi-experiment.subprocess.yaml` / `compose.multi-experiment.docker.yaml` (fallback §3.1.1 shape) | `compose.<base>.<variant>.yaml` overlay-naming (parallel to `compose.subprocess.yaml` / `compose.docker-exec.yaml`) |
+ 
+ ## 11. Coordination with #147
+ 
+@@ -320,15 +331,15 @@
+ 
+ ## 12. Estimated effort
+ 
+-- **Wave 1** (library + Cell 1): ~2 days. Bulk is the library extraction + the subprocess-mode-specific assertions; the lease drill is inherited from #147.
+-- **Wave 2** (Cell 2 / DooD × multi): ~1.5 days. Structurally a thin wrapper, but the DooD × per-experiment-volume debugging (risk 3) is the wildcard — could surface a real #147-substrate bug that needs a fix.
+-- **Wave 3** (auth-disabled + docs): ~1 day (0.5 if Cell 3 is dropped).
++- **Wave 1** (exp-2 exec-mode mechanism + library + Cell 1): ~2.5 days. The exp-2 exec-mode work (§3.1.1) is the new cost the round-0 review surfaced — the env-driven wrapper (or fallback overlays) plus the positive-control assertion. Plus the library extraction + subprocess-mode assertions; the lease drill is inherited from #147.
++- **Wave 2** (Cell 2 / DooD × multi): ~1.5 days. The §3.1.1 mechanism is reused from wave 1, but the DooD × per-experiment-volume debugging (risk 3) is the wildcard — could surface a real #147-substrate bug that needs a fix.
++- **Wave 3** (docs): ~0.5 day.
+ - **Codex review + iteration:** ~1 day.
+ 
+-**Realistic total: ~4–5 working days**, plus the hard dependency on #147 having merged. Comparable to #147's own estimate; smaller per-cell because the substrate is inherited.
++**Realistic total: ~4.5–5.5 working days**, plus the hard dependency on #147 having merged. Comparable to #147's own estimate; the exec-mode-aware exp-2 trio is the main cost beyond pure smoke authoring.
+ 
+ ## 13. Why this is one plan, gated on #147
+ 
+-The three cells are sequential but bounded, and they all build on the same #147 substrate. Splitting into three plan-stage PRs would re-litigate the matrix strategy and the shared-library decision three times. One plan, one impl PR (three waves), one codex pass, one matrix-doc update. The load-bearing coupling is to #147, not between the cells — so the gating (Decision 1) is the real sequencing constraint, and within #183 the waves are cheap to land together.
++The two cells are sequential but bounded, and they share the exp-2 exec-mode mechanism (§3.1.1) + the same #147 substrate. Splitting into two plan-stage PRs would re-litigate the matrix strategy, the shared-library decision, and the exec-mode mechanism twice. One plan, one impl PR (three waves), one codex pass, one matrix-doc update. The load-bearing couplings are to #147 and to the wave-1 exec-mode mechanism — not between the cells per se — so the gating (Decision 1) plus wave 1 are the real sequencing constraints, and the waves are cheap to land together.
+ 
+-If wave 2's DooD debugging blows up beyond the §12 estimate, the right shape is to land waves 1 + 3 first (Cell 1 + docs + optional Cell 3) and sequence Cell 2 as its own follow-on PR. The plan stays the same; only the merge cadence changes.
++If wave 2's DooD debugging blows up beyond the §12 estimate, the right shape is to land wave 1 + wave 3 first (Cell 1 + the exec-mode mechanism + docs) and sequence Cell 2 (docker × multi) as its own follow-on PR — it reuses wave 1's mechanism, so the split is clean. The plan stays the same; only the merge cadence changes.

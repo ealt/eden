@@ -1,0 +1,138 @@
+--- docs/plans/review/issue-183/plan/20260601T200522/1.md	2026-06-01 21:09:49
++++ docs/plans/issue-183-cross-mode-ci-smoke-matrix.md	2026-06-01 21:13:32
+@@ -110,24 +110,29 @@
+ 
+ **Call ordering is load-bearing — the lease-handoff drill MUST run before quiescence, not after.** #147's chaos drill ([its plan §3.3 Phase 5](issue-147-compose-smoke-multi-experiment.md)) kills the lease holder *while work is still in flight*. If the library waited for quiescence first, the orchestrator would already have exited cleanly (it exits 0 when all held leases drain) and there would be **no held leases left to hand off** — the drill would assert against an empty lease table and silently stop testing the failure mode it exists for. The library therefore sequences `me_assert_two_leases → me_lease_handoff_drill → me_wait_quiescence`, and the wrapper examples below follow that order. The drill is responsible for ensuring there is still pending work when it kills the holder (the `MAX_TOTAL=2` cap leaves enough in-flight work that the kill lands before quiescence; if CI proves too fast, the drill gates on observing ≥1 still-`running` experiment before the kill).
+ 
+-#### 3.1.1 Making the exp-2 host trio exec-mode-aware
++#### 3.1.1 Making the exp-2 host trio exec-mode-aware — dedicated `-2` overlays, mirroring how exp-1 already works
+ 
+-Per Decision 1, the existing exec-mode overlays only patch the exp-1 trio, so the exp-2 trio needs its own exec-mode handling. Two shapes, in preference order:
++Per Decision 1, the existing exec-mode overlays only patch the exp-1 trio, so the exp-2 trio needs its own exec-mode handling. **The design is dedicated `-2`-trio overlays — symmetric with how exp-1's mode is already selected.** An earlier draft proposed an env-driven entrypoint wrapper (`EDEN_EXEC_MODE_2`) as the "preferred" shape; round-1 codex review correctly rejected it on two substrate facts:
+ 
+-- **Preferred — env-driven entrypoint wrapper on the `-2` trio (a #147 coordination item, §11).** #147 already introduces entrypoint wrappers for the orchestrator/web-ui to gate flags on env. Extend the same mechanism to the `-2` host trio: each `*-host-2` service invokes a wrapper that reads `EDEN_EXEC_MODE_2` (defaulting to match exp-1's mode) and assembles the host CLI with `--mode subprocess` / the DooD flags / scripted as appropriate. Then a matrix cell selects the exp-2 exec mode purely through `setup-experiment` (which stamps `EDEN_EXEC_MODE_2`), and **no extra overlay file is needed**. This keeps overlay-file count flat and is symmetric with how #147 already env-gates the orchestrator. Requires #147 to land the `-2` trio wrapper-driven (or #183 to add it in wave 1).
+-- **Fallback — thin `-2`-trio exec-mode overlays shipped by #183.** If the `-2` trio lands scripted-only and wrapper-retrofitting is undesirable, #183 ships `compose.multi-experiment.subprocess.yaml` (patches the three `*-host-2` `command:` blocks to subprocess mode) and `compose.multi-experiment.docker.yaml` (adds the DooD socket mount + `group_add` + `--mode docker` to the `-2` trio). Cells then layer e.g. `-f compose.yaml -f compose.subprocess.yaml -f compose.multi-experiment.yaml -f compose.multi-experiment.subprocess.yaml`. More overlay files, but clean layering and no #147 change beyond the base `-2` trio.
++- **There is no env-driven exec-mode model to extend.** Exp-1's mode is *not* one authoritative variable — it is overlay composition. Scripted ("host") mode is the base; subprocess mode is selected by layering [`compose.subprocess.yaml`](../../reference/compose/compose.subprocess.yaml) (which threads `--mode subprocess` into the host `command:`); docker mode layers `compose.subprocess.yaml` + [`compose.docker-exec.yaml`](../../reference/compose/compose.docker-exec.yaml). `setup-experiment` only accepts `--exec-mode {host,docker}` ([`setup-experiment.sh`](../../reference/scripts/setup-experiment/setup-experiment.sh)) — it has no `subprocess` value. A wrapper reading `EDEN_EXEC_MODE_2` would be inventing a three-state contract the rest of the substrate doesn't have.
++- **A wrapper cannot toggle the privileged docker-socket mount.** The codebase's deliberate security posture is that `/var/run/docker.sock` is mounted *only* in `compose.docker-exec.yaml` (stated in that overlay's header). A CLI-flag wrapper can't make a privileged volume mount + `group_add` appear and disappear — that is a compose-file concern by construction. DooD privilege must come from an overlay.
+ 
+-The wrapper examples in §3.2 / §3.3 assume the **preferred** env-driven shape (exec mode selected via `setup-experiment`, `OVERLAYS` carries only the base + exp-1 exec-mode overlay + multi-experiment overlay). Under the fallback shape, each cell's `OVERLAYS` array gains the corresponding `-2`-trio overlay. The choice is the first thing wave 1 settles with #147 (§11).
++**The design (no wrapper):** #183 ships two `-2`-trio overlays that mirror the existing exec-mode overlays, patching the `*-host-2` services that #147's `compose.multi-experiment.yaml` defines (scripted by default):
+ 
++| Overlay (new, #183) | Mirrors | Patches the `-2` trio to |
++|---|---|---|
++| `compose.multi-experiment.subprocess.yaml` | `compose.subprocess.yaml` | thread `--mode subprocess` into the `*-host-2` `command:` blocks |
++| `compose.multi-experiment.docker.yaml` | `compose.docker-exec.yaml` | add the DooD socket mount + `group_add` + DooD flags to the `*-host-2` services (layered ON TOP of the subprocess `-2` overlay, exactly as `compose.docker-exec.yaml` layers on `compose.subprocess.yaml`) |
++
++A matrix cell then layers the exp-1 exec-mode overlay(s) **and** the matching `-2` overlay(s) — full symmetry. The `setup-experiment --register-additional-experiment` provisioning (§3.2 inherited from #147) must stamp exp-2's exec-mode-specific env (e.g. `_2`-suffixed cidfiles dir for docker mode); §5 notes this. The only #147 dependency is that its `compose.multi-experiment.yaml` defines the base scripted `-2` trio these overlays patch — no wrapper retrofit needed. This is **strictly additive** (new overlay files), so it doesn't touch the privilege-isolation posture of the existing overlays.
++
+ ### 3.2 Cell 1 (primary) — `smoke-subprocess-multi-experiment.sh`
+ 
+ ```bash
+-# --exec-mode subprocess applies to BOTH trios: it threads compose.subprocess.yaml
+-# (exp-1 trio) AND stamps EDEN_EXEC_MODE_2=subprocess for the wrapper-driven exp-2
+-# trio (§3.1.1 preferred shape). Under the fallback shape, OVERLAYS also gains
+-# -f compose.multi-experiment.subprocess.yaml.
+-OVERLAYS=(-f compose.yaml -f compose.subprocess.yaml -f compose.multi-experiment.yaml)
+-SETUP_EXTRA_ARGS=(--exec-mode subprocess)
++# Subprocess mode for BOTH trios: compose.subprocess.yaml patches the exp-1 trio,
++# compose.multi-experiment.subprocess.yaml patches the exp-2 trio (§3.1.1).
++OVERLAYS=(-f compose.yaml -f compose.subprocess.yaml \
++          -f compose.multi-experiment.yaml -f compose.multi-experiment.subprocess.yaml)
+ SMOKE_NAME="subprocess-multi-experiment"
+ source "$(dirname "$0")/lib/multi-experiment-common.sh"
+ me_preflight; me_cleanup_volumes
+@@ -146,12 +151,14 @@
+ ### 3.3 Cell 2 (secondary) — `smoke-docker-multi-experiment.sh`
+ 
+ ```bash
+-# --exec-mode docker threads compose.docker-exec.yaml for the exp-1 trio AND
+-# stamps EDEN_EXEC_MODE_2=docker for the wrapper-driven exp-2 trio (§3.1.1).
+-# The exp-2 trio's wrapper must also receive the DooD socket mount + group_add —
+-# under the preferred shape that lives on the -2 services in compose.multi-experiment.yaml
+-# gated on EDEN_EXEC_MODE_2; under the fallback shape it's in compose.multi-experiment.docker.yaml.
+-OVERLAYS=(-f compose.yaml -f compose.subprocess.yaml -f compose.docker-exec.yaml -f compose.multi-experiment.yaml)
++# Docker (DooD) mode for BOTH trios. Exp-1: compose.subprocess.yaml + compose.docker-exec.yaml.
++# Exp-2: compose.multi-experiment.subprocess.yaml + compose.multi-experiment.docker.yaml
++# (the DooD socket mount + group_add for the -2 trio lives in the .docker overlay — a wrapper
++# can't toggle a privileged mount; §3.1.1). setup-experiment --exec-mode docker stamps the
++# shared + _2-suffixed exec env (exec image, cidfiles dir) for both experiments.
++OVERLAYS=(-f compose.yaml -f compose.subprocess.yaml -f compose.docker-exec.yaml \
++          -f compose.multi-experiment.yaml -f compose.multi-experiment.subprocess.yaml \
++          -f compose.multi-experiment.docker.yaml)
+ SETUP_EXTRA_ARGS=(--exec-mode docker)
+ SMOKE_NAME="docker-multi-experiment"
+ source "$(dirname "$0")/lib/multi-experiment-common.sh"
+@@ -197,7 +204,7 @@
+ 
+ **Code (reference impl):**
+ 
+-- **Make the exp-2 host trio exec-mode-aware (§3.1.1).** This is the one non-trivial impl item: the existing exec-mode overlays don't touch the `-2` trio (Decision 1). Preferred shape is an env-driven entrypoint wrapper on the `-2` services landed via #147 coordination (§11); fallback is `-2`-trio exec-mode overlays shipped by #183. **Cells 1 & 2 are therefore NOT pure overlay composition** — the `-2` trio's exec mode is real work.
++- **Two new `-2`-trio exec-mode overlays (§3.1.1):** `compose.multi-experiment.subprocess.yaml` and `compose.multi-experiment.docker.yaml`, mirroring `compose.subprocess.yaml` / `compose.docker-exec.yaml` for the `*-host-2` services. This is the one non-trivial impl item — the existing exec-mode overlays don't touch the `-2` trio (Decision 1), so **Cells 1 & 2 are NOT pure overlay composition**. Strictly additive (new overlay files); no wrapper, no change to the existing overlays' privilege posture.
+ 
+ **Smoke library + cells:**
+ 
+@@ -238,8 +245,9 @@
+ | `reference/compose/healthcheck/smoke-subprocess-multi-experiment.sh` (new) | Cell 1 wrapper (§3.2). |
+ | `reference/compose/healthcheck/smoke-docker-multi-experiment.sh` (new) | Cell 2 wrapper (§3.3). |
+ | `reference/compose/healthcheck/smoke-multi-experiment.sh` (#147's, refactor) | *(If #147 landed it as a monolith)* refactor to source the library (§3.1, §11). |
+-| exp-2 trio exec-mode handling (§3.1.1) | **Preferred:** env-driven entrypoint wrapper on `*-host-2` services (in #147's [`compose.multi-experiment.yaml`](issue-147-compose-smoke-multi-experiment.md) — #147 coordination, §11). **Fallback:** new `compose.multi-experiment.subprocess.yaml` + `compose.multi-experiment.docker.yaml` overlays shipped by #183. |
+-| [`reference/scripts/setup-experiment/setup-experiment.sh`](../../reference/scripts/setup-experiment/setup-experiment.sh) | Stamp `EDEN_EXEC_MODE_2` for the exp-2 trio under the preferred shape (so `--exec-mode` applies to both experiments). |
++| `reference/compose/compose.multi-experiment.subprocess.yaml` (new) | Patches the `*-host-2` `command:` blocks to `--mode subprocess` (mirrors `compose.subprocess.yaml`; §3.1.1). |
++| `reference/compose/compose.multi-experiment.docker.yaml` (new) | Adds the DooD socket mount + `group_add` + DooD flags to the `*-host-2` services (mirrors `compose.docker-exec.yaml`; §3.1.1). |
++| [`reference/scripts/setup-experiment/setup-experiment.sh`](../../reference/scripts/setup-experiment/setup-experiment.sh) | `--register-additional-experiment` (from #147) must also stamp exp-2's exec-mode-specific env (`_2`-suffixed cidfiles dir etc. for docker mode), so `--exec-mode docker` provisions both experiments. |
+ | [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) | 2 new `compose-smoke-*` jobs (§3.5). |
+ | `docs/operations/ci-smoke-matrix.md` (new) | The coverage-matrix doc + policy (§3.6). |
+ | [`docs/operations/README.md`](../operations/README.md) | Link the new matrix doc. |
+@@ -260,7 +268,7 @@
+ 
+ **Wave 1 — exp-2 exec-mode mechanism + shared library + Cell 1 (subprocess × multi).** *(Covers Decisions 1, 2, 6 + §3.1, §3.1.1, §3.2.)*
+ 
+-- **Settle the exp-2 trio exec-mode shape with #147 (§3.1.1, §11):** preferred env-driven wrapper landed in #147, or the fallback `-2`-trio overlays shipped here. This is the gating sub-step — Cell 1 can't drive exp-B in subprocess mode without it.
++- **Ship `compose.multi-experiment.subprocess.yaml` (§3.1.1)** patching the `*-host-2` trio to subprocess mode. This is the gating sub-step — Cell 1 can't drive exp-B in subprocess mode without it. (Confirm #147's `compose.multi-experiment.yaml` defines the base scripted `-2` trio this overlay patches; §11.)
+ - Extract / create `lib/multi-experiment-common.sh` (coordinated with #147's `smoke-multi-experiment.sh`; refactor it to source the library if it landed monolithic). Encode the load-bearing call order (drill mid-flight, before quiescence — §3.1).
+ - New `smoke-subprocess-multi-experiment.sh`.
+ - New `compose-smoke-subprocess-multi-experiment` CI job (unrequired).
+@@ -268,7 +276,7 @@
+ 
+ **Wave 2 — Cell 2 (docker-exec × multi).** *(Covers §3.3.)*
+ 
+-- New `smoke-docker-multi-experiment.sh` (sources the library + the orphan-container assertion from `smoke-subprocess-docker.sh`); exp-2 trio in docker mode via the §3.1.1 mechanism from wave 1.
++- New `compose.multi-experiment.docker.yaml` overlay (§3.1.1) + `smoke-docker-multi-experiment.sh` (sources the library + the orphan-container assertion from `smoke-subprocess-docker.sh`); reuses wave 1's `compose.multi-experiment.subprocess.yaml`.
+ - New `compose-smoke-docker-multi-experiment` CI job (unrequired).
+ - **Validation gate:** the cell passes; specifically asserts no orphan exec containers post-quiescence per experiment, that exp-B's spawns are real DooD siblings, and the per-experiment `_2`-suffixed DooD volumes resolve correctly (the `name:` trap). This is the wave most likely to surface a real #147-substrate bug — if it does, that bug is filed and fixed (root-cause, not worked around).
+ 
+@@ -302,7 +310,7 @@
+ Per AGENTS.md "No backwards-compatibility shims in greenfield / pre-external-user projects":
+ 
+ - **No retirements.** This plan is purely additive (new library + cells + jobs + doc, plus the exp-2 exec-mode mechanism). The only "migration" is the conditional wave-1 refactor of #147's `smoke-multi-experiment.sh` to source the shared library — that's a same-PR clean refactor, no shim, no deprecation window.
+-- The exp-2 exec-mode mechanism (env-driven wrapper or fallback overlays, §3.1.1) defaults to matching exp-1's mode; existing single-experiment smokes never set `EDEN_EXEC_MODE_2`, so they're unaffected. No compat shim.
++- The exp-2 exec-mode overlays (§3.1.1) are additive files layered only by the new cells; existing single-experiment smokes never reference them, so they're unaffected. No compat shim.
+ - **Substrate-audit discipline** (AGENTS.md "Substrate migrations need a same-PR audit") applies lightly: if wave 1 extracts the library from #147's monolith, grep for any reference to the old function/script shape and update in the same commit.
+ 
+ ## 10. Naming map
+@@ -315,20 +323,17 @@
+ | `smoke-docker-multi-experiment.sh` / `compose-smoke-docker-multi-experiment` | same |
+ | `lib/multi-experiment-common.sh` | sourced-library convention (new `lib/` subdir under `healthcheck/`) |
+ | `docs/operations/ci-smoke-matrix.md` | `docs/operations/<topic>.md` (parallel to `multi-orchestrator.md`, `dispatch-mode.md`) |
+-| `EDEN_EXEC_MODE_2` (preferred §3.1.1 shape) | `EDEN_<SCREAMING_SNAKE>` env-var convention; per-experiment-2 `_2` suffix (parallel to `EDEN_EXPERIMENT_ID_2` from #147) |
+-| `compose.multi-experiment.subprocess.yaml` / `compose.multi-experiment.docker.yaml` (fallback §3.1.1 shape) | `compose.<base>.<variant>.yaml` overlay-naming (parallel to `compose.subprocess.yaml` / `compose.docker-exec.yaml`) |
++| `compose.multi-experiment.subprocess.yaml` / `compose.multi-experiment.docker.yaml` (§3.1.1) | `compose.<base>.<variant>.yaml` overlay-naming (parallel to `compose.subprocess.yaml` / `compose.docker-exec.yaml`) |
+ 
+ ## 11. Coordination with #147
+ 
+-Issues #147 and #183 share the multi-experiment smoke surface. To avoid a #147→#183 refactor coupling, the **preferred** shape is:
++Issues #147 and #183 share the multi-experiment smoke surface. Two coordination points (both light — #183 ships its own exec-mode overlays, so it does **not** depend on #147 making the `-2` trio wrapper-driven):
+ 
+-- #147's impl lands the common multi-experiment smoke flow **already factored** into `reference/compose/healthcheck/lib/multi-experiment-common.sh`, with `smoke-multi-experiment.sh` as the first thin wrapper that sources it.
+-- #183 then adds cells as additional thin wrappers — zero refactor of #147's code.
++1. **Shared smoke library.** To avoid a #147→#183 refactor coupling, the preferred shape is that #147's impl lands the common multi-experiment smoke flow **already factored** into `reference/compose/healthcheck/lib/multi-experiment-common.sh`, with `smoke-multi-experiment.sh` as the first thin wrapper that sources it. Then #183 adds cells as additional thin wrappers — zero refactor of #147's code. If #147 lands it as a monolith, #183's wave 1 performs the extraction (Decision 2; risk 2). Either way the existing 8 single-experiment smokes are untouched.
++2. **Base scripted `-2` trio.** #183's `compose.multi-experiment.subprocess.yaml` / `.docker.yaml` overlays patch the `*-host-2` services #147's `compose.multi-experiment.yaml` defines. #183 only needs those services to exist in scripted form (#147's stated design); no #147 change is required for the exec-mode overlays to layer on top. If #147's `-2` service names or `command:` shapes differ from what this plan assumes, wave 1 reconciles the overlays to the as-landed shape.
+ 
+-If #147 has already landed (or lands first as a monolith), #183's wave 1 performs the extraction (Decision 2; risk 2). Either way the existing 8 single-experiment smokes are untouched.
++**Action:** when #147 enters impl, add a note to its plan / PR pointing at this section so the library shape (point 1) is landed up front. (Filed as a comment on #147 at plan-merge of #183.)
+ 
+-**Action:** when #147 enters impl, add a note to its plan / PR pointing at this section so the library shape is landed up front. (Filed as a comment on #147 at plan-merge of #183.)
+-
+ ## 12. Estimated effort
+ 
+ - **Wave 1** (exp-2 exec-mode mechanism + library + Cell 1): ~2.5 days. The exp-2 exec-mode work (§3.1.1) is the new cost the round-0 review surfaced — the env-driven wrapper (or fallback overlays) plus the positive-control assertion. Plus the library extraction + subprocess-mode assertions; the lease drill is inherited from #147.
