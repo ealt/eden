@@ -6,6 +6,7 @@ import argparse
 import importlib
 import re
 
+from eden_contracts import ExperimentConfig
 from eden_control_plane import ControlPlaneClient
 from eden_dispatch import (
     IdeationPolicy,
@@ -31,6 +32,7 @@ from eden_service_common import (
 from eden_wire import StoreClient
 from eden_wire.errors import Unauthorized
 
+from .baseline import ensure_baseline_variant
 from .control_plane_bootstrap import (
     bootstrap_control_plane_worker,
     ensure_orchestrators_group_membership,
@@ -376,6 +378,7 @@ def main(argv: list[str] | None = None) -> int:
         termination_policy = _resolve_termination_policy(args.termination_policy)
         return _run_multi_experiment(
             args=args,
+            config=config,
             ideation_policy=ideation_policy,
             termination_policy=termination_policy,
             stop=stop,
@@ -395,6 +398,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     return _run_single_experiment(
         args=args,
+        config=config,
         ideation_policy=ideation_policy,
         termination_policy=termination_policy,
         max_quiescent_iterations=max_quiescent_iterations,
@@ -441,6 +445,7 @@ def _warn_ignored_single_experiment_flags(
 def _run_single_experiment(
     *,
     args,  # noqa: ANN001 — argparse Namespace
+    config: ExperimentConfig,
     ideation_policy: IdeationPolicy,
     termination_policy: TerminationPolicy,
     max_quiescent_iterations: int,
@@ -490,36 +495,14 @@ def _run_single_experiment(
             repo=repo,
             author=_parse_author(args.integrator_author),
         )
-        if args.forgejo_url is not None:
-            # §D.7c: store-authoritative reconciliation of remote
-            # orphan variant/* refs at startup.
-            try:
-                deleted = integrator.reconcile_remote_orphans()
-                if deleted:
-                    log.info("reconciled_remote_orphans", count=len(deleted))
-            except Exception:
-                log.exception("reconcile_remote_orphans_failed")
-        # §3.8 step 3: auto-orchestrator joins the `orchestrators`
-        # group at startup so its worker bearer satisfies the §3.7
-        # authority gates on accept / reject / integrate /
-        # create_task(kind=execution|evaluation|ideation).
-        # Admin-gated (12a-1 §D.2); skipped when the admin token is
-        # not available (test posture or post-bootstrap restart).
-        if admin_token is not None:
-            try:
-                _ensure_orchestrators_membership(
-                    log=log,
-                    base_url=args.task_store_url,
-                    experiment_id=args.experiment_id,
-                    admin_token=admin_token,
-                    worker_id=args.worker_id,
-                )
-            except Exception:
-                log.exception(
-                    "ensure_orchestrators_membership_failed; "
-                    "auto-orchestrator may be unable to drive "
-                    "§3.7-gated routes"
-                )
+        _single_experiment_startup_reconcile(
+            args=args,
+            config=config,
+            client=client,
+            integrator=integrator,
+            admin_token=admin_token,
+            log=log,
+        )
         run_orchestrator_loop(
             store=client,
             integrator=integrator,
@@ -537,9 +520,59 @@ def _run_single_experiment(
     return 0
 
 
+def _single_experiment_startup_reconcile(
+    *,
+    args,  # noqa: ANN001 — argparse Namespace
+    config: ExperimentConfig,
+    client: StoreClient,
+    integrator: Integrator,
+    admin_token: str | None,
+    log,  # noqa: ANN001 — _CtxAdapter
+) -> None:
+    """Run the single-experiment pre-loop startup steps.
+
+    Three steps, in order: (1) §D.7c store-authoritative reconciliation of
+    remote orphan ``variant/*`` refs (only when a forgejo remote is wired);
+    (2) §3.8 step 3 auto-orchestrator join of the ``orchestrators`` group so
+    its worker bearer satisfies the §3.7 authority gates (admin-gated;
+    skipped when no admin token); (3) §9.4 seed-baseline creation, AFTER the
+    group join so the bearer satisfies the per-kind create authority
+    (07-wire-protocol.md §4).
+    """
+    if args.forgejo_url is not None:
+        try:
+            deleted = integrator.reconcile_remote_orphans()
+            if deleted:
+                log.info("reconciled_remote_orphans", count=len(deleted))
+        except Exception:
+            log.exception("reconcile_remote_orphans_failed")
+    if admin_token is not None:
+        try:
+            _ensure_orchestrators_membership(
+                log=log,
+                base_url=args.task_store_url,
+                experiment_id=args.experiment_id,
+                admin_token=admin_token,
+                worker_id=args.worker_id,
+            )
+        except Exception:
+            log.exception(
+                "ensure_orchestrators_membership_failed; "
+                "auto-orchestrator may be unable to drive §3.7-gated routes"
+            )
+    # Idempotent by verified read-back; default-on (suppressed by
+    # baseline.enabled: false).
+    ensure_baseline_variant(
+        store=client,
+        config=config,
+        experiment_id=args.experiment_id,
+    )
+
+
 def _run_multi_experiment(
     *,
     args,  # noqa: ANN001 — argparse Namespace
+    config: ExperimentConfig,
     ideation_policy: IdeationPolicy,
     termination_policy: TerminationPolicy,
     stop: StopFlag,
@@ -600,6 +633,7 @@ def _run_multi_experiment(
             termination_policy=termination_policy,
             poll_interval=args.poll_interval,
             stop=stop,
+            config=config,
         )
     finally:
         _finalize_orchestrator(manager=manager, cp_client=cp_client, log=log)

@@ -586,14 +586,18 @@ def _read_artifact_manifest(
 
 
 def read_idea_content(
-    idea: Idea, artifacts_dir: Path
+    idea: Idea | None, artifacts_dir: Path
 ) -> str | None:
     """Return the content text iff the artifact is safely confined.
 
     For ``.tar.gz`` bundles, returns the ``content.md`` headline entry
     if present; otherwise ``None`` (the manifest table still
-    renders, supplied by :func:`read_idea_manifest`).
+    renders, supplied by :func:`read_idea_manifest`). ``idea`` is ``None``
+    for a ``kind == "baseline"`` variant (no producing idea, 02-data-model.md
+    §9.4), in which case there is no idea content to read.
     """
+    if idea is None:
+        return None
     return _read_inline_artifact(
         idea.artifacts_uri,
         artifacts_dir,
@@ -602,9 +606,13 @@ def read_idea_content(
 
 
 def read_idea_manifest(
-    idea: Idea, artifacts_dir: Path
+    idea: Idea | None, artifacts_dir: Path
 ) -> dict | None:
-    """Return the manifest dict iff the idea's artifact is a bundle."""
+    """Return the manifest dict iff the idea's artifact is a bundle.
+
+    ``None`` when there is no idea (a baseline variant, §9.4)."""
+    if idea is None:
+        return None
     return _read_artifact_manifest(idea.artifacts_uri, artifacts_dir)
 
 

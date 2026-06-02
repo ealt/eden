@@ -15,6 +15,7 @@ from eden_contracts import (
     REGISTERED_EVENT_TYPES,
     EvaluationSchema,
     Event,
+    Experiment,
     ExperimentConfig,
     Group,
     Idea,
@@ -43,6 +44,9 @@ def _dump_event(data: Any) -> Any:
 
 _MODEL_DUMPERS = {
     "experiment-config": lambda d: ExperimentConfig.model_validate(d).model_dump(
+        mode="json", exclude_none=True
+    ),
+    "experiment": lambda d: Experiment.model_validate(d).model_dump(
         mode="json", exclude_none=True
     ),
     "task": lambda d: TaskAdapter.dump_python(

@@ -26,27 +26,72 @@ class _VariantOpsMixin(_StoreCore):
             return [_deep(t) for t in self._iter_variants(status=status)]
 
     def create_variant(self, variant: Variant) -> None:
-        """Persist a new variant in ``starting``. Emits ``variant.started``."""
+        """Persist a new variant. Emits ``variant.started`` (``08-storage.md`` §1.7).
+
+        An ordinary variant MUST be created in ``starting``. A
+        ``kind == "baseline"`` variant (``02-data-model.md`` §9.4) relaxes
+        this: it MAY be created directly in ``success`` carrying its
+        ``evaluation`` payload (the override path, §2.7), in which case the
+        store validates the metrics against the experiment's
+        ``evaluation_schema`` at create time and emits ``variant.started``
+        **then** ``variant.succeeded`` atomically in the one transaction
+        (``05-event-protocol.md`` §3.3). Per-``kind`` create authority
+        (``orchestrators`` group for baselines) is a binding-layer concern
+        enforced at the wire (``07-wire-protocol.md`` §4), not here.
+        """
         with self._atomic_operation():
             if self._get_variant(variant.variant_id) is not None:
                 raise AlreadyExists(f"variant {variant.variant_id!r}")
-            if variant.status != "starting":
-                raise InvalidPrecondition(
-                    f"new variant must start in 'starting', not {variant.status!r}"
-                )
             if variant.experiment_id != self._experiment_id:
                 raise InvalidPrecondition(
                     f"variant experiment_id {variant.experiment_id!r} "
                     f"does not match store experiment {self._experiment_id!r}"
                 )
+            is_baseline = variant.kind == "baseline"
+            direct_success = is_baseline and variant.status == "success"
+            if variant.status != "starting" and not direct_success:
+                hint = (
+                    " (a baseline MAY be created directly in 'success')"
+                    if is_baseline
+                    else ""
+                )
+                raise InvalidPrecondition(
+                    f"new variant must start in 'starting'{hint}, "
+                    f"not {variant.status!r}"
+                )
+            if direct_success:
+                if variant.evaluation is None:
+                    raise InvalidPrecondition(
+                        "a baseline created directly in 'success' must carry "
+                        "evaluation metrics"
+                    )
+                if variant.commit_sha is None:
+                    raise InvalidPrecondition(
+                        "a baseline created directly in 'success' must carry commit_sha"
+                    )
+                # Apply the §9.2 evaluation-schema check at create time,
+                # mirroring evaluation-submission acceptance.
+                self._validate_evaluation(variant.evaluation)
             tx = _Tx()
             tx.variants[variant.variant_id] = _deep(variant)
-            tx.events.append(
-                self._event(
-                    "variant.started",
-                    {"variant_id": variant.variant_id, "idea_id": variant.idea_id},
+            started_data: dict[str, str] = {"variant_id": variant.variant_id}
+            if is_baseline:
+                # kind is REQUIRED on a baseline variant.started so event-only
+                # subscribers get an explicit signal (05-event-protocol.md §3.3).
+                started_data["kind"] = "baseline"
+            if variant.idea_id is not None:
+                started_data["idea_id"] = variant.idea_id
+            tx.events.append(self._event("variant.started", started_data))
+            if direct_success:
+                tx.events.append(
+                    self._event(
+                        "variant.succeeded",
+                        {
+                            "variant_id": variant.variant_id,
+                            "commit_sha": variant.commit_sha,
+                        },
+                    )
                 )
-            )
             self._apply_commit(tx)
 
     def declare_variant_evaluation_error(self, variant_id: str) -> None:
@@ -93,6 +138,11 @@ class _VariantOpsMixin(_StoreCore):
         """
         with self._atomic_operation():
             variant = self._require_variant(variant_id)
+            if variant.kind == "baseline":
+                raise InvalidPrecondition(
+                    f"variant {variant_id!r} is a baseline and is never integrated "
+                    "(02-data-model.md §9.4, 06-integrator.md §2)"
+                )
             if variant.status != "success":
                 raise InvalidPrecondition(
                     f"variant {variant_id!r} must be in 'success' to integrate, "

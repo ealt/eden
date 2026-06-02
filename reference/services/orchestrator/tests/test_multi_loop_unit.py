@@ -20,7 +20,15 @@ from typing import Any
 
 import httpx
 import pytest
-from eden_contracts import DispatchMode, Experiment, Variant
+from eden_contracts import (
+    BaselineConfig,
+    DispatchMode,
+    EvaluationSchema,
+    Experiment,
+    ExperimentConfig,
+    ObjectiveSpec,
+    Variant,
+)
 from eden_control_plane import ControlPlaneClient
 from eden_orchestrator.lease_manager import LeaseManager
 from eden_orchestrator.multi_loop import (
@@ -31,6 +39,16 @@ from eden_service_common import StopFlag
 
 BASE_URL = "http://control-plane.test"
 WORKER_ID = "auto-orchestrator-1"
+
+# These tests exercise lease / iteration / drain logic, not baseline
+# creation, so suppress the baseline (baseline.enabled: false) — keeps the
+# mocked runtimes free of an ensure_baseline_variant side effect.
+_CONFIG = ExperimentConfig(
+    parallel_variants=1,
+    evaluation_schema=EvaluationSchema({"score": "real"}),
+    objective=ObjectiveSpec(expr="score", direction="maximize"),
+    baseline=BaselineConfig(enabled=False),
+)
 
 
 def _lease_payload(
@@ -247,6 +265,7 @@ def test_loop_runs_iteration_for_each_held_experiment(
         termination_policy=lambda *_a, **_kw: None,  # type: ignore[arg-type]
         poll_interval=0.0,
         stop=stop,
+        config=_CONFIG,
     )
 
     seen_experiments = {s.experiment_id for s in patched_iteration}
@@ -309,6 +328,7 @@ def test_loop_tears_down_runtime_when_lease_drops(
         termination_policy=lambda *_a, **_kw: None,  # type: ignore[arg-type]
         poll_interval=0.0,
         stop=stop,
+        config=_CONFIG,
     )
 
     # After two iterations: lease dropped on the second renew, the
@@ -346,6 +366,7 @@ def test_release_after_drain_fires_on_terminated_experiment(
         termination_policy=lambda *_a, **_kw: None,  # type: ignore[arg-type]
         poll_interval=0.0,
         stop=stop,
+        config=_CONFIG,
     )
 
     assert "exp-1" in manager.drained_terminated()
@@ -389,6 +410,7 @@ def test_release_after_drain_holds_until_pending_success_has_sha(
         termination_policy=lambda *_a, **_kw: None,  # type: ignore[arg-type]
         poll_interval=0.0,
         stop=stop,
+        config=_CONFIG,
     )
 
     # Lease is still held because the drain has not completed.
@@ -441,6 +463,7 @@ def test_loop_skips_experiment_we_dont_hold_lease_for(
         termination_policy=lambda *_a, **_kw: None,  # type: ignore[arg-type]
         poll_interval=0.0,
         stop=stop,
+        config=_CONFIG,
     )
 
     assert factory_calls == []
@@ -497,6 +520,7 @@ def test_factory_failure_releases_lease(
         termination_policy=lambda *_a, **_kw: None,  # type: ignore[arg-type]
         poll_interval=0.0,
         stop=stop,
+        config=_CONFIG,
     )
 
     # The lease was released (NOT held to expiry) AND not added to

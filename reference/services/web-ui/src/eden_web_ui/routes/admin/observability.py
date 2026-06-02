@@ -285,6 +285,7 @@ async def variants_index(request: Request) -> HTMLResponse | RedirectResponse:
     for tr in variants:
         orphaned = (
             tr.status == "starting"
+            and tr.idea_id is not None
             and exec_terminal_by_idea.get(tr.idea_id, False)
         )
         rows.append(
@@ -331,7 +332,13 @@ async def variant_detail(
 
     try:
         variant = store.read_variant(variant_id)
-        idea = store.read_idea(variant.idea_id)
+        # A kind == "baseline" variant has no producing idea (02-data-model.md
+        # §9.4); render it with no idea panel rather than looking up None.
+        idea = (
+            store.read_idea(variant.idea_id)
+            if variant.idea_id is not None
+            else None
+        )
         events_full = store.replay()
         exec_tasks = store.list_tasks(kind="execution")
         eval_tasks = store.list_tasks(kind="evaluation")
@@ -375,7 +382,7 @@ def _events_for_variant(
     events_full: list[Event],
     *,
     variant_id: str,
-    idea_id: str,
+    idea_id: str | None,
     exec_tasks: list[Any],
     eval_tasks: list[Any],
 ) -> tuple[list[Event], int]:
@@ -477,6 +484,10 @@ async def ideas_index(request: Request) -> HTMLResponse | RedirectResponse:
 
     variant_count_by_idea: dict[str, int] = {}
     for v in variants:
+        # A kind == "baseline" variant has no producing idea (02-data-model.md
+        # §9.4), so it contributes to no per-idea count.
+        if v.idea_id is None:
+            continue
         variant_count_by_idea[v.idea_id] = (
             variant_count_by_idea.get(v.idea_id, 0) + 1
         )

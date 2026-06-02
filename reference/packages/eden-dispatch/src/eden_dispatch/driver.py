@@ -493,6 +493,13 @@ def _integrate_successful_variants(
     for variant in store.list_variants(status="success"):
         if variant.variant_commit_sha is not None:
             continue
+        # A kind == "baseline" variant is never integrated (02-data-model.md
+        # §9.4, 06-integrator.md §2): it has no work/* branch and already
+        # points at the seed on main. Skipping it here is the load-bearing
+        # half of the §2.5 termination-drain carve — without it a successful
+        # baseline blocks termination forever.
+        if variant.kind == "baseline":
+            continue
         try:
             integrate_variant(variant.variant_id)
         except Exception:  # noqa: BLE001 — deliberately broad

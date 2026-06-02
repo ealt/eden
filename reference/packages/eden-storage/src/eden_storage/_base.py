@@ -173,6 +173,12 @@ class _Tx:
     # creation" state). The wrapper sidesteps the
     # absent-vs-explicit-null ambiguity at the staging layer.
     imported_from_update: tuple[ImportProvenance | None] | None = None
+    # Baseline-variant seed (`02-data-model.md` §2.5, §9.4). Same
+    # two-state one-tuple semantics as ``imported_from_update``: ``None``
+    # means "no base_commit_sha write this commit"; a one-tuple wraps the
+    # value to write (the inner value MAY be ``None``). Staged on
+    # checkpoint import so the field round-trips (`10-checkpoints.md` §5).
+    base_commit_sha_update: tuple[str | None] | None = None
 
 
 
@@ -222,9 +228,18 @@ class _StoreCore:
         now: Callable[[], datetime] | None = None,
         event_id_factory: Callable[[], str] | None = None,
         tree_resolver: Callable[[str], str | None] | None = None,
+        base_commit_sha: str | None = None,
     ) -> None:
         self._experiment_id = experiment_id
         self._evaluation_schema = evaluation_schema
+        # Experiment seed commit (`02-data-model.md` §2.5). Recorded at
+        # construction for natively-created experiments; the orchestrator
+        # reads it via ``read_experiment`` to create the baseline variant
+        # (§9.4). ``None`` when the deployment did not supply a seed (e.g.
+        # a pre-field experiment); such experiments never acquire a
+        # baseline. Persistent backends store it at experiment init and
+        # this attribute mirrors the persisted value.
+        self._base_commit_sha = base_commit_sha
         self._now = now or (lambda: datetime.now(UTC))
         self._event_ids = itertools.count(1)
         self._event_id_factory = event_id_factory or self._default_event_id

@@ -32,10 +32,12 @@ def _read_experiment(deps: RouterDeps):
 
         Either-auth (any registered worker MAY read, parallel to the
         §2.9 ``GET /state`` companion read). Returns ``state`` +
-        ``created_at`` + ``imported_from`` per
+        ``created_at`` + ``base_commit_sha`` + ``imported_from`` per
         ``spec/v0/schemas/experiment.schema.json``; the ``imported_from``
         field is the recovery-probe anchor for the lost-import-response
-        case in chapter 10 §10. The orchestrator's per-iteration
+        case in chapter 10 §10. ``base_commit_sha`` (the seed commit,
+        chapter 2 §2.5) lets the orchestrator create the baseline variant
+        (§9.4). The orchestrator's per-iteration
         ``ExperimentStateView.experiment_created_at`` is the other
         consumer; restricting this surface to admin-only would 403 the
         orchestrator's worker bearer and break the dispatch loop (caught
@@ -46,8 +48,15 @@ def _read_experiment(deps: RouterDeps):
         # Auth middleware (when admin_token is set) has already
         # authenticated the principal; either-auth means we accept any
         # registered principal class. No additional gate here.
-        return deps.store.read_experiment().model_dump(
+        # exclude_none=False keeps `imported_from: null` on the wire (its
+        # schema's oneOf permits explicit null — the recovery probe relies
+        # on it). base_commit_sha's schema is `type: string` (no null), so
+        # it MUST be omitted rather than serialized as null when absent.
+        body = deps.store.read_experiment().model_dump(
             mode="json", exclude_none=False
         )
+        if body.get("base_commit_sha") is None:
+            body.pop("base_commit_sha", None)
+        return body
 
     return read_experiment

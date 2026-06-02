@@ -5,7 +5,7 @@ Mirrors ``spec/v0/schemas/experiment-config.schema.json``.
 
 from __future__ import annotations
 
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import (
     BaseModel,
@@ -189,6 +189,39 @@ class ObjectiveSpec(BaseModel):
     direction: Direction
 
 
+class BaselineConfig(BaseModel):
+    """Baseline-variant block (``02-data-model.md`` §2.7).
+
+    Controls whether the experiment seed is elevated to a first-class
+    ``kind == "baseline"`` variant (``02-data-model.md`` §9.4). An absent
+    block is equivalent to ``{enabled: true}`` (default-on, real
+    evaluation); the default-on interpretation lives in the orchestrator's
+    ``ensure_baseline_variant``, not in this model's defaults (so
+    ``model_dump(exclude_none=True)`` round-trips an absent ``enabled`` as
+    absent for schema parity). When ``metrics`` is present the orchestrator
+    creates the baseline directly in ``success`` carrying those metrics and
+    skips evaluation dispatch; the metrics MUST validate against
+    ``evaluation_schema`` at runtime (the same per-experiment limitation as
+    ``variant.evaluation`` — §9.2).
+    """
+
+    model_config = ConfigDict(strict=True, extra="allow")
+
+    enabled: Annotated[bool | None, NotNone] = None
+    metrics: Annotated[dict[str, Any] | None, NotNone] = None
+
+    @model_validator(mode="after")
+    def _no_metrics_when_disabled(self) -> BaselineConfig:
+        # Mirrors the experiment-config.schema.json baseline.allOf-if-then:
+        # supplying metrics while enabled is false is a config error
+        # (suppressing a baseline while supplying its metrics).
+        if self.enabled is False and self.metrics is not None:
+            raise ValueError(
+                "baseline.metrics MUST NOT be supplied when baseline.enabled is false"
+            )
+        return self
+
+
 class ExperimentConfig(BaseModel):
     """Declarative experiment input.
 
@@ -224,6 +257,7 @@ class ExperimentConfig(BaseModel):
     dispatch_mode: Annotated[DispatchMode | None, NotNone] = None
     ideation_policy: Annotated[IdeationPolicyConfig | None, NotNone] = None
     termination_policy: Annotated[TerminationPolicyConfig | None, NotNone] = None
+    baseline: Annotated[BaselineConfig | None, NotNone] = None
     max_quiescent_iterations: Annotated[int | None, NotNone, Field(ge=2)] = None
     ideation_task_deadline: Annotated[float | None, NotNone, Field(gt=0)] = None
     execution_task_deadline: Annotated[float | None, NotNone, Field(gt=0)] = None

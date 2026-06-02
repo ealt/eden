@@ -291,7 +291,13 @@ async def draft_form(
     assert config is not None  # need_config=True populates it
     try:
         variant = store.read_variant(variant_id)
-        idea: Idea = store.read_idea(variant.idea_id)
+        # A kind == "baseline" variant has no producing idea (02-data-model.md
+        # §9.4); evaluate it with no idea panel rather than reading None.
+        idea: Idea | None = (
+            store.read_idea(variant.idea_id)
+            if variant.idea_id is not None
+            else None
+        )
     except DispatchError as exc:
         return _render_error(request, wire_error_banner(exc))
     except Exception as exc:  # noqa: BLE001 — transport-shaped via StoreClient
@@ -337,7 +343,7 @@ def _finalize_evaluator_submit(
     session: Any,
     task_id: str,
     variant: Variant,
-    idea: Idea,
+    idea: Idea | None,
     variant_id: str,
     draft: Any,
     submission: EvaluationSubmission,
@@ -420,7 +426,13 @@ async def submit(
         return mismatch
     try:
         variant = store.read_variant(variant_id)
-        idea: Idea = store.read_idea(variant.idea_id)
+        # A kind == "baseline" variant has no producing idea (02-data-model.md
+        # §9.4); evaluate it with no idea panel rather than reading None.
+        idea: Idea | None = (
+            store.read_idea(variant.idea_id)
+            if variant.idea_id is not None
+            else None
+        )
     except DispatchError as exc:
         return _render_error(request, wire_error_banner(exc))
     except Exception as exc:  # noqa: BLE001 — transport-shaped via StoreClient
@@ -608,7 +620,7 @@ def _build_and_submit_evaluation(
     task_id: str,
     token: str,
     variant: Variant,
-    idea: Idea,
+    idea: Idea | None,
     variant_id: str,
     draft: Any,
     form_state: dict[str, Any],
@@ -663,7 +675,7 @@ def _render_draft(
     session: Any,
     task_id: str,
     variant: Variant,
-    idea: Idea,
+    idea: Idea | None,
     form_state: dict[str, Any],
     errors: Any,
     status_code: int,

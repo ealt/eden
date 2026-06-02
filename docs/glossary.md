@@ -78,6 +78,7 @@ workers may claim the same kind of task.
 | **experiment** | A single directed-evolution run (id + config + starting commit) | [`01`](../spec/v0/01-concepts.md) §1 / [`02`](../spec/v0/02-data-model.md) |
 | **idea** | The ideator's output: a description of a change to attempt + dispatch metadata | [`01`](../spec/v0/01-concepts.md) §3 / [`schemas/idea.schema.json`](../spec/v0/schemas/idea.schema.json) |
 | **variant** | One attempt to improve the objective; references the idea, commits, evaluation, and status | [`01`](../spec/v0/01-concepts.md) §4 / [`schemas/variant.schema.json`](../spec/v0/schemas/variant.schema.json) |
+| **baseline variant** | The experiment seed (`commit_sha == base_commit_sha`, §6) elevated to a first-class `kind == "baseline"` variant so it can be scored and compared like any other. Default-on (suppressed by `baseline.enabled: false`); `idea_id` MAY be absent; never integrated; does not block termination. | [`02-data-model.md`](../spec/v0/02-data-model.md) §9.4 |
 | **task** | A unit of work dispatched to a worker (kind, payload, state, claim) | [`01`](../spec/v0/01-concepts.md) §5 / [`schemas/task.schema.json`](../spec/v0/schemas/task.schema.json) |
 | **event** | An immutable record of a state change, appended to the event log | [`01`](../spec/v0/01-concepts.md) §6 / [`schemas/event.schema.json`](../spec/v0/schemas/event.schema.json) |
 | **submission** | The role-specific payload a worker hands back when completing a task. Three shapes: `IdeaSubmission`, `VariantSubmission`, `EvaluationSubmission`. | [`03-roles.md`](../spec/v0/03-roles.md) §§2.4 / 3.4 / 4.4 |
@@ -97,7 +98,8 @@ workers may claim the same kind of task.
 | **priority** | Per-idea ordering hint (number; "higher dispatches earlier" — currently SHOULD-level, not enforced). |
 | **parent_commits** | One or more commit SHAs an idea/variant is based on. |
 | **artifacts_uri** | URI pointing at idea-content or evaluator artifacts (typically `file://` in the reference impl). |
-| **kind** | A task's role-routing label (`ideation` / `execution` / `evaluation`). |
+| **task kind** | A task's role-routing label (`ideation` / `execution` / `evaluation`); discriminates which role contract claims it (§3.2). The bare term "kind" on a `Task` means this. |
+| **variant kind** | A variant's optional classifier on `Variant.kind`. Absent (the default) for ordinary executor-produced variants; `"baseline"` marks the seed baseline variant (`02-data-model.md` §9.4). Distinct from *task kind* — same field name, different entity. |
 | **payload** | A task's role-specific inner content. |
 | **commit_sha** | The worker's tip commit on its `work/*` branch (set on the variant when the executor submits). |
 | **variant_commit_sha** | The squashed-and-integrated commit on `variant/*` (set by the integrator). |
@@ -202,7 +204,7 @@ EDEN maintains three branch namespaces in the experiment's git repo:
 
 | Term | What it is |
 |---|---|
-| **seed commit** / **base commit** | The single commit on `main` at experiment start. Captured as `EDEN_BASE_COMMIT_SHA` in deployment env. |
+| **seed commit** / **base commit** | The single commit on `main` at experiment start. Captured as `EDEN_BASE_COMMIT_SHA` in deployment env and recorded on the experiment runtime object as `base_commit_sha` (`02-data-model.md` §2.5), which the orchestrator reads to create the *baseline variant* (§3, `02-data-model.md` §9.4). |
 | **work branch** | A branch in the `work/*` namespace (`work/<variant_id>-<slug>` in the reference impl); records what the executor *wrote* — the executor's tip commit, including any intermediate work commits. Set on the variant at create time as `variant.branch`. |
 | **variant branch** | A branch in the `variant/*` namespace (`variant/<variant_id>-<slug>`, spec ch06 §3.2); records the integrator-produced *squash* of the work branch — one commit per successfully integrated variant, with the evaluation manifest attached. Spec-authoritative naming. |
 | **evaluation manifest** | A JSON file at `.eden/variants/<variant_id>/evaluation.json` in the `variant/*` commit's tree, containing the evaluator's evaluation. Spec-authoritative path. |

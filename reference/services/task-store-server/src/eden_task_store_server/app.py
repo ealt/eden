@@ -77,6 +77,7 @@ def build_store(
     experiment_id: str,
     config: ExperimentConfig,
     repo_path: str | Path | None = None,
+    base_commit_sha: str | None = None,
 ) -> Store:
     """Open a ``Store`` backend selected by URL scheme.
 
@@ -103,6 +104,7 @@ def build_store(
             experiment_id=experiment_id,
             evaluation_schema=config.evaluation_schema,
             tree_resolver=tree_resolver,
+            base_commit_sha=base_commit_sha,
         )
     if store_url.startswith("postgresql://") or store_url.startswith("postgres://"):
         return PostgresStore(
@@ -110,6 +112,7 @@ def build_store(
             dsn=store_url,
             evaluation_schema=config.evaluation_schema,
             tree_resolver=tree_resolver,
+            base_commit_sha=base_commit_sha,
         )
     if store_url.startswith("sqlite:///"):
         path = store_url[len("sqlite:///") :]
@@ -121,6 +124,7 @@ def build_store(
         path=path,
         evaluation_schema=config.evaluation_schema,
         tree_resolver=tree_resolver,
+        base_commit_sha=base_commit_sha,
     )
 
 

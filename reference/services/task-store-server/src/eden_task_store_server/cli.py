@@ -91,6 +91,19 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--base-commit-sha",
+        default=os.environ.get("EDEN_BASE_COMMIT_SHA"),
+        help=(
+            "The experiment seed commit on main (02-data-model.md §2.5). "
+            "Recorded on the experiment object at first creation so the "
+            "orchestrator can elevate the seed to a kind=='baseline' variant "
+            "(§9.4). Defaults to the EDEN_BASE_COMMIT_SHA environment variable. "
+            "Consulted only at first experiment-row creation; a reopen keeps "
+            "the persisted value. When unset, the experiment carries no seed "
+            "and never acquires a baseline."
+        ),
+    )
+    parser.add_argument(
         "--admin-token",
         default=None,
         help=(
@@ -191,6 +204,22 @@ class _ListeningAnnouncer:
         t.start()
 
 
+def _resolve_store_url(args: argparse.Namespace, log: Any) -> str:
+    """Resolve the store URL from ``--store-url`` / the deprecated ``--db-path``.
+
+    Exactly one MUST be supplied; passing both (or neither) is a hard error.
+    """
+    if args.store_url is None and args.db_path is None:
+        raise SystemExit("--store-url is required (or pass --db-path).")
+    if args.store_url is not None and args.db_path is not None:
+        raise SystemExit("Pass either --store-url or --db-path, not both.")
+    if args.store_url is None:
+        log.warning("--db-path is deprecated; use --store-url instead")
+        assert args.db_path is not None  # guarded by the SystemExit checks above
+        return str(args.db_path)
+    return str(args.store_url)
+
+
 def main(argv: list[str] | None = None) -> int:
     """Entry point for ``python -m eden_task_store_server``."""
     args = parse_args(argv)
@@ -201,26 +230,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     log = get_logger(__name__)
     config = load_experiment_config(args.experiment_config)
-    if args.store_url is None and args.db_path is None:
-        raise SystemExit("--store-url is required (or pass --db-path).")
-    if args.store_url is not None and args.db_path is not None:
-        raise SystemExit(
-            "Pass either --store-url or --db-path, not both."
-        )
-    store_url: str
-    if args.store_url is None:
-        log.warning(
-            "--db-path is deprecated; use --store-url instead",
-        )
-        assert args.db_path is not None  # guarded by the SystemExit checks above
-        store_url = args.db_path
-    else:
-        store_url = args.store_url
+    store_url = _resolve_store_url(args, log)
     store = build_store(
         store_url=store_url,
         experiment_id=args.experiment_id,
         config=config,
         repo_path=args.repo_path,
+        base_commit_sha=args.base_commit_sha or None,
     )
     try:
         # 12a-1f: provision the eden_readonly Postgres role if a

@@ -102,9 +102,20 @@ def build_experiment_state_view(store: Store) -> ExperimentStateView:
         1 for t in all_ideation if t.state in _LIVE_TASK_STATES
     )
     total_ideation = len(all_ideation)
-    running_variants = len(store.list_variants(status="starting"))
+    # A kind == "baseline" variant (02-data-model.md §9.4) is the seed
+    # elevated to a variant — not an executor-produced candidate. It MUST
+    # NOT consume the parallel_variants in-flight budget (running) nor the
+    # max_variants attempt budget (attempted); both stock counts therefore
+    # exclude baselines so the baseline is invisible to those termination
+    # policies (§D.6). It legitimately occupies one evaluation slot on the
+    # default path — that is intended and not part of the candidate bound.
+    running_variants = sum(
+        1
+        for v in store.list_variants(status="starting")
+        if v.kind != "baseline"
+    )
     all_variants = store.list_variants()
-    attempted_variants = len(all_variants)
+    attempted_variants = sum(1 for v in all_variants if v.kind != "baseline")
     success_variants = [v for v in all_variants if v.status == "success"]
     integrated_variants = sum(
         1 for v in success_variants if v.variant_commit_sha is not None

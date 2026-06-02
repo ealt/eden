@@ -53,12 +53,16 @@
 
 <section>
     <h2>parent idea</h2>
+    {% if idea %}
     <dl>
         <dt>idea_id</dt><dd><a href="/admin/ideas/{{ idea.idea_id }}/"><code>{{ idea.idea_id }}</code></a></dd>
         <dt>slug</dt><dd><a href="/admin/ideas/{{ idea.idea_id }}/">{{ idea.slug }}</a></dd>
         <dt>state</dt><dd>{{ idea.state }}</dd>
         <dt>priority</dt><dd>{{ idea.priority }}</dd>
     </dl>
+    {% else %}
+    <p>None — this is a <code>kind=baseline</code> variant (the experiment seed); it has no producing idea.</p>
+    {% endif %}
 </section>
 
 <section>

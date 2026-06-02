@@ -17,6 +17,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
+from eden_contracts import ExperimentConfig
 from eden_dispatch import (
     IdeationPolicy,
     TerminationPolicy,
@@ -28,6 +29,7 @@ from eden_service_common import StopFlag, get_logger
 from eden_storage import StorageError, Store
 from eden_wire import StoreClient
 
+from .baseline import ensure_baseline_variant
 from .lease_manager import LeaseManager
 from .loop import _read_dispatch_mode, make_id_factory
 
@@ -73,6 +75,7 @@ def run_multi_experiment_loop(
     termination_policy: TerminationPolicy,
     poll_interval: float,
     stop: StopFlag,
+    config: ExperimentConfig,
 ) -> None:
     """Drive the chapter 11 §5 multi-experiment loop.
 
@@ -126,25 +129,15 @@ def run_multi_experiment_loop(
                 continue
             runtime = runtimes.get(experiment_id)
             if runtime is None:
-                try:
-                    runtime = factory(experiment_id)
-                except Exception:  # noqa: BLE001 — config / wire setup
-                    # Codex round 4 MAJOR: factory failure means we
-                    # cannot do task-store work for this experiment
-                    # this iteration (typically: per-experiment
-                    # credential bootstrap failed, store-side config
-                    # uri unreachable, etc.). Holding the lease
-                    # through renew cadence would blackhole the
-                    # experiment until lease expiry; release it so
-                    # another replica can attempt. The next refresh
-                    # MAY re-acquire if the transient cleared.
-                    log.exception(
-                        "per_experiment_runtime_setup_failed",
-                        experiment_id=experiment_id,
-                    )
-                    manager.release_for(experiment_id)
+                runtime = _acquire_runtime(
+                    experiment_id=experiment_id,
+                    factory=factory,
+                    runtimes=runtimes,
+                    manager=manager,
+                    config=config,
+                )
+                if runtime is None:
                     continue
-                runtimes[experiment_id] = runtime
             try:
                 _run_one_experiment(
                     runtime=runtime,
@@ -161,6 +154,53 @@ def run_multi_experiment_loop(
 
         if stop.wait(poll_interval):
             return
+
+
+def _acquire_runtime(
+    *,
+    experiment_id: str,
+    factory: PerExperimentFactory,
+    runtimes: dict[str, ExperimentRuntime],
+    manager: LeaseManager,
+    config: ExperimentConfig,
+) -> ExperimentRuntime | None:
+    """Build (and cache) a per-experiment runtime, creating its baseline.
+
+    Returns the runtime, or ``None`` when the factory failed (the lease is
+    released so another replica may try — factory failure typically means a
+    transient per-experiment credential / config-uri problem). On first
+    build the seed baseline variant is created (§9.4): multi mode applies
+    the bootstrap config's baseline block to every driven experiment,
+    mirroring how it applies one ideation / termination policy to all
+    (per-experiment config resolution is deferred to #214). Baseline
+    creation is isolated so a drift / failure for one experiment doesn't
+    crash the loop.
+    """
+    try:
+        runtime = factory(experiment_id)
+    except Exception:  # noqa: BLE001 — config / wire setup
+        # Holding the lease through renew cadence would blackhole the
+        # experiment until lease expiry; release it so another replica can
+        # attempt. The next refresh MAY re-acquire if the transient cleared.
+        log.exception(
+            "per_experiment_runtime_setup_failed",
+            experiment_id=experiment_id,
+        )
+        manager.release_for(experiment_id)
+        return None
+    runtimes[experiment_id] = runtime
+    try:
+        ensure_baseline_variant(
+            store=runtime.store,
+            config=config,
+            experiment_id=experiment_id,
+        )
+    except Exception:  # noqa: BLE001 — per-experiment isolation
+        log.exception(
+            "ensure_baseline_variant_failed",
+            experiment_id=experiment_id,
+        )
+    return runtime
 
 
 def _close_runtime(runtime: ExperimentRuntime) -> None:
@@ -227,12 +267,17 @@ def _run_one_experiment(
 def _experiment_is_drained_terminated(store: Store) -> bool:
     """Return True iff the experiment is `terminated` AND the drain is done.
 
-    The drain is done when no variants with `status == "success"`
-    have an unset `variant_commit_sha`. The store's `read_experiment`
-    + `list_variants` give us both signals via one wire round-trip
-    each. Wrapped in a `try/except StorageError` so transient read
-    failures (mid-restart task-store, transport blip) just return
-    `False` — the next iteration re-checks.
+    The drain is done when no variants with `status == "success"` and
+    `kind != "baseline"` have an unset `variant_commit_sha`. A
+    `kind == "baseline"` variant (02-data-model.md §9.4) is never
+    integrated, so it reaches `success` without a `variant_commit_sha`
+    and MUST be excluded here — otherwise a default-on baseline would
+    wedge multi-experiment mode at termination forever (02-data-model.md
+    §2.5 drain carve). The store's `read_experiment` + `list_variants`
+    give us both signals via one wire round-trip each. Wrapped in a
+    `try/except StorageError` so transient read failures (mid-restart
+    task-store, transport blip) just return `False` — the next iteration
+    re-checks.
     """
     try:
         experiment = store.read_experiment()
@@ -244,7 +289,11 @@ def _experiment_is_drained_terminated(store: Store) -> bool:
         variants = store.list_variants(status="success")
     except StorageError:
         return False
-    return all(v.variant_commit_sha is not None for v in variants)
+    return all(
+        v.variant_commit_sha is not None
+        for v in variants
+        if v.kind != "baseline"
+    )
 
 
 # ---------------------------------------------------------------------

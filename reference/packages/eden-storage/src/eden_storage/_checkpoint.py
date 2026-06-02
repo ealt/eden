@@ -352,6 +352,8 @@ def _snapshot_store(store: _StoreBase) -> _Snapshot:
         "state": experiment.state,
         "created_at": experiment.created_at,
     }
+    if experiment.base_commit_sha is not None:
+        experiment_row["base_commit_sha"] = experiment.base_commit_sha
     if experiment.imported_from is not None:
         experiment_row["imported_from"] = experiment.imported_from.model_dump(
             mode="json"
@@ -619,6 +621,12 @@ def _apply_archive_commit(
         state = parsed.experiment_row.get("state")
         if state and state != "running":
             tx.experiment_state = state
+        # Round-trip the seed baseline-variant commit (02-data-model.md
+        # §2.5 / §9.4, 10-checkpoints.md §5). Absent on the source ⇒ no
+        # write (the receiver keeps whatever it was constructed with).
+        base_commit_sha = parsed.experiment_row.get("base_commit_sha")
+        if base_commit_sha is not None:
+            tx.base_commit_sha_update = (base_commit_sha,)
         # Record import provenance.
         tx.imported_from_update = (
             ImportProvenance(

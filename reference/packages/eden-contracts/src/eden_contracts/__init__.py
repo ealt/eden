@@ -2,6 +2,7 @@
 
 from ._common import CommitSha, DateTimeStr, DurationStr, WorkerId
 from .config import (
+    BaselineConfig,
     ConvergenceWindowTerminationConfig,
     Direction,
     DispatchMode,
@@ -65,7 +66,7 @@ from .task import (
     TaskTarget,
     TaskTargetKind,
 )
-from .variant import Variant, VariantStatus, WorkBranch
+from .variant import Variant, VariantKind, VariantStatus, WorkBranch
 from .worker import Worker, WorkerLabels
 
 __all__ = [
@@ -73,6 +74,7 @@ __all__ = [
     "CommitSha",
     "DateTimeStr",
     "DurationStr",
+    "BaselineConfig",
     "Direction",
     "DispatchMode",
     "DispatchModeValue",
@@ -136,6 +138,7 @@ __all__ = [
     "VariantErroredEvent",
     "VariantEvaluationErroredEvent",
     "VariantIntegratedEvent",
+    "VariantKind",
     "VariantStartedEvent",
     "VariantStatus",
     "VariantSucceededEvent",

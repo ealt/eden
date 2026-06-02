@@ -224,6 +224,22 @@ def _apply_v6(conn: sqlite3.Connection) -> None:
         conn.execute(stmt)
 
 
+# Issue #122: the experiment row gains a `base_commit_sha` column
+# carrying the experiment seed commit per `02-data-model.md` §2.5 / §9.4.
+# NULL on pre-#122 rows and on rows whose deployment did not supply a
+# seed; populated at experiment init (native creation) or on
+# `import_checkpoint` (round-trip). The orchestrator reads it to create
+# the baseline variant.
+_V7_STATEMENTS: list[str] = [
+    "ALTER TABLE experiment ADD COLUMN base_commit_sha text",
+]
+
+
+def _apply_v7(conn: sqlite3.Connection) -> None:
+    for stmt in _V7_STATEMENTS:
+        conn.execute(stmt)
+
+
 _MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _apply_v1,
     _apply_v2,
@@ -231,6 +247,7 @@ _MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _apply_v4,
     _apply_v5,
     _apply_v6,
+    _apply_v7,
 ]
 
 

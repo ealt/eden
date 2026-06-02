@@ -14,7 +14,7 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from ._common import DateTimeStr
+from ._common import CommitSha, DateTimeStr, NotNone
 
 ExperimentState = Literal["running", "terminated"]
 """Lifecycle state per ``02-data-model.md`` §2.5.
@@ -54,6 +54,14 @@ class Experiment(BaseModel):
     experiment_id: Annotated[str, Field(min_length=1)]
     state: ExperimentState
     created_at: DateTimeStr
+    base_commit_sha: Annotated[CommitSha | None, NotNone] = None
+    """The experiment seed commit on ``main`` (``02-data-model.md`` §2.5),
+    recorded at registration / repo-init time. The orchestrator reads it to
+    create the seed baseline variant (``02-data-model.md`` §9.4) in both
+    single- and multi-experiment modes. Absent (never JSON ``null``) on
+    experiments registered before this field existed; such experiments never
+    acquire a baseline. Immutable once written; round-trips through portable
+    checkpoint export/import (``10-checkpoints.md`` §5)."""
     imported_from: ImportProvenance | None = None
     """Set at import time on experiments produced by ``import_checkpoint``;
     ``None`` (serialized as JSON ``null``) on natively-created experiments.

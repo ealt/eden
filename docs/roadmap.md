@@ -262,6 +262,7 @@ Units and chunking to be named closer to execution — too far ahead to estimate
 - [12b](plans/eden-phase-12b-portable-checkpoints.md) — Portable checkpoints — **shipped 2026-05-19** (see [CHANGELOG](../CHANGELOG.md))
 - [12c](plans/eden-phase-12c-control-plane.md) — Control plane — **shipped 2026-05-19** (see [CHANGELOG](../CHANGELOG.md))
 - [#145](plans/issue-145-per-route-store-swap.md) — Per-route store swapping for the experiment switcher (12c §3.6 backfill) — **shipped 2026-06-02** (see [CHANGELOG](../CHANGELOG.md))
+- [#122](plans/issue-122-baseline-variant.md) — Evaluatable baseline variant (seed becomes a `kind="baseline"` Variant) — **shipped 2026-06-02** (see [CHANGELOG](../CHANGELOG.md))
 
 ---
 

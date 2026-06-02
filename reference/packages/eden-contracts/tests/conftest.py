@@ -22,6 +22,7 @@ from eden_contracts import (
     REGISTERED_EVENT_TYPES,
     EvaluationSchema,
     Event,
+    Experiment,
     ExperimentConfig,
     Group,
     Idea,
@@ -44,6 +45,7 @@ BASE_URI: str = "https://eden.local/schemas/"
 
 MODEL_NAMES: tuple[str, ...] = (
     "experiment-config",
+    "experiment",
     "task",
     "event",
     "idea",
@@ -141,6 +143,7 @@ def _validate_event(data: Any) -> object:
 
 _MODEL_VALIDATORS: dict[str, Callable[[Any], object]] = {
     "experiment-config": ExperimentConfig.model_validate,
+    "experiment": Experiment.model_validate,
     "task": TaskAdapter.validate_python,
     "event": _validate_event,
     "idea": Idea.model_validate,

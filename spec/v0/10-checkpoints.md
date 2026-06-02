@@ -18,7 +18,7 @@ A checkpoint contains the following per-experiment state:
 
 | Source | Contents |
 |---|---|
-| [`02-data-model.md`](02-data-model.md) §2 | The experiment config (declarative input) and the experiment runtime object (`state`, `created_at`, `imported_from`) |
+| [`02-data-model.md`](02-data-model.md) §2 | The experiment config (declarative input) and the experiment runtime object (`state`, `created_at`, `base_commit_sha`, `imported_from`) |
 | [`02-data-model.md`](02-data-model.md) §3, [`04-task-protocol.md`](04-task-protocol.md) | All tasks, every state |
 | [`02-data-model.md`](02-data-model.md) §5 | All ideas |
 | [`02-data-model.md`](02-data-model.md) §9, [`06-integrator.md`](06-integrator.md) | All variants, including `variant_commit_sha` for integrated variants |
@@ -39,7 +39,7 @@ A checkpoint is a directory tree wrapped in a tarball for transport (§4). The d
 <checkpoint>/
   manifest.json             # required (§5)
   experiment-config.yaml    # the experiment config, verbatim
-  experiment.json           # the runtime experiment object (state, created_at, imported_from)
+  experiment.json           # the runtime experiment object (state, created_at, base_commit_sha, imported_from)
   tasks.jsonl               # one Task per line; schema = task.schema.json
   ideas.jsonl               # one Idea per line; schema = idea.schema.json
   variants.jsonl            # one Variant per line; schema = variant.schema.json
@@ -190,7 +190,7 @@ The contract per object kind:
 
 **Git repo.** The bundle contains every object reachable from any ref in the source repo. The importer's repo, after `git fetch <bundle>`, has the same SHAs reachable from the same refs.
 
-**Experiment runtime.** The `state` field ([`02-data-model.md`](02-data-model.md) §2.5) round-trips verbatim. A checkpoint of a `terminated` experiment imports as `terminated` (subsequent task-creation attempts are rejected per [`02-data-model.md`](02-data-model.md) §2.5; the [`06-integrator.md`](06-integrator.md) drain semantics continue to apply to any `success` variants without `variant_commit_sha`). A checkpoint of a `running` experiment imports as `running`. The `created_at` field round-trips verbatim. The `imported_from` field on the receiving Experiment is set by the importer per §10.
+**Experiment runtime.** The `state` field ([`02-data-model.md`](02-data-model.md) §2.5) round-trips verbatim. A checkpoint of a `terminated` experiment imports as `terminated` (subsequent task-creation attempts are rejected per [`02-data-model.md`](02-data-model.md) §2.5; the [`06-integrator.md`](06-integrator.md) drain semantics continue to apply to any `success` variants without `variant_commit_sha`). A checkpoint of a `running` experiment imports as `running`. The `created_at` and `base_commit_sha` fields round-trip verbatim (`base_commit_sha` is absent on the import when it was absent on the source). The `imported_from` field on the receiving Experiment is set by the importer per §10.
 
 **Worker and group registries.** Round-trip per §8 above.
 

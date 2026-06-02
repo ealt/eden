@@ -135,6 +135,18 @@ class Integrator:
         underlying operations propagate unchanged.
         """
         variant = self._store.read_variant(variant_id)
+        # Defense-in-depth behind the orchestrator's §D.5 skip: a
+        # kind == "baseline" variant is never integrated (02-data-model.md
+        # §9.4, 06-integrator.md §2). It has no producing idea (idea_id is
+        # None) and no work/* branch to squash; reaching here means the skip
+        # regressed, so fail loudly rather than crash on read_idea(None) or
+        # fabricate a manifest with a null idea_id.
+        if variant.kind == "baseline":
+            raise NotReadyForIntegration(
+                f"variant {variant_id!r} is a baseline and is never integrated "
+                "(02-data-model.md §9.4)"
+            )
+        assert variant.idea_id is not None  # non-baseline variants carry idea_id
         idea = self._store.read_idea(variant.idea_id)
         slug = idea.slug
         branch = f"variant/{variant.variant_id}-{slug}"
