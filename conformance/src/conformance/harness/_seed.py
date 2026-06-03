@@ -165,6 +165,17 @@ def _ensure_group(client: WireClient, name: str) -> None:
         resp.raise_for_status()
     if resp.status_code == 200:
         client.record_group_identity(name, resp.json()["group_id"])
+        return
+    # 409: the reserved group already exists (pre-seeded, or imported via
+    # checkpoint into this receiver). Its opaque id was minted elsewhere,
+    # so resolve it by name (§7.3 ?name= lookup) and record the handle ->
+    # id mapping; otherwise later member-adds would address it by the bare
+    # name and 404.
+    lookup = client.request("GET", _groups_path(client), params={"name": name})
+    lookup.raise_for_status()
+    groups = lookup.json().get("groups", [])
+    if groups:
+        client.record_group_identity(name, groups[0]["group_id"])
 
 
 def _ensure_group_member(
