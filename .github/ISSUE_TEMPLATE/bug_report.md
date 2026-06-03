@@ -11,6 +11,11 @@ should carry `bug` (already applied). If it was discovered
 operator-side (manual UI / CLI), also add `manual-ui`. Priority +
 triage + cluster labels get applied during triage; you can leave
 them blank or apply them if obvious.
+
+**Pick a milestone**: assign to whichever milestone the broken
+feature belongs to (AWS MVP / Identity v2 / Multi-experiment /
+Production hardening / Refactors & polish / Spec evolution).
+Bugs without a milestone get flagged for triage by orch-driver.
 -->
 
 ## Symptom

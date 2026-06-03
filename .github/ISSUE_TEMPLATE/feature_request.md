@@ -11,6 +11,11 @@ should carry `enhancement` (already applied). If you've thought
 about cluster + priority, apply those too; otherwise triage
 applies them.
 
+**Pick a milestone**: AWS MVP / Identity v2 / Multi-experiment /
+Production hardening / Refactors & polish / Spec evolution.
+Unmilestoned issues get flagged for triage by orch-driver — it's
+better to choose at file-time than to wait for the catch-up.
+
 For substantive design discussions: file as an issue even if work
 won't land soon — the conversation IS the issue body. See
 docs/triage.md §2 / §4.
