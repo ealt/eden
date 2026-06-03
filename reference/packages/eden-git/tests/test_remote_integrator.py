@@ -30,7 +30,7 @@ from eden_storage.errors import DispatchError
 
 TEST_AUTHOR = Identity(name="EDEN Test", email="test@eden.example")
 FIXED_DATE = "2026-04-23T00:00:00Z"
-EXPERIMENT_ID = "exp-test"
+EXPERIMENT_ID = "exp_0123456789abcdefghjkmnpqrs"
 
 
 def _setup(
