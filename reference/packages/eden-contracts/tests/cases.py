@@ -1737,7 +1737,7 @@ EVENT_CASES: list[Case] = [
             "event_id": "evt-ts-101",
             "type": "variant.started",
             "occurred_at": _DT,
-            "experiment_id": "exp-1",
+            "experiment_id": _EXP,
             "data": {"variant_id": "baseline", "kind": "baseline"},
         },
         True,
@@ -1759,7 +1759,7 @@ EVENT_CASES: list[Case] = [
             "event_id": "evt-ts-103",
             "type": "variant.started",
             "occurred_at": _DT,
-            "experiment_id": "exp-1",
+            "experiment_id": _EXP,
             "data": {"variant_id": "baseline", "kind": "baseline", "idea_id": "idea-1"},
         },
         True,
@@ -2507,7 +2507,7 @@ VARIANT_CASES: list[Case] = [
         "baseline_starting_no_idea_id",
         {
             "variant_id": "baseline",
-            "experiment_id": "exp-1",
+            "experiment_id": _EXP,
             "kind": "baseline",
             "status": "starting",
             "parent_commits": [_SHA1],
@@ -2520,7 +2520,7 @@ VARIANT_CASES: list[Case] = [
         "baseline_success_with_evaluation",
         {
             "variant_id": "baseline",
-            "experiment_id": "exp-1",
+            "experiment_id": _EXP,
             "kind": "baseline",
             "status": "success",
             "parent_commits": [_SHA1],
@@ -2535,7 +2535,7 @@ VARIANT_CASES: list[Case] = [
         "baseline_may_carry_idea_id",
         {
             "variant_id": "baseline",
-            "experiment_id": "exp-1",
+            "experiment_id": _EXP,
             "kind": "baseline",
             "idea_id": "idea-1",
             "status": "starting",
@@ -2944,13 +2944,13 @@ EVALUATION_SCHEMA_CASES: list[Case] = [
 EXPERIMENT_CASES: list[Case] = [
     Case(
         "running_minimal",
-        {"experiment_id": "exp-1", "state": "running", "created_at": _DT},
+        {"experiment_id": _EXP, "state": "running", "created_at": _DT},
         True,
     ),
     Case(
         "with_base_commit_sha",
         {
-            "experiment_id": "exp-1",
+            "experiment_id": _EXP,
             "state": "running",
             "created_at": _DT,
             "base_commit_sha": _SHA1,
@@ -2960,7 +2960,7 @@ EXPERIMENT_CASES: list[Case] = [
     Case(
         "base_commit_sha_sha256",
         {
-            "experiment_id": "exp-1",
+            "experiment_id": _EXP,
             "state": "terminated",
             "created_at": _DT,
             "base_commit_sha": _SHA256,
@@ -2970,7 +2970,7 @@ EXPERIMENT_CASES: list[Case] = [
     Case(
         "base_commit_sha_explicit_null_rejected",
         {
-            "experiment_id": "exp-1",
+            "experiment_id": _EXP,
             "state": "running",
             "created_at": _DT,
             "base_commit_sha": None,
@@ -2980,7 +2980,7 @@ EXPERIMENT_CASES: list[Case] = [
     Case(
         "base_commit_sha_malformed_rejected",
         {
-            "experiment_id": "exp-1",
+            "experiment_id": _EXP,
             "state": "running",
             "created_at": _DT,
             "base_commit_sha": "not-a-sha",
