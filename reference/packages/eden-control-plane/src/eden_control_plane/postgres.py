@@ -35,11 +35,13 @@ from eden_storage.errors import (
     CycleDetected,
     InvalidPrecondition,
     NotFound,
+    ReservedIdentifier,
 )
 from psycopg import sql
 
 from ._credentials import (
     DEPLOYMENT_SCOPE_SENTINEL,
+    RESERVED_GROUP_NAMES,
     check_credential_hash,
     constant_time_dummy_verify,
     generate_credential_token,
@@ -699,6 +701,19 @@ class PostgresControlPlaneStore:
                 ):
                     raise CycleDetected(
                         f"adding {m!r} to {group_id!r} closes a cycle"
+                    )
+            # §7.5 / §11 §6: a reserved group name is taken once minted —
+            # a second create (even via the privileged allow_reserved admin
+            # path) is rejected so exactly one grp_* carries the name.
+            if allow_reserved and validated_name in RESERVED_GROUP_NAMES:
+                cur.execute(
+                    "SELECT 1 FROM control_plane_groups WHERE name = %s",
+                    (validated_name,),
+                )
+                if cur.fetchone() is not None:
+                    raise ReservedIdentifier(
+                        f"group name {validated_name!r} is reserved "
+                        "and already exists"
                     )
             now = self._now()
             cur.execute(

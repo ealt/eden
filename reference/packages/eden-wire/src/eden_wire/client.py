@@ -1223,7 +1223,7 @@ class StoreClient:
            whether our POST landed. Raise :class:`IndeterminateImport`;
            operator intervention is required.
         """
-        target_id, local_exported_at, local_format_version = (
+        target_id, source_experiment_id, local_exported_at, local_format_version = (
             self._parse_recovery_manifest(
                 archive_bytes,
                 as_experiment_id=as_experiment_id,
@@ -1234,6 +1234,7 @@ class StoreClient:
         imported = body.get("imported_from")
         if (
             isinstance(imported, dict)
+            and imported.get("source_experiment_id") == source_experiment_id
             and imported.get("checkpoint_exported_at") == local_exported_at
             and imported.get("checkpoint_format_version") == local_format_version
         ):
@@ -1255,13 +1256,13 @@ class StoreClient:
             "by a different import."
         ) from original
 
-    @staticmethod
     def _parse_recovery_manifest(
+        self,
         archive_bytes: bytes,
         *,
         as_experiment_id: str | None,
         original: BaseException,
-    ) -> tuple[str, str, str]:
+    ) -> tuple[str, str, str, str]:
         """Stream-walk the archive's tar entries to read ``manifest.json``.
 
         Codex round-2 finding: don't extract the whole archive just to
@@ -1269,7 +1270,11 @@ class StoreClient:
         disk/I/O on the very path that's supposed to harden a dropped-
         response recovery.
 
-        Returns ``(target_id, exported_at, format_version)``. Raises
+        Returns ``(probe_target_id, source_experiment_id, exported_at,
+        format_version)`` where ``probe_target_id`` is the receiver's own
+        experiment id (where a #128 import lands) and
+        ``source_experiment_id`` is the manifest's id (matched against the
+        receiver's ``imported_from.source_experiment_id``). Raises
         :class:`IndeterminateImport` from ``original`` when the archive
         is unparseable.
         """
@@ -1302,9 +1307,18 @@ class StoreClient:
                 f"({type(original).__name__}) and the local archive "
                 f"could not be parsed for recovery-probe: {parse_exc}"
             ) from original
-        target_id = as_experiment_id or manifest_obj.experiment_id
+        # Post-#128: an unkeyed import lands under the RECEIVER's own
+        # minted experiment_id (this StoreClient's experiment), NOT the
+        # source manifest id — the source id survives only as
+        # ``imported_from.source_experiment_id`` for provenance
+        # (``10-checkpoints.md`` §10, ``07-wire-protocol.md`` §14.2). So the
+        # probe targets ``self._experiment_id`` and confirms the landing by
+        # matching the source id + exported_at. ``as_experiment_id``, when
+        # supplied, must equal ``self._experiment_id`` (the only experiment
+        # this server serves), so it is not the probe target.
         return (
-            target_id,
+            self._experiment_id,
+            manifest_obj.experiment_id,
             manifest_obj.exported_at,
             manifest_obj.checkpoint_format_version,
         )

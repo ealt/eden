@@ -24,10 +24,12 @@ from eden_storage.errors import (
     CycleDetected,
     InvalidPrecondition,
     NotFound,
+    ReservedIdentifier,
 )
 
 from ._credentials import (
     DEPLOYMENT_SCOPE_SENTINEL,
+    RESERVED_GROUP_NAMES,
     check_credential_hash,
     constant_time_dummy_verify,
     generate_credential_token,
@@ -410,6 +412,18 @@ class InMemoryControlPlaneStore:
         for m in members_list:
             validate_member_id(m)
         with self._lock:
+            # §7.5 / §11 §6: a reserved group name is taken once it has been
+            # minted — a second create (even via the privileged
+            # `allow_reserved` admin path) is rejected so exactly one
+            # `grp_*` ever carries the reserved name.
+            if (
+                allow_reserved
+                and validated_name in RESERVED_GROUP_NAMES
+                and any(g.name == validated_name for g in self._groups.values())
+            ):
+                raise ReservedIdentifier(
+                    f"group name {validated_name!r} is reserved and already exists"
+                )
             group_id = mint_opaque_id("grp")
             # Cycle check: the group plus its members MUST NOT close a
             # cycle through any pre-existing group. Easy here since

@@ -136,15 +136,17 @@ class RegisterWorkerRequest(_WireBase):
     """
 
     name: Annotated[str | None, NotNone] = None
-    labels: dict[str, str] | None = None
+    labels: Annotated[dict[str, str] | None, NotNone] = None
 
 
 class WorkerRegistration(_WireBase):
     """Response from ``register_worker`` / ``reissue_credential``.
 
     ``registration_token`` is the freshly-minted plaintext credential
-    (returned exactly once); on idempotent re-registration of an
-    existing ``worker_id`` it is omitted entirely.
+    (returned exactly once). Since #128 every ``register_worker`` mints a
+    new worker, so it is always present on a register response; it is
+    omitted only on the ``reissue_credential`` response shape's reuse
+    paths where no new token was issued.
     """
 
     worker_id: WorkerId
@@ -187,7 +189,7 @@ class RegisterGroupRequest(_WireBase):
     """
 
     name: Annotated[str | None, NotNone] = None
-    members: list[MemberId] | None = None
+    members: Annotated[list[MemberId] | None, NotNone] = None
 
 
 class AddGroupMemberRequest(_WireBase):

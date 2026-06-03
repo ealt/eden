@@ -110,8 +110,9 @@ class ImportResult:
     """
 
     experiment_id: str
-    """The imported experiment's id (manifest's value, or the ``as_experiment_id``
-    override if supplied)."""
+    """The imported experiment's id — the RECEIVER's own experiment_id
+    (a #128 import lands under it; the manifest's source id is preserved as
+    ``imported_from.source_experiment_id`` provenance)."""
 
     experiment_config: str
     """The experiment-config text the source serialized into the archive."""

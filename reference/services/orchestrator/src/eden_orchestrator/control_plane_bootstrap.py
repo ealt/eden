@@ -44,7 +44,7 @@ from pathlib import Path
 
 from eden_control_plane import ControlPlaneClient
 from eden_service_common import get_logger
-from eden_storage.errors import AlreadyExists, NotFound
+from eden_storage.errors import AlreadyExists, NotFound, ReservedIdentifier
 from eden_wire.errors import Unauthorized
 
 log = get_logger(__name__)
@@ -306,7 +306,10 @@ def _resolve_or_create_orchestrators(admin: ControlPlaneClient) -> str:
     existing = admin.list_groups(name="orchestrators")
     if existing:
         return existing[0].group_id
-    with contextlib.suppress(AlreadyExists):
+    # A concurrent creator may win the race between our list and create.
+    # The reserved-name uniqueness guard (§7.5 / §11 §6) surfaces that as
+    # ReservedIdentifier ("the name is taken"); a plain duplicate surfaces
+    # as AlreadyExists. Either way, re-read to return the winner's id.
+    with contextlib.suppress(AlreadyExists, ReservedIdentifier):
         return admin.register_group("orchestrators").group_id
-    # AlreadyExists implies a concurrent creator won; re-read to get its id.
     return admin.list_groups(name="orchestrators")[0].group_id

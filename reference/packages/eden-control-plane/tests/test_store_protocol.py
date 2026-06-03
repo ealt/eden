@@ -530,6 +530,21 @@ def test_reserved_group_name_allowed_via_seam(
     assert _GRP_RE.fullmatch(group.group_id)
 
 
+@pytest.mark.parametrize("reserved", ["admins", "orchestrators"])
+def test_reserved_group_name_taken_after_seed(
+    make_store: Callable[..., ControlPlaneStore], reserved: str
+) -> None:
+    """§7.5 / §11 §6: a reserved name is taken once minted — a SECOND
+    create (even via the privileged ``allow_reserved`` seam) is rejected,
+    so exactly one ``grp_*`` ever carries the reserved name."""
+    store = make_store()
+    store.register_group(name=reserved, allow_reserved=True)
+    with pytest.raises(ReservedIdentifier):
+        store.register_group(name=reserved, allow_reserved=True)
+    # Exactly one row carries the reserved name.
+    assert len(store.list_groups(name=reserved)) == 1
+
+
 def test_register_group_rejects_non_opaque_member(
     make_store: Callable[..., ControlPlaneStore],
 ) -> None:
