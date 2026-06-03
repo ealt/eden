@@ -942,8 +942,9 @@ class StoreClient:
     ) -> Experiment:
         """Commit the ``running → terminated`` transition over the wire (§2.9).
 
-        Admin-group-gated server-side; the bearer's principal is the
-        authoritative ``terminated_by``. The ``terminated_by`` parameter
+        Group-gated server-side on ``admins`` OR ``orchestrators``
+        (issue #256); the bearer's principal is the authoritative
+        ``terminated_by``. The ``terminated_by`` parameter
         here exists to satisfy the ``Store`` Protocol signature; the
         wire body MUST NOT carry the field (the
         :class:`TerminateRequest` model rejects unknown keys), and the

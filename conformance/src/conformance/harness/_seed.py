@@ -756,10 +756,11 @@ def terminate_experiment(
 ) -> Any:
     """POST /v0/experiments/{E}/terminate (12a-3 wire §2.9).
 
-    Admins-gated; the server stamps ``terminated_by`` from the
-    authenticated principal (the bearer registered for ``actor_id``).
-    The body MUST NOT carry ``terminated_by`` (the request schema
-    rejects unknown keys); pass only ``reason``.
+    Gated on ``admins`` OR ``orchestrators`` (issue #256); the server
+    stamps ``terminated_by`` from the authenticated principal (the
+    bearer registered for ``actor_id``). The body MUST NOT carry
+    ``terminated_by`` (the request schema rejects unknown keys); pass
+    only ``reason``.
 
     Returns the raw httpx response so the caller decides how to
     interpret status codes (e.g. 200 happy-path vs 200 idempotent

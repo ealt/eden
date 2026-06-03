@@ -52,19 +52,19 @@ def test_accept_by_non_orchestrator_returns_403_forbidden(
     assert r.json().get("type") == "eden://error/forbidden", r.text
 
 
-def test_terminate_by_non_admin_returns_403_forbidden(
+def test_terminate_by_neither_group_returns_403_forbidden(
     wire_client: WireClient,
 ) -> None:
-    """spec/v0/07-wire-protocol.md §13.3 — non-``admins`` terminate → 403 forbidden.
+    """spec/v0/07-wire-protocol.md §13.3 — terminate by neither group → 403 forbidden.
 
     ``POST /v0/experiments/{E}/terminate`` is gated on the ``admins``
-    group (the §13.3 dispatcher's group-membership check). A
-    registered worker that is NOT in ``admins`` MUST receive 403
-    ``eden://error/forbidden``.
+    OR ``orchestrators`` group (the §13.3 dispatcher's group-membership
+    check; issue #256). A registered worker in NEITHER group MUST
+    receive 403 ``eden://error/forbidden``.
     """
     r = wire_client.post(
         wire_client.terminate_path(),
-        json={"reason": "non-admin probe"},
+        json={"reason": "neither-group probe"},
         as_worker="test-worker",
     )
     assert r.status_code == 403, r.text

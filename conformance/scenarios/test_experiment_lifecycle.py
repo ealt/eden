@@ -165,3 +165,45 @@ def test_state_persists_after_terminate(
         assert _seed.read_experiment_state(wire_client) == {
             "state": "terminated"
         }
+
+
+def test_orchestrator_group_bearer_can_terminate(
+    wire_client: WireClient,
+) -> None:
+    """spec/v0/04-task-protocol.md §8.2 — orchestrators-group bearer may terminate.
+
+    Per chapter 04 §8.2 the terminate authority gate is ``admins``
+    OR ``orchestrators``: the orchestrator commits its policy-driven
+    termination ([`03-roles.md`](../../spec/v0/03-roles.md) §6.2
+    decision-type 0) through an ``orchestrators`` bearer. A bearer in
+    ``orchestrators`` (but not ``admins``) MUST be accepted and the
+    experiment MUST observably transition to ``terminated``. (#256)
+    """
+    # ``orchestrator-actor`` is registered into ``orchestrators`` only
+    # (NOT ``admins``) by the default-worker seed.
+    resp = _seed.terminate_experiment(
+        wire_client, reason="policy fired", actor_id="orchestrator-actor"
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["state"] == "terminated"
+    assert _seed.read_experiment_state(wire_client) == {"state": "terminated"}
+
+
+def test_worker_outside_both_groups_cannot_terminate(
+    wire_client: WireClient,
+) -> None:
+    """spec/v0/04-task-protocol.md §8.2 — a worker in neither group → 403.
+
+    Per chapter 04 §8.2 a caller outside both ``admins`` and
+    ``orchestrators`` MUST be rejected with 403
+    ``eden://error/forbidden``; the experiment state MUST stay
+    ``running``.
+    """
+    # ``test-worker`` is a registered worker but is in neither the
+    # ``admins`` nor the ``orchestrators`` group.
+    resp = _seed.terminate_experiment(
+        wire_client, reason="not allowed", actor_id="test-worker"
+    )
+    assert resp.status_code == 403, resp.text
+    assert resp.json()["type"] == "eden://error/forbidden"
+    assert _seed.read_experiment_state(wire_client) == {"state": "running"}
