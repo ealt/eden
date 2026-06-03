@@ -127,11 +127,24 @@ def test_three_variant_experiment_subprocess_mode(tmp_path: Path) -> None:
     base_sha = seed_bare_repo(str(bare_repo))
 
     db_path = tmp_path / "eden.sqlite"
-    experiment_id = "exp-e2e-sub"
+    experiment_id = "exp_0123456789abcdefghjkmnpqrs"
     artifacts_dir = tmp_path / "artifacts"
     worktrees_dir = tmp_path / "worktrees"
     logs_dir = tmp_path / "logs"
     logs_dir.mkdir()
+    creds_dir = tmp_path / "creds"
+    creds_dir.mkdir()
+
+    # Since #128 worker_ids are OPAQUE + system-minted (wkr_*) and the
+    # registration endpoint is admin-gated. In auth-disabled mode the
+    # wire collapses every claimant onto the un-registerable ``anonymous``
+    # sentinel, so the experiment can no longer run with auth off. We run
+    # the server auth-ENABLED: register each role worker under the admin
+    # bearer (the server mints the wkr_* id), then thread the minted id +
+    # admin token into each host so it reissues + authenticates with its
+    # own per-worker credential. The orchestrator self-joins the
+    # `orchestrators` group at startup (admin-gated) for the §3.7 gates.
+    admin_token = "e2e-admin-secret"
 
     server_log = logs_dir / "server.log"
     server = _spawn(
@@ -149,24 +162,30 @@ def test_three_variant_experiment_subprocess_mode(tmp_path: Path) -> None:
             "0",
             "--subscribe-timeout",
             "1.0",
+            "--admin-token",
+            admin_token,
         ],
         server_log,
     )
     port = _read_port_announcement(server_log, server)
     base_url = f"http://127.0.0.1:{port}"
 
-    # 12a-1 wave 5: pre-register the worker_ids the subprocess hosts use;
-    # Store.claim's §3.5 step-2 registration check rejects unregistered ids.
     from eden_wire import StoreClient
 
-    _seed = StoreClient(base_url=base_url, experiment_id=experiment_id)
+    _seed = StoreClient(
+        base_url=base_url,
+        experiment_id=experiment_id,
+        bearer=f"admin:{admin_token}",
+    )
     try:
-        # In auth-disabled mode (post-#148) the wire collapses every
-        # caller onto the ``anonymous`` sentinel — register that id
-        # alongside the role-specific ones the spawned hosts pass via
-        # ``--worker-id``.
-        for _wid in ("anonymous", "ideator-1", "executor-1", "evaluator-1"):
-            _seed.register_worker(_wid)
+        ideator_w, _ = _seed.register_worker(name="ideator-1")
+        executor_w, _ = _seed.register_worker(name="executor-1")
+        evaluator_w, _ = _seed.register_worker(name="evaluator-1")
+        orchestrator_w, _ = _seed.register_worker(name="orchestrator-1")
+        ideator_id = ideator_w.worker_id
+        executor_id = executor_w.worker_id
+        evaluator_id = evaluator_w.worker_id
+        orchestrator_id = orchestrator_w.worker_id
     finally:
         _seed.close()
 
@@ -187,7 +206,11 @@ def test_three_variant_experiment_subprocess_mode(tmp_path: Path) -> None:
             "--experiment-id",
             experiment_id,
             "--worker-id",
-            "ideator-1",
+            ideator_id,
+            "--admin-token",
+            admin_token,
+            "--credentials-dir",
+            str(creds_dir),
             "--experiment-config",
             str(FIXTURE_CONFIG),
             "--experiment-dir",
@@ -210,7 +233,11 @@ def test_three_variant_experiment_subprocess_mode(tmp_path: Path) -> None:
             "--experiment-id",
             experiment_id,
             "--worker-id",
-            "executor-1",
+            executor_id,
+            "--admin-token",
+            admin_token,
+            "--credentials-dir",
+            str(creds_dir),
             "--repo-path",
             str(bare_repo),
             "--experiment-config",
@@ -233,7 +260,11 @@ def test_three_variant_experiment_subprocess_mode(tmp_path: Path) -> None:
             "--experiment-id",
             experiment_id,
             "--worker-id",
-            "evaluator-1",
+            evaluator_id,
+            "--admin-token",
+            admin_token,
+            "--credentials-dir",
+            str(creds_dir),
             "--experiment-config",
             str(FIXTURE_CONFIG),
             "--experiment-dir",
@@ -269,6 +300,12 @@ def test_three_variant_experiment_subprocess_mode(tmp_path: Path) -> None:
             base_url,
             "--experiment-id",
             experiment_id,
+            "--worker-id",
+            orchestrator_id,
+            "--admin-token",
+            admin_token,
+            "--credentials-dir",
+            str(creds_dir),
             "--repo-path",
             str(bare_repo),
             "--poll-interval",

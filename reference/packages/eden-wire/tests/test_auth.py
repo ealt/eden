@@ -23,7 +23,7 @@ from eden_storage import InMemoryStore
 from eden_wire import Forbidden, StoreClient, Unauthorized, make_app
 from fastapi.testclient import TestClient
 
-EXPERIMENT_ID = "exp-auth"
+EXPERIMENT_ID = "exp_xmwwr2gf0qzp1gc38pg58a0ks3"
 ADMIN_TOKEN = "test-admin-token-abcdef"
 
 
@@ -75,16 +75,17 @@ def test_worker_bearer_admitted(store: InMemoryStore) -> None:
             "X-Eden-Experiment-Id": EXPERIMENT_ID,
             "Authorization": f"Bearer admin:{ADMIN_TOKEN}",
         },
-        json={"worker_id": "eric"},
+        json={"name": "eric"},
     )
     assert register.status_code == 200
+    eric_id = register.json()["worker_id"]
     token = register.json()["registration_token"]
     # Now hit a worker-readable endpoint with the worker bearer.
     resp = client.get(
         _events_url(),
         headers={
             "X-Eden-Experiment-Id": EXPERIMENT_ID,
-            "Authorization": f"Bearer eric:{token}",
+            "Authorization": f"Bearer {eric_id}:{token}",
         },
     )
     assert resp.status_code == 200
@@ -173,16 +174,17 @@ def test_admin_route_rejects_worker_bearer(store: InMemoryStore) -> None:
             "X-Eden-Experiment-Id": EXPERIMENT_ID,
             "Authorization": f"Bearer admin:{ADMIN_TOKEN}",
         },
-        json={"worker_id": "eric"},
+        json={"name": "eric"},
     )
+    eric_id = register.json()["worker_id"]
     token = register.json()["registration_token"]
     resp = client.post(
         _workers_url(),
         headers={
             "X-Eden-Experiment-Id": EXPERIMENT_ID,
-            "Authorization": f"Bearer eric:{token}",
+            "Authorization": f"Bearer {eric_id}:{token}",
         },
-        json={"worker_id": "alice"},
+        json={"name": "alice"},
     )
     assert resp.status_code == 403
     assert resp.json()["type"] == "eden://error/forbidden"
@@ -216,18 +218,19 @@ def test_whoami_returns_authenticated_worker(store: InMemoryStore) -> None:
             "X-Eden-Experiment-Id": EXPERIMENT_ID,
             "Authorization": f"Bearer admin:{ADMIN_TOKEN}",
         },
-        json={"worker_id": "eric"},
+        json={"name": "eric"},
     )
+    eric_id = register.json()["worker_id"]
     token = register.json()["registration_token"]
     resp = client.get(
         _whoami_url(),
         headers={
             "X-Eden-Experiment-Id": EXPERIMENT_ID,
-            "Authorization": f"Bearer eric:{token}",
+            "Authorization": f"Bearer {eric_id}:{token}",
         },
     )
     assert resp.status_code == 200
-    assert resp.json() == {"worker_id": "eric"}
+    assert resp.json() == {"worker_id": eric_id, "name": "eric"}
 
 
 # ----------------------------------------------------------------------
@@ -337,8 +340,9 @@ def test_forbidden_round_trip(store: InMemoryStore) -> None:
             "X-Eden-Experiment-Id": EXPERIMENT_ID,
             "Authorization": f"Bearer admin:{ADMIN_TOKEN}",
         },
-        json={"worker_id": "eric"},
+        json={"name": "eric"},
     )
+    eric_id = register.json()["worker_id"]
     token = register.json()["registration_token"]
     with httpx.Client(
         transport=_proxy_to_app(test_client), base_url="http://unused"
@@ -346,11 +350,11 @@ def test_forbidden_round_trip(store: InMemoryStore) -> None:
         client = StoreClient(
             "http://unused",
             experiment_id=EXPERIMENT_ID,
-            bearer=f"eric:{token}",
+            bearer=f"{eric_id}:{token}",
             client=http,
         )
         with pytest.raises(Forbidden):
-            client.register_worker("alice")
+            client.register_worker(name="alice")
 
 
 # ----------------------------------------------------------------------
@@ -359,18 +363,19 @@ def test_forbidden_round_trip(store: InMemoryStore) -> None:
 # ----------------------------------------------------------------------
 
 
-def _register_worker(client: TestClient, worker_id: str) -> str:
-    """Helper: register worker via admin bearer; return the token."""
+def _register_worker(client: TestClient, name: str) -> tuple[str, str]:
+    """Register a worker by name via admin bearer; return (minted id, token)."""
     resp = client.post(
         _workers_url(),
         headers={
             "X-Eden-Experiment-Id": EXPERIMENT_ID,
             "Authorization": f"Bearer admin:{ADMIN_TOKEN}",
         },
-        json={"worker_id": worker_id},
+        json={"name": name},
     )
     assert resp.status_code == 200, resp.text
-    return resp.json()["registration_token"]
+    body = resp.json()
+    return body["worker_id"], body["registration_token"]
 
 
 _TASK_MUTATIONS = [
@@ -463,22 +468,23 @@ def test_worker_bearer_admitted_through_auth_layer_on_mutations(
     """
     app = make_app(store, admin_token=ADMIN_TOKEN)
     client = TestClient(app)
-    token = _register_worker(client, "eric")
+    eric_id, token = _register_worker(client, "eric")
     admin_headers = {
         "X-Eden-Experiment-Id": EXPERIMENT_ID,
         "Authorization": f"Bearer admin:{ADMIN_TOKEN}",
     }
-    # Bootstrap the §3.7 authority groups and put eric in both.
-    for group_id in ("admins", "orchestrators"):
+    # Bootstrap the §3.7 authority groups (reserved names, created via the
+    # admin bootstrap path) and put eric in both.
+    for group_name in ("admins", "orchestrators"):
         reg = client.post(
             f"/v0/experiments/{EXPERIMENT_ID}/groups",
             headers=admin_headers,
-            json={"group_id": group_id, "members": ["eric"]},
+            json={"name": group_name, "members": [eric_id]},
         )
         assert reg.status_code == 200, reg.text
     headers = {
         "X-Eden-Experiment-Id": EXPERIMENT_ID,
-        "Authorization": f"Bearer eric:{token}",
+        "Authorization": f"Bearer {eric_id}:{token}",
     }
     if body is not None:
         resp = client.request(
@@ -520,8 +526,9 @@ def test_storeclient_claim_rejects_mismatched_worker_id(store: InMemoryStore) ->
             "X-Eden-Experiment-Id": EXPERIMENT_ID,
             "Authorization": f"Bearer admin:{ADMIN_TOKEN}",
         },
-        json={"worker_id": "eric"},
+        json={"name": "eric"},
     )
+    eric_id = register.json()["worker_id"]
     eric_token = register.json()["registration_token"]
     with httpx.Client(
         transport=_proxy_to_app(test_client), base_url="http://unused"
@@ -529,11 +536,11 @@ def test_storeclient_claim_rejects_mismatched_worker_id(store: InMemoryStore) ->
         client = StoreClient(
             "http://unused",
             experiment_id=EXPERIMENT_ID,
-            bearer=f"eric:{eric_token}",
+            bearer=f"{eric_id}:{eric_token}",
             client=http,
         )
         with pytest.raises(ValueError, match="disagrees with bearer principal"):
-            client.claim("t-mismatch", "alice")
+            client.claim("t-mismatch", "wkr_0000000000000000000000000a")
 
 
 def test_storeclient_submit_rejects_mismatched_worker_id(store: InMemoryStore) -> None:
@@ -546,8 +553,9 @@ def test_storeclient_submit_rejects_mismatched_worker_id(store: InMemoryStore) -
             "X-Eden-Experiment-Id": EXPERIMENT_ID,
             "Authorization": f"Bearer admin:{ADMIN_TOKEN}",
         },
-        json={"worker_id": "eric"},
+        json={"name": "eric"},
     )
+    eric_id = register.json()["worker_id"]
     eric_token = register.json()["registration_token"]
     from eden_storage import IdeaSubmission
 
@@ -557,13 +565,13 @@ def test_storeclient_submit_rejects_mismatched_worker_id(store: InMemoryStore) -
         client = StoreClient(
             "http://unused",
             experiment_id=EXPERIMENT_ID,
-            bearer=f"eric:{eric_token}",
+            bearer=f"{eric_id}:{eric_token}",
             client=http,
         )
         with pytest.raises(ValueError, match="disagrees with bearer principal"):
             client.submit(
                 "t-mismatch",
-                "alice",
+                "wkr_0000000000000000000000000a",
                 IdeaSubmission(status="success", idea_ids=()),
             )
 
@@ -612,8 +620,9 @@ def test_storeclient_verify_worker_credential_wire(store: InMemoryStore) -> None
             "X-Eden-Experiment-Id": EXPERIMENT_ID,
             "Authorization": f"Bearer admin:{ADMIN_TOKEN}",
         },
-        json={"worker_id": "eric"},
+        json={"name": "eric"},
     )
+    eric_id = register.json()["worker_id"]
     token = register.json()["registration_token"]
     with httpx.Client(
         transport=_proxy_to_app(test_client), base_url="http://unused"
@@ -627,11 +636,16 @@ def test_storeclient_verify_worker_credential_wire(store: InMemoryStore) -> None
             client=http,
         )
         # Correct credential → True.
-        assert admin.verify_worker_credential("eric", token) is True
+        assert admin.verify_worker_credential(eric_id, token) is True
         # Wrong secret → False.
-        assert admin.verify_worker_credential("eric", "wrong-secret") is False
-        # Unknown worker → False.
-        assert admin.verify_worker_credential("ghost", token) is False
+        assert admin.verify_worker_credential(eric_id, "wrong-secret") is False
+        # Unknown (but well-formed) worker id → False.
+        assert (
+            admin.verify_worker_credential(
+                "wkr_0000000000000000000000000a", token
+            )
+            is False
+        )
 
 
 def test_storeclient_resolve_worker_in_group_walks_groups(
@@ -639,9 +653,9 @@ def test_storeclient_resolve_worker_in_group_walks_groups(
 ) -> None:
     """Codex round-3 #1 — resolve_worker_in_group walks the group DAG."""
     # Seed via the in-process store, then resolve through the wire client.
-    store.register_worker("eric")
-    store.register_group("team-a", members=["eric"])
-    store.register_group("humans", members=["team-a"])
+    eric, _ = store.register_worker(name="eric")
+    team_a = store.register_group(name="team-a", members=[eric.worker_id])
+    humans = store.register_group(name="humans", members=[team_a.group_id])
     app = make_app(store, admin_token=ADMIN_TOKEN)
     test_client = TestClient(app)
     with httpx.Client(
@@ -653,9 +667,19 @@ def test_storeclient_resolve_worker_in_group_walks_groups(
             bearer=f"admin:{ADMIN_TOKEN}",
             client=http,
         )
-        assert client.resolve_worker_in_group("eric", "humans") is True
-        assert client.resolve_worker_in_group("alice", "humans") is False
-        assert client.resolve_worker_in_group("eric", "non-existent") is False
+        assert client.resolve_worker_in_group(eric.worker_id, humans.group_id) is True
+        assert (
+            client.resolve_worker_in_group(
+                "wkr_0000000000000000000000000a", humans.group_id
+            )
+            is False
+        )
+        assert (
+            client.resolve_worker_in_group(
+                eric.worker_id, "grp_0000000000000000000000000a"
+            )
+            is False
+        )
 
 
 def test_storeclient_verify_propagates_transport_failures(
@@ -675,8 +699,9 @@ def test_storeclient_verify_propagates_transport_failures(
             "X-Eden-Experiment-Id": EXPERIMENT_ID,
             "Authorization": f"Bearer admin:{ADMIN_TOKEN}",
         },
-        json={"worker_id": "eric"},
+        json={"name": "eric"},
     )
+    eric_id = register.json()["worker_id"]
     token = register.json()["registration_token"]
 
     def _exploding_handler(request: httpx.Request) -> httpx.Response:
@@ -693,7 +718,7 @@ def test_storeclient_verify_propagates_transport_failures(
             client=http,
         )
         with pytest.raises(httpx.ConnectError):
-            client.verify_worker_credential("eric", token)
+            client.verify_worker_credential(eric_id, token)
 
 
 def test_storeclient_resolve_in_group_only_swallows_not_found(
@@ -728,10 +753,12 @@ def test_storeclient_resolve_in_group_skips_dangling_member(
 ) -> None:
     """§7.1 — a dangling group reference is a NotFound that the walk skips."""
     # Seed eric directly in humans; humans references a non-existent
-    # group "ghost" as another member. The walk MUST skip "ghost"
-    # and still find eric via the direct membership.
-    store.register_worker("eric")
-    store.register_group("humans", members=["eric", "ghost"])
+    # group (well-formed but unregistered) as another member. The walk
+    # MUST skip the dangling member and still find eric via the direct
+    # membership.
+    eric, _ = store.register_worker(name="eric")
+    ghost_grp = "grp_0000000000000000000000000a"
+    humans = store.register_group(name="humans", members=[eric.worker_id, ghost_grp])
     app = make_app(store, admin_token=ADMIN_TOKEN)
     test_client = TestClient(app)
     with httpx.Client(
@@ -743,7 +770,7 @@ def test_storeclient_resolve_in_group_skips_dangling_member(
             bearer=f"admin:{ADMIN_TOKEN}",
             client=http,
         )
-        assert client.resolve_worker_in_group("eric", "humans") is True
+        assert client.resolve_worker_in_group(eric.worker_id, humans.group_id) is True
 
 
 def test_storeclient_verify_wrong_worker_id_response_raises(

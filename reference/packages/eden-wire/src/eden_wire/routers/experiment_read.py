@@ -48,15 +48,21 @@ def _read_experiment(deps: RouterDeps):
         # Auth middleware (when admin_token is set) has already
         # authenticated the principal; either-auth means we accept any
         # registered principal class. No additional gate here.
-        # exclude_none=False keeps `imported_from: null` on the wire (its
-        # schema's oneOf permits explicit null — the recovery probe relies
-        # on it). base_commit_sha's schema is `type: string` (no null), so
-        # it MUST be omitted rather than serialized as null when absent.
-        body = deps.store.read_experiment().model_dump(
-            mode="json", exclude_none=False
-        )
-        if body.get("base_commit_sha") is None:
-            body.pop("base_commit_sha", None)
+        #
+        # ``exclude_none=True`` so optional typed fields wrapped with the
+        # ``NotNone`` discipline (``name`` and ``imported_from``'s
+        # ``source_experiment_id`` subfield since #128, plus
+        # ``base_commit_sha`` since #122) are OMITTED when absent rather
+        # than emitted as explicit JSON ``null`` — the schema (and the
+        # client-side ``Experiment`` round-trip) rejects explicit null on
+        # those fields. ``imported_from`` itself MAY be JSON ``null`` (the
+        # recovery-probe anchor distinguishes natively-created
+        # experiments), so we re-stamp it explicitly after the
+        # exclude-none dump.
+        experiment = deps.store.read_experiment()
+        body = experiment.model_dump(mode="json", exclude_none=True)
+        if experiment.imported_from is None:
+            body["imported_from"] = None
         return body
 
     return read_experiment

@@ -14,7 +14,16 @@ from __future__ import annotations
 from typing import Annotated, Any, Literal
 
 from eden_contracts import DispatchModeValue, Event, TaskTarget
-from eden_contracts._common import CommitSha, DateTimeStr, NotNone, WorkerId
+from eden_contracts._common import (
+    ActorId,
+    CommitSha,
+    DateTimeStr,
+    DisplayName,
+    ExperimentId,
+    MemberId,
+    NotNone,
+    WorkerId,
+)
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -111,9 +120,15 @@ class ValidateEvaluationRequest(_WireBase):
 
 
 class RegisterWorkerRequest(_WireBase):
-    """Body for ``POST /v0/experiments/{E}/workers`` (§6.1)."""
+    """Body for ``POST /v0/experiments/{E}/workers`` (§6.1).
 
-    worker_id: WorkerId
+    The server mints the opaque ``worker_id``; the caller supplies only
+    an OPTIONAL display ``name`` and deployment ``labels``. Reserved
+    worker names (``admin`` / ``system`` / ``internal``) are rejected by
+    the Store.
+    """
+
+    name: Annotated[DisplayName | None, NotNone] = None
     labels: dict[str, str] | None = None
 
 
@@ -126,9 +141,10 @@ class WorkerRegistration(_WireBase):
     """
 
     worker_id: WorkerId
-    experiment_id: str = Field(min_length=1)
+    name: Annotated[DisplayName | None, NotNone] = None
+    experiment_id: ExperimentId
     registered_at: DateTimeStr
-    registered_by: Annotated[str | None, NotNone, Field(min_length=1)] = None
+    registered_by: Annotated[ActorId | None, NotNone] = None
     labels: dict[str, str] | None = None
     registration_token: Annotated[str | None, NotNone, Field(min_length=1)] = None
 
@@ -137,6 +153,7 @@ class WhoamiResponse(_WireBase):
     """Body for ``GET /v0/experiments/{E}/whoami`` (§6.4)."""
 
     worker_id: WorkerId
+    name: Annotated[DisplayName | None, NotNone] = None
 
 
 # ---------------------------------------------------------------------
@@ -145,16 +162,24 @@ class WhoamiResponse(_WireBase):
 
 
 class RegisterGroupRequest(_WireBase):
-    """Body for ``POST /v0/experiments/{E}/groups`` (§7.1)."""
+    """Body for ``POST /v0/experiments/{E}/groups`` (§7.1).
 
-    group_id: WorkerId  # group ids share the §6.1 grammar
-    members: list[WorkerId] | None = None
+    The server mints the opaque ``group_id``; the caller supplies only
+    an OPTIONAL display ``name`` and an OPTIONAL initial ``members``
+    list (each a worker_id or group_id). Reserved group names
+    (``admins`` / ``orchestrators``) are rejected by the Store unless
+    the caller is the deployment admin (the setup-experiment bootstrap
+    path).
+    """
+
+    name: Annotated[DisplayName | None, NotNone] = None
+    members: list[MemberId] | None = None
 
 
 class AddGroupMemberRequest(_WireBase):
     """Body for ``POST /v0/experiments/{E}/groups/{G}/members`` (§7.2)."""
 
-    member_id: WorkerId
+    member_id: MemberId
 
 
 # ---------------------------------------------------------------------

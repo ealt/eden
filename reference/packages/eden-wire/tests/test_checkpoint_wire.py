@@ -31,7 +31,7 @@ from eden_wire import StoreClient, make_app
 from eden_wire.client import IndeterminateImport
 from fastapi.testclient import TestClient
 
-EXPERIMENT_ID = "exp-checkpoint-wire"
+EXPERIMENT_ID = "exp_7j97s4xv0hvpf4tn7knn3rbbwp"
 ADMIN_TOKEN = "test-admin-token-checkpoint"
 
 
@@ -61,20 +61,23 @@ def _admin_headers(experiment_id: str = EXPERIMENT_ID) -> dict[str, str]:
     }
 
 
-def _register_worker(client: TestClient, worker_id: str) -> str:
+def _register_worker(client: TestClient, name: str) -> tuple[str, str]:
+    """Register a worker by name; return (minted ``wkr_*`` id, token)."""
     resp = client.post(
         f"/v0/experiments/{EXPERIMENT_ID}/workers",
         headers=_admin_headers(),
-        json={"worker_id": worker_id},
+        json={"name": name},
     )
     assert resp.status_code == 200, resp.text
-    return resp.json()["registration_token"]
+    body = resp.json()
+    return body["worker_id"], body["registration_token"]
 
 
 def _register_group(
-    client: TestClient, group_id: str, members: list[str] | None = None
-) -> None:
-    body: dict[str, Any] = {"group_id": group_id}
+    client: TestClient, name: str, members: list[str] | None = None
+) -> str:
+    """Register a group by name; return the minted ``grp_*`` id."""
+    body: dict[str, Any] = {"name": name}
     if members:
         body["members"] = members
     resp = client.post(
@@ -83,6 +86,7 @@ def _register_group(
         json=body,
     )
     assert resp.status_code == 200, resp.text
+    return resp.json()["group_id"]
 
 
 def _make_admin_worker_client(store: InMemoryStore) -> tuple[TestClient, str]:
@@ -129,12 +133,12 @@ def test_read_experiment_worker_bearer_accepted(store: InMemoryStore) -> None:
     """
     app = make_app(store, admin_token=ADMIN_TOKEN)
     client = TestClient(app)
-    token = _register_worker(client, "non-admin")
+    worker_id, token = _register_worker(client, "non-admin")
     resp = client.get(
         f"/v0/experiments/{EXPERIMENT_ID}",
         headers={
             "X-Eden-Experiment-Id": EXPERIMENT_ID,
-            "Authorization": f"Bearer non-admin:{token}",
+            "Authorization": f"Bearer {worker_id}:{token}",
         },
     )
     assert resp.status_code == 200, resp.text
@@ -171,12 +175,12 @@ def test_export_rejects_worker_bearer(store: InMemoryStore) -> None:
     """Export is admin-gated; worker bearer → 403."""
     app = make_app(store, admin_token=ADMIN_TOKEN)
     client = TestClient(app)
-    token = _register_worker(client, "non-admin-2")
+    worker_id, token = _register_worker(client, "non-admin-2")
     resp = client.post(
         f"/v0/experiments/{EXPERIMENT_ID}/checkpoint",
         headers={
             "X-Eden-Experiment-Id": EXPERIMENT_ID,
-            "Authorization": f"Bearer non-admin-2:{token}",
+            "Authorization": f"Bearer {worker_id}:{token}",
         },
     )
     assert resp.status_code == 403
@@ -366,11 +370,14 @@ def test_import_rejects_corrupt_archive(
 
 
 def _export_with_workers(
-    store: InMemoryStore, worker_ids: list[str]
-) -> bytes:
+    store: InMemoryStore, names: list[str]
+) -> tuple[bytes, list[str]]:
+    """Register workers by name, export, and return (archive, minted ids)."""
     client, admin_bearer = _make_admin_worker_client(store)
-    for worker_id in worker_ids:
-        _register_worker(client, worker_id)
+    minted_ids: list[str] = []
+    for name in names:
+        worker_id, _ = _register_worker(client, name)
+        minted_ids.append(worker_id)
     resp = client.post(
         f"/v0/experiments/{EXPERIMENT_ID}/checkpoint",
         headers={
@@ -379,7 +386,7 @@ def _export_with_workers(
         },
     )
     assert resp.status_code == 200, resp.text
-    return resp.content
+    return resp.content, minted_ids
 
 
 def test_import_persists_reissued_credentials_to_dir(
@@ -389,7 +396,7 @@ def test_import_persists_reissued_credentials_to_dir(
     writes one `<worker_id>.token` per imported worker (mode 0600), and
     each persisted bearer authenticates against the receiver via /whoami.
     """
-    archive_bytes = _export_with_workers(store, ["wkr-a", "wkr-b"])
+    archive_bytes, minted_ids = _export_with_workers(store, ["wkr-a", "wkr-b"])
 
     creds_dir = tmp_path / "host-creds"
     receiver = fresh_store_factory()
@@ -415,7 +422,7 @@ def test_import_persists_reissued_credentials_to_dir(
 
     # Files are present, owner-only, and the tokens verify against the
     # receiver store directly.
-    for worker_id in ["wkr-a", "wkr-b"]:
+    for worker_id in minted_ids:
         path = creds_dir / f"{worker_id}.token"
         assert path.is_file()
         # 0o777 mask matches the spec/13.5 0o600 expectation; we
@@ -431,7 +438,7 @@ def test_import_warns_when_no_credentials_dir(
     """When the credentials dir is unset, the import still mints fresh
     credentials but surfaces a warning that they were NOT persisted.
     """
-    archive_bytes = _export_with_workers(store, ["wkr-c"])
+    archive_bytes, _ = _export_with_workers(store, ["wkr-c"])
 
     receiver = fresh_store_factory()
     receiver_app = make_app(receiver, admin_token=ADMIN_TOKEN)
@@ -465,7 +472,8 @@ def test_import_then_worker_bootstrap_reuses_persisted_bearer(
     """
     from eden_service_common.auth import bootstrap_worker_credential
 
-    archive_bytes = _export_with_workers(store, ["wkr-bootstrap"])
+    archive_bytes, minted_ids = _export_with_workers(store, ["wkr-bootstrap"])
+    (bootstrap_id,) = minted_ids
 
     creds_dir = tmp_path / "shared-creds"
     receiver = fresh_store_factory()
@@ -503,7 +511,7 @@ def test_import_then_worker_bootstrap_reuses_persisted_bearer(
         cred = bootstrap_worker_credential(
             base_url="http://unused",
             experiment_id=EXPERIMENT_ID,
-            worker_id="wkr-bootstrap",
+            worker_id=bootstrap_id,
             credentials_dir=creds_dir,
             # No admin token — the pre-persisted bearer should verify
             # via /whoami without falling through to the reissue
@@ -513,10 +521,10 @@ def test_import_then_worker_bootstrap_reuses_persisted_bearer(
     finally:
         _httpx.Client.__init__ = real_init
 
-    assert cred.worker_id == "wkr-bootstrap"
+    assert cred.worker_id == bootstrap_id
     # The bearer we got from bootstrap MUST be the one we persisted
     # during the import — no rotation, no reissue round-trip.
-    persisted_token = (creds_dir / "wkr-bootstrap.token").read_text()
+    persisted_token = (creds_dir / f"{bootstrap_id}.token").read_text()
     assert cred.token == persisted_token
 
 

@@ -41,17 +41,24 @@ def _now_factory():
     return _now
 
 
-def _make_store() -> InMemoryStore:
+# A valid opaque exp_* id (Crockford-base32 ULID suffix) for these
+# in-memory store fixtures since #128 enforces the exp_* grammar.
+_EXP_ID = "exp_0123456789abcdefghjkmnpqrs"
+
+
+def _make_store() -> tuple[InMemoryStore, dict[str, str]]:
     store = InMemoryStore(
-        experiment_id="exp-orch-iter",
+        experiment_id=_EXP_ID,
         evaluation_schema=EvaluationSchema({"loss": "real"}),
     )
-    # 12a-1 wave 5: Store.claim enforces the §3.5 step-2 registration
-    # check; pre-register the worker_ids the orchestrator-iteration
-    # tests use so the in-process claim calls succeed.
-    for wid in ("ideator-1", "executor-1", "evaluator-1"):
-        store.register_worker(wid)
-    return store
+    # Store.claim enforces the §3.5 step-2 registration check; since
+    # #128 ``register_worker`` MINTS the opaque ``wkr_*`` id, return a
+    # friendly-name → minted-id map so claims resolve to the minted id.
+    workers: dict[str, str] = {}
+    for friendly in ("ideator-1", "executor-1", "evaluator-1"):
+        worker, _token = store.register_worker(friendly)
+        workers[friendly] = worker.worker_id
+    return store, workers
 
 
 def _exec_factory() -> str:
@@ -63,10 +70,10 @@ def _eval_factory() -> str:
 
 
 def test_accepts_submitted_ideation_task() -> None:
-    store = _make_store()
+    store, workers = _make_store()
     task_id = "t-ideation-1"
     store.create_ideation_task(task_id)
-    claim = store.claim(task_id, worker_id="ideator-1")
+    claim = store.claim(task_id, worker_id=workers["ideator-1"])
     store.submit(
         task_id,
         claim.worker_id,
@@ -86,7 +93,7 @@ def test_accepts_submitted_ideation_task() -> None:
 
 
 def test_dispatches_execution_task_for_ready_idea() -> None:
-    store = _make_store()
+    store, workers = _make_store()
     now = _now_factory()
     idea = Idea(
         idea_id="idea-1",
@@ -122,7 +129,7 @@ def test_dispatches_execution_task_for_ready_idea() -> None:
 
 
 def test_dispatches_evaluate_task_for_starting_variant_with_commit() -> None:
-    store = _make_store()
+    store, workers = _make_store()
     now = _now_factory()
     idea = Idea(
         idea_id="idea-1",
@@ -168,7 +175,9 @@ def test_dispatches_evaluate_task_for_starting_variant_with_commit() -> None:
     assert ev.payload.variant_id == "variant-1"
 
 
-def _drive_variant_to_success(store: InMemoryStore) -> str:
+def _drive_variant_to_success(
+    store: InMemoryStore, workers: dict[str, str]
+) -> str:
     """Drive one variant through the real store API to ``status=success``.
 
     Returns the variant_id. Uses legitimate state transitions so
@@ -177,7 +186,7 @@ def _drive_variant_to_success(store: InMemoryStore) -> str:
     now = _now_factory()
     # Ideation-task
     store.create_ideation_task("t-ideation-1")
-    claim = store.claim("t-ideation-1", "ideator-1")
+    claim = store.claim("t-ideation-1", workers["ideator-1"])
     idea = Idea(
         idea_id="idea-1",
         experiment_id=store.experiment_id,
@@ -196,7 +205,7 @@ def _drive_variant_to_success(store: InMemoryStore) -> str:
     store.accept("t-ideation-1")
     # Execution-task
     store.create_execution_task("t-exec-1", "idea-1")
-    claim = store.claim("t-exec-1", "executor-1")
+    claim = store.claim("t-exec-1", workers["executor-1"])
     variant = Variant(
         variant_id="variant-1",
         experiment_id=store.experiment_id,
@@ -215,7 +224,7 @@ def _drive_variant_to_success(store: InMemoryStore) -> str:
     store.accept("t-exec-1")
     # Evaluation task
     store.create_evaluation_task("t-eval-1", "variant-1")
-    claim = store.claim("t-eval-1", "evaluator-1")
+    claim = store.claim("t-eval-1", workers["evaluator-1"])
     store.submit(
         "t-eval-1",
         claim.worker_id,
@@ -226,8 +235,8 @@ def _drive_variant_to_success(store: InMemoryStore) -> str:
 
 
 def test_promotes_successful_variant_via_integrate_variant_callback() -> None:
-    store = _make_store()
-    variant_id = _drive_variant_to_success(store)
+    store, workers = _make_store()
+    variant_id = _drive_variant_to_success(store, workers)
     assert store.read_variant(variant_id).status == "success"
     assert store.read_variant(variant_id).variant_commit_sha is None
 
@@ -251,7 +260,7 @@ def test_promotes_successful_variant_via_integrate_variant_callback() -> None:
 
 def test_quiesced_store_returns_false() -> None:
     """An empty store with nothing applicable returns progress=False."""
-    store = _make_store()
+    store, workers = _make_store()
     progress = run_orchestrator_iteration(
         store,
         execution_task_id_factory=_exec_factory,
@@ -279,8 +288,8 @@ def test_malformed_variant_does_not_crash_orchestrator(caplog) -> None:
     """
     import logging
 
-    store = _make_store()
-    bad_id = _drive_variant_to_success(store)
+    store, workers = _make_store()
+    bad_id = _drive_variant_to_success(store, workers)
     # Drive a second variant to success so we can confirm a healthy
     # one in the same iteration still gets integrated.
     now = _now_factory()
@@ -297,7 +306,7 @@ def test_malformed_variant_does_not_crash_orchestrator(caplog) -> None:
     store.create_idea(idea)
     store.mark_idea_ready("p-good")
     store.create_execution_task("t-exec-good", "p-good")
-    claim = store.claim("t-exec-good", "executor-1")
+    claim = store.claim("t-exec-good", workers["executor-1"])
     good_variant = Variant(
         variant_id="variant-good",
         experiment_id=store.experiment_id,
@@ -315,7 +324,7 @@ def test_malformed_variant_does_not_crash_orchestrator(caplog) -> None:
     )
     store.accept("t-exec-good")
     store.create_evaluation_task("t-eval-good", "variant-good")
-    eclaim = store.claim("t-eval-good", "evaluator-1")
+    eclaim = store.claim("t-eval-good", workers["evaluator-1"])
     store.submit(
         "t-eval-good",
         eclaim.worker_id,
@@ -366,8 +375,8 @@ def test_only_malformed_variant_returns_false_progress(caplog) -> None:
     """
     import logging
 
-    store = _make_store()
-    bad_id = _drive_variant_to_success(store)
+    store, workers = _make_store()
+    bad_id = _drive_variant_to_success(store, workers)
 
     def integrate(variant_id: str) -> None:
         raise RuntimeError(f"variant '{variant_id}' has no branch")

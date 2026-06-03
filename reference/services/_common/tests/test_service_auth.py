@@ -1,10 +1,12 @@
-"""Tests for the worker-host registration helper (12a-1 wave 4).
+"""Tests for the worker-host credential bootstrap helper (#128).
 
-The helper :func:`bootstrap_worker_credential` walks the §D.1 startup
-recovery flow: probe-via-whoami → register or reissue. These tests
-drive it against a real ``InMemoryStore`` behind a FastAPI server
-with §13 auth enabled, so the helper exercises every branch end-to-
-end.
+After the identity rename the per-experiment infra worker is MINTED
+once by setup-experiment; the helper :func:`bootstrap_worker_credential`
+only verifies the persisted token or admin-reissues it — it never
+fresh-registers (that would mint a different opaque id). These tests
+pre-mint a worker against a real ``InMemoryStore`` behind a FastAPI
+server with §13 auth enabled, then drive the helper against the minted
+``wkr_*`` id end-to-end.
 """
 
 from __future__ import annotations
@@ -26,7 +28,9 @@ from eden_storage import InMemoryStore
 from eden_wire import StoreClient, make_app
 from fastapi.testclient import TestClient
 
-EXPERIMENT_ID = "exp-svc-auth"
+# A valid opaque exp_* id (Crockford-base32 ULID suffix); the rename
+# (#128) enforces the exp_* / wkr_* grammars at the model boundary.
+EXPERIMENT_ID = "exp_0123456789abcdefghjkmnpqrs"
 ADMIN_TOKEN = "svc-auth-admin"
 
 
@@ -74,40 +78,49 @@ def base_url(monkeypatch: pytest.MonkeyPatch, store: InMemoryStore) -> str:
     return "http://unused"
 
 
-def test_bootstrap_first_run_registers_and_persists(
-    base_url: str, tmp_path: Path
+def _mint_worker(store: InMemoryStore, name: str | None = None) -> str:
+    """Mint a worker (as setup-experiment would) and return its opaque id."""
+    worker, _token = store.register_worker(name)
+    return worker.worker_id
+
+
+def test_bootstrap_first_run_reissues_and_persists(
+    base_url: str, tmp_path: Path, store: InMemoryStore
 ) -> None:
+    """First run for a pre-minted worker recovers its credential via reissue."""
+    worker_id = _mint_worker(store)
     credentials_dir = tmp_path / "creds"
     cred = bootstrap_worker_credential(
         base_url=base_url,
         experiment_id=EXPERIMENT_ID,
-        worker_id="eric",
+        worker_id=worker_id,
         credentials_dir=credentials_dir,
         admin_token=ADMIN_TOKEN,
     )
-    assert cred.worker_id == "eric"
+    assert cred.worker_id == worker_id
     assert len(cred.token) == 64  # 32 hex bytes
-    assert cred.bearer == f"eric:{cred.token}"
-    persisted = credential_path(credentials_dir, "eric").read_text()
+    assert cred.bearer == f"{worker_id}:{cred.token}"
+    persisted = credential_path(credentials_dir, worker_id).read_text()
     assert persisted == cred.token
 
 
 def test_bootstrap_idempotent_on_existing_persisted_token(
-    base_url: str, tmp_path: Path
+    base_url: str, tmp_path: Path, store: InMemoryStore
 ) -> None:
     """Restart with the same token: whoami succeeds, no rotation."""
+    worker_id = _mint_worker(store)
     credentials_dir = tmp_path / "creds"
     first = bootstrap_worker_credential(
         base_url=base_url,
         experiment_id=EXPERIMENT_ID,
-        worker_id="eric",
+        worker_id=worker_id,
         credentials_dir=credentials_dir,
         admin_token=ADMIN_TOKEN,
     )
     second = bootstrap_worker_credential(
         base_url=base_url,
         experiment_id=EXPERIMENT_ID,
-        worker_id="eric",
+        worker_id=worker_id,
         credentials_dir=credentials_dir,
         admin_token=ADMIN_TOKEN,
     )
@@ -118,62 +131,65 @@ def test_bootstrap_reissues_when_persisted_token_is_stale(
     base_url: str, tmp_path: Path, store: InMemoryStore
 ) -> None:
     """Admin rotated the credential externally; restart must escalate via reissue."""
+    worker_id = _mint_worker(store)
     credentials_dir = tmp_path / "creds"
     bootstrap_worker_credential(
         base_url=base_url,
         experiment_id=EXPERIMENT_ID,
-        worker_id="eric",
+        worker_id=worker_id,
         credentials_dir=credentials_dir,
         admin_token=ADMIN_TOKEN,
     )
     # Out-of-band rotation invalidates the persisted token.
-    new_token = store.reissue_credential("eric")
+    new_token = store.reissue_credential(worker_id)
     rebooted = bootstrap_worker_credential(
         base_url=base_url,
         experiment_id=EXPERIMENT_ID,
-        worker_id="eric",
+        worker_id=worker_id,
         credentials_dir=credentials_dir,
         admin_token=ADMIN_TOKEN,
     )
     assert rebooted.token != new_token  # we rotated again on top
-    persisted = credential_path(credentials_dir, "eric").read_text()
+    persisted = credential_path(credentials_dir, worker_id).read_text()
     assert persisted == rebooted.token
     # The token before our reissue is now invalid; the latest one we
     # persisted authenticates.
     with StoreClient(
         base_url, EXPERIMENT_ID, bearer=rebooted.bearer
     ) as client:
-        assert client.whoami() == "eric"
+        assert client.whoami().worker_id == worker_id
 
 
 def test_bootstrap_first_run_without_admin_token_raises(
-    base_url: str, tmp_path: Path
+    base_url: str, tmp_path: Path, store: InMemoryStore
 ) -> None:
-    """First-run registration requires the admin token."""
+    """First-run recovery (reissue) requires the admin token."""
+    worker_id = _mint_worker(store)
     credentials_dir = tmp_path / "creds"
     with pytest.raises(RuntimeError, match="admin token"):
         bootstrap_worker_credential(
             base_url=base_url,
             experiment_id=EXPERIMENT_ID,
-            worker_id="alice",
+            worker_id=worker_id,
             credentials_dir=credentials_dir,
             admin_token=None,
         )
 
 
 def test_bootstrap_persists_token_with_owner_only_perms(
-    base_url: str, tmp_path: Path
+    base_url: str, tmp_path: Path, store: InMemoryStore
 ) -> None:
     """§13.5 token-storage hygiene: file mode is 0600."""
+    worker_id = _mint_worker(store)
     credentials_dir = tmp_path / "creds"
     bootstrap_worker_credential(
         base_url=base_url,
         experiment_id=EXPERIMENT_ID,
-        worker_id="eric",
+        worker_id=worker_id,
         credentials_dir=credentials_dir,
         admin_token=ADMIN_TOKEN,
     )
-    path = credential_path(credentials_dir, "eric")
+    path = credential_path(credentials_dir, worker_id)
     assert (path.stat().st_mode & 0o777) == 0o600
 
 
@@ -201,24 +217,23 @@ def test_resolve_credentials_dir_default_when_unset(
     assert resolve_credentials_dir(args) == Path("/var/lib/eden/credentials")
 
 
-
-
 def test_bootstrap_concurrent_calls_dont_invalidate_each_other(
-    base_url: str, tmp_path: Path
+    base_url: str, tmp_path: Path, store: InMemoryStore
 ) -> None:
     """Codex round-2 #1 — concurrent bootstrap for the same worker_id is safe.
 
-    Two startup threads racing on the same ``worker_id`` MUST end up
-    with the same persisted credential, and BOTH return values MUST
-    authenticate successfully (no token-invalidation race through
-    the idempotent-register → reissue branch).
+    Two startup threads racing on the same pre-minted ``worker_id`` MUST
+    end up with the same persisted credential, and BOTH return values
+    MUST authenticate successfully (no token-invalidation race through
+    the reissue branch).
 
-    Without the per-worker_id bootstrap lock, the second arrival
-    would call ``reissue_credential`` and invalidate the first
-    arrival's freshly-issued credential.
+    Without the per-worker_id bootstrap lock, the second arrival would
+    call ``reissue_credential`` and invalidate the first arrival's
+    freshly-issued credential.
     """
     import threading
 
+    worker_id = _mint_worker(store)
     credentials_dir = tmp_path / "creds"
     results: list[WorkerCredential] = []
     errors: list[BaseException] = []
@@ -231,7 +246,7 @@ def test_bootstrap_concurrent_calls_dont_invalidate_each_other(
             cred = bootstrap_worker_credential(
                 base_url=base_url,
                 experiment_id=EXPERIMENT_ID,
-                worker_id="eric",
+                worker_id=worker_id,
                 credentials_dir=credentials_dir,
                 admin_token=ADMIN_TOKEN,
             )
@@ -254,32 +269,33 @@ def test_bootstrap_concurrent_calls_dont_invalidate_each_other(
     # second thread's reissue would invalidate the first thread's token
     # and the two returned credentials would diverge.
     assert results[0].token == results[1].token
-    persisted = credential_path(credentials_dir, "eric").read_text()
+    persisted = credential_path(credentials_dir, worker_id).read_text()
     assert persisted == results[0].token
 
 
 def test_resolve_worker_bearer_uses_persisted_token_when_no_admin_token(
-    base_url: str, tmp_path: Path
+    base_url: str, tmp_path: Path, store: InMemoryStore
 ) -> None:
     """Codex round-4 #A — restart with persisted credential but no admin token.
 
     A worker host that comes back up with a valid persisted credential
     MUST be able to authenticate without the operator re-exporting
     EDEN_ADMIN_TOKEN. Without this, the restart-with-existing-credential
-    posture documented in §D.1 silently degrades to anonymous and the
-    host hits 401s against an auth-enabled task-store-server.
+    posture silently degrades to anonymous and the host hits 401s
+    against an auth-enabled task-store-server.
     """
     import argparse
 
     from eden_service_common.auth import resolve_worker_bearer
 
+    worker_id = _mint_worker(store)
     credentials_dir = tmp_path / "creds"
     # First, bootstrap normally with the admin token so a persisted
     # credential file exists.
     first = bootstrap_worker_credential(
         base_url=base_url,
         experiment_id=EXPERIMENT_ID,
-        worker_id="eric",
+        worker_id=worker_id,
         credentials_dir=credentials_dir,
         admin_token=ADMIN_TOKEN,
     )
@@ -291,5 +307,5 @@ def test_resolve_worker_bearer_uses_persisted_token_when_no_admin_token(
         experiment_id=EXPERIMENT_ID,
         credentials_dir=str(credentials_dir),
     )
-    bearer = resolve_worker_bearer(args, worker_id="eric")
+    bearer = resolve_worker_bearer(args, worker_id=worker_id)
     assert bearer == first.bearer

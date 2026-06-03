@@ -25,6 +25,7 @@ from __future__ import annotations
 import io
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -66,7 +67,21 @@ __all__ = [
     "IndeterminateReassign",
     "IndeterminateTermination",
     "StoreClient",
+    "WhoamiResult",
 ]
+
+
+@dataclass(frozen=True)
+class WhoamiResult:
+    """The identity returned by ``GET /v0/experiments/{E}/whoami`` (§6.4).
+
+    Carries the opaque ``worker_id`` the bearer authenticates as plus the
+    OPTIONAL operator-supplied display ``name`` the server echoes back
+    (``None`` when the worker was registered without a name).
+    """
+
+    worker_id: str
+    name: str | None = None
 
 
 class IndeterminateImport(RuntimeError):
@@ -554,12 +569,22 @@ class StoreClient:
 
     def register_worker(
         self,
-        worker_id: str,
+        name: str | None = None,
         *,
         labels: dict[str, str] | None = None,
         registered_by: str | None = None,  # noqa: ARG002 — set by server-side principal
     ) -> tuple[Worker, str | None]:
-        body: dict[str, Any] = {"worker_id": worker_id}
+        """Register a worker; the server mints the opaque ``worker_id``.
+
+        The caller supplies only an optional display ``name`` + deployment
+        ``labels``. The minted ``worker_id`` (and one-time
+        ``registration_token``) come back in the response. ``registered_by``
+        is stamped server-side from the authenticated principal; the
+        parameter exists for ``Store``-Protocol signature parity.
+        """
+        body: dict[str, Any] = {}
+        if name is not None:
+            body["name"] = name
         if labels:
             body["labels"] = dict(labels)
         resp = self._request("POST", f"{self._base}/workers", json=body)
@@ -637,27 +662,53 @@ class StoreClient:
         )
         raise RuntimeError(msg)
 
-    def whoami(self) -> str:
-        """Return the ``worker_id`` the bearer authenticates as (§6.4)."""
+    def whoami(self) -> WhoamiResult:
+        """Return the identity the bearer authenticates as (§6.4).
+
+        Returns a :class:`WhoamiResult` carrying both the opaque
+        ``worker_id`` and the OPTIONAL display ``name`` echoed by the
+        server. Callers that only need the id read ``.worker_id``.
+        """
         resp = self._request("GET", f"{self._base}/whoami")
-        return str(resp.json()["worker_id"])
+        body = resp.json()
+        return WhoamiResult(
+            worker_id=str(body["worker_id"]),
+            name=body.get("name"),
+        )
 
     def read_worker(self, worker_id: str) -> Worker:
         resp = self._request("GET", f"{self._base}/workers/{worker_id}")
         return Worker.model_validate(resp.json())
 
-    def list_workers(self) -> list[Worker]:
-        resp = self._request("GET", f"{self._base}/workers")
+    def list_workers(self, name: str | None = None) -> list[Worker]:
+        """List workers, optionally filtered by exact display ``name`` (§6.2)."""
+        params = {"name": name} if name is not None else None
+        resp = self._request("GET", f"{self._base}/workers", params=params)
         return [Worker.model_validate(w) for w in resp.json()["workers"]]
 
     def register_group(
         self,
-        group_id: str,
+        name: str | None = None,
         *,
         members: Iterable[str] | None = None,
         created_by: str | None = None,  # noqa: ARG002 — set by server-side principal
+        allow_reserved: bool = False,  # noqa: ARG002 — server derives this from the authenticated principal
     ) -> Group:
-        body: dict[str, Any] = {"group_id": group_id}
+        """Register a group; the server mints the opaque ``group_id``.
+
+        The caller supplies only an optional display ``name`` + initial
+        ``members`` list (each an opaque ``wkr_*`` / ``grp_*`` id). The
+        minted ``group_id`` comes back in the response. ``created_by`` is
+        stamped server-side from the authenticated principal.
+
+        ``allow_reserved`` exists for ``Store``-Protocol signature parity;
+        over the wire the server derives the reserved-name allowance from
+        the authenticated principal (admin), so the client cannot grant
+        it by passing this flag.
+        """
+        body: dict[str, Any] = {}
+        if name is not None:
+            body["name"] = name
         if members is not None:
             body["members"] = list(members)
         resp = self._request("POST", f"{self._base}/groups", json=body)
@@ -685,8 +736,10 @@ class StoreClient:
         resp = self._request("GET", f"{self._base}/groups/{group_id}")
         return Group.model_validate(resp.json())
 
-    def list_groups(self) -> list[Group]:
-        resp = self._request("GET", f"{self._base}/groups")
+    def list_groups(self, name: str | None = None) -> list[Group]:
+        """List groups, optionally filtered by exact display ``name`` (§7.2)."""
+        params = {"name": name} if name is not None else None
+        resp = self._request("GET", f"{self._base}/groups", params=params)
         return [Group.model_validate(g) for g in resp.json()["groups"]]
 
     def resolve_worker_in_group(self, worker_id: str, group_id: str) -> bool:

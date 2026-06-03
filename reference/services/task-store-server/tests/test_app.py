@@ -28,7 +28,7 @@ def test_build_store_memory_backend() -> None:
     config = load_experiment_config(FIXTURE_CONFIG)
     store = build_store(
         store_url=":memory:",
-        experiment_id="exp-1",
+        experiment_id="exp_0123456789abcdefghjkmnpqrs",
         config=config,
     )
     assert isinstance(store, InMemoryStore)
@@ -39,7 +39,7 @@ def test_build_store_sqlite_backend_bare_path(tmp_path: Path) -> None:
     db_path = str(tmp_path / "eden.sqlite")
     store = build_store(
         store_url=db_path,
-        experiment_id="exp-1",
+        experiment_id="exp_0123456789abcdefghjkmnpqrs",
         config=config,
     )
     assert isinstance(store, SqliteStore)
@@ -51,7 +51,7 @@ def test_build_store_sqlite_backend_url_scheme(tmp_path: Path) -> None:
     db_path = tmp_path / "eden.sqlite"
     store = build_store(
         store_url=f"sqlite:///{db_path}",
-        experiment_id="exp-1",
+        experiment_id="exp_0123456789abcdefghjkmnpqrs",
         config=config,
     )
     assert isinstance(store, SqliteStore)
@@ -60,24 +60,28 @@ def test_build_store_sqlite_backend_url_scheme(tmp_path: Path) -> None:
 
 def test_build_app_no_admin_token_admits_anonymous() -> None:
     config = load_experiment_config(FIXTURE_CONFIG)
-    store = build_store(store_url=":memory:", experiment_id="exp-1", config=config)
+    store = build_store(
+        store_url=":memory:", experiment_id="exp_0123456789abcdefghjkmnpqrs", config=config
+    )
     app = build_app(store=store)
     client = TestClient(app)
     resp = client.get(
-        "/v0/experiments/exp-1/events",
-        headers={"X-Eden-Experiment-Id": "exp-1"},
+        "/v0/experiments/exp_0123456789abcdefghjkmnpqrs/events",
+        headers={"X-Eden-Experiment-Id": "exp_0123456789abcdefghjkmnpqrs"},
     )
     assert resp.status_code == 200
 
 
 def test_build_app_with_admin_token_rejects_unauthenticated() -> None:
     config = load_experiment_config(FIXTURE_CONFIG)
-    store = build_store(store_url=":memory:", experiment_id="exp-1", config=config)
+    store = build_store(
+        store_url=":memory:", experiment_id="exp_0123456789abcdefghjkmnpqrs", config=config
+    )
     app = build_app(store=store, admin_token="secret")
     client = TestClient(app)
     resp = client.get(
-        "/v0/experiments/exp-1/events",
-        headers={"X-Eden-Experiment-Id": "exp-1"},
+        "/v0/experiments/exp_0123456789abcdefghjkmnpqrs/events",
+        headers={"X-Eden-Experiment-Id": "exp_0123456789abcdefghjkmnpqrs"},
     )
     assert resp.status_code == 401
     assert resp.json()["type"] == "eden://error/unauthorized"
@@ -85,13 +89,15 @@ def test_build_app_with_admin_token_rejects_unauthenticated() -> None:
 
 def test_build_app_with_admin_token_admits_admin_bearer() -> None:
     config = load_experiment_config(FIXTURE_CONFIG)
-    store = build_store(store_url=":memory:", experiment_id="exp-1", config=config)
+    store = build_store(
+        store_url=":memory:", experiment_id="exp_0123456789abcdefghjkmnpqrs", config=config
+    )
     app = build_app(store=store, admin_token="secret")
     client = TestClient(app)
     resp = client.get(
-        "/v0/experiments/exp-1/events",
+        "/v0/experiments/exp_0123456789abcdefghjkmnpqrs/events",
         headers={
-            "X-Eden-Experiment-Id": "exp-1",
+            "X-Eden-Experiment-Id": "exp_0123456789abcdefghjkmnpqrs",
             "Authorization": "Bearer admin:secret",
         },
     )

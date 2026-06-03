@@ -21,8 +21,8 @@ from eden_orchestrator.lease_manager import (
 )
 
 BASE_URL = "http://control-plane.test"
-EXPERIMENT = "exp-1"
-WORKER_ID = "auto-orchestrator-1"
+EXPERIMENT = "exp_01kt5e4vh7h10w9fsb2pbkmt6s"
+WORKER_ID = "wkr_01kt5e4vh7h2a0hfbxwyw9nyh6"
 
 
 def _lease_payload(
@@ -553,10 +553,15 @@ def test_release_all_clears_held_set() -> None:
     from eden_control_plane import ExperimentLease
     from eden_orchestrator.lease_manager import LeaseSnapshot
 
-    for i in range(3):
-        manager._held[f"exp-{i}"] = LeaseSnapshot(  # noqa: SLF001
+    exp_ids = [
+        "exp_01kt5e4vh7cp3s1jy80c0cdbnx",
+        "exp_01kt5e4vh7q690thcjaptqrx5s",
+        "exp_01kt5e4vh73ys330gv06rban7c",
+    ]
+    for i, exp_id in enumerate(exp_ids):
+        manager._held[exp_id] = LeaseSnapshot(  # noqa: SLF001
             lease=ExperimentLease.model_validate(
-                _lease_payload(lease_id=f"lease-{i:03d}", experiment_id=f"exp-{i}")
+                _lease_payload(lease_id=f"lease-{i:03d}", experiment_id=exp_id)
             ),
         )
 

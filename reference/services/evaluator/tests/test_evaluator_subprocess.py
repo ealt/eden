@@ -23,10 +23,12 @@ from eden_git import GitRepo, Identity, TreeEntry
 from eden_service_common import seed_bare_repo
 from eden_storage import EvaluationSubmission, InMemoryStore
 
-EXPERIMENT_ID = "exp-1"
+EXPERIMENT_ID = "exp_0123456789abcdefghjkmnpqrs"
 
 
-def _store_with_evaluable_variant(tmp_path: Path) -> tuple[InMemoryStore, str, str, str]:
+def _store_with_evaluable_variant(
+    tmp_path: Path,
+) -> tuple[InMemoryStore, str, str, str, str]:
     repo_path = tmp_path / "bare.git"
     GitRepo.init_bare(repo_path)
     seed_sha = seed_bare_repo(str(repo_path))
@@ -51,10 +53,16 @@ def _store_with_evaluable_variant(tmp_path: Path) -> tuple[InMemoryStore, str, s
     )
     schema = EvaluationSchema.model_validate({"score": "real"})
     store = InMemoryStore(experiment_id=EXPERIMENT_ID, evaluation_schema=schema)
-    # 12a-1 wave 5: pre-register the worker_ids the evaluator-subprocess
-    # tests drive through Store.claim (§3.5 step-2 registration check).
-    for wid in ("execution-1", "evaluator-1", "eval-1"):
-        store.register_worker(wid)
+    # Issue #128: worker_ids are now system-minted/opaque. Mint the two
+    # workers the evaluator-subprocess tests drive through Store.claim
+    # (§3.5 step-2 registration check): one executor that claims/submits
+    # the execution task to produce the variant, and one evaluator that
+    # _handle_one drives. Return the evaluator's minted id so each test
+    # threads the minted claimant into _handle_one.
+    _w, _ = store.register_worker(name="executor-1")
+    executor_id = _w.worker_id
+    _w, _ = store.register_worker(name="eval-1")
+    evaluator_id = _w.worker_id
     idea = Idea(
         idea_id="idea-x1",
         experiment_id=EXPERIMENT_ID,
@@ -68,7 +76,7 @@ def _store_with_evaluable_variant(tmp_path: Path) -> tuple[InMemoryStore, str, s
     store.create_idea(idea)
     store.mark_idea_ready("idea-x1")
     store.create_execution_task("execution-1", "idea-x1")
-    claim = store.claim("execution-1", "execution-1")
+    claim = store.claim("execution-1", executor_id)
     variant = Variant(
         variant_id="variant-t1",
         experiment_id=EXPERIMENT_ID,
@@ -91,7 +99,7 @@ def _store_with_evaluable_variant(tmp_path: Path) -> tuple[InMemoryStore, str, s
     assert decision == "accept"
     store.accept("execution-1")
     store.create_evaluation_task("evaluate-1", "variant-t1")
-    return store, str(repo_path), seed_sha, "variant-t1"
+    return store, str(repo_path), seed_sha, "variant-t1", evaluator_id
 
 
 def _config(
@@ -128,7 +136,7 @@ def _write_command(tmp_path: Path, body: str) -> str:
 
 
 def test_success_submits_evaluation(tmp_path: Path) -> None:
-    store, repo_path, _, _ = _store_with_evaluable_variant(tmp_path)
+    store, repo_path, _, _, evaluator_id = _store_with_evaluable_variant(tmp_path)
     body = """
     import json, os
     from pathlib import Path
@@ -148,7 +156,7 @@ def test_success_submits_evaluation(tmp_path: Path) -> None:
     task = task_raw
     _handle_one(
         store=store,
-        worker_id="eval-1",
+        worker_id=evaluator_id,
         task=task,
         config=config,
         host_subdir=host_subdir,
@@ -162,7 +170,7 @@ def test_success_submits_evaluation(tmp_path: Path) -> None:
 
 
 def test_invalid_metric_routes_to_eval_error(tmp_path: Path) -> None:
-    store, repo_path, _, _ = _store_with_evaluable_variant(tmp_path)
+    store, repo_path, _, _, evaluator_id = _store_with_evaluable_variant(tmp_path)
     body = """
     import json, os
     from pathlib import Path
@@ -183,7 +191,7 @@ def test_invalid_metric_routes_to_eval_error(tmp_path: Path) -> None:
     task = task_raw
     _handle_one(
         store=store,
-        worker_id="eval-1",
+        worker_id=evaluator_id,
         task=task,
         config=config,
         host_subdir=host_subdir,
@@ -196,7 +204,7 @@ def test_invalid_metric_routes_to_eval_error(tmp_path: Path) -> None:
 
 
 def test_status_error_passthrough(tmp_path: Path) -> None:
-    store, repo_path, _, _ = _store_with_evaluable_variant(tmp_path)
+    store, repo_path, _, _, evaluator_id = _store_with_evaluable_variant(tmp_path)
     body = """
     import json, os
     from pathlib import Path
@@ -216,7 +224,7 @@ def test_status_error_passthrough(tmp_path: Path) -> None:
     task = task_raw
     _handle_one(
         store=store,
-        worker_id="eval-1",
+        worker_id=evaluator_id,
         task=task,
         config=config,
         host_subdir=host_subdir,
@@ -229,7 +237,7 @@ def test_status_error_passthrough(tmp_path: Path) -> None:
 
 
 def test_subprocess_timeout_routes_to_eval_error(tmp_path: Path) -> None:
-    store, repo_path, _, _ = _store_with_evaluable_variant(tmp_path)
+    store, repo_path, _, _, evaluator_id = _store_with_evaluable_variant(tmp_path)
     config = _config(
         command="python3 -c 'import time; time.sleep(60)'",
         repo_path=repo_path,
@@ -245,7 +253,7 @@ def test_subprocess_timeout_routes_to_eval_error(tmp_path: Path) -> None:
     start = time.monotonic()
     _handle_one(
         store=store,
-        worker_id="eval-1",
+        worker_id=evaluator_id,
         task=task,
         config=config,
         host_subdir=host_subdir,

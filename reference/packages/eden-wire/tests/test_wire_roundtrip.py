@@ -38,47 +38,34 @@ from eden_wire.errors import ExperimentIdMismatch
 from fastapi.testclient import TestClient
 from httpx import Client, MockTransport, Request, Response
 
-EXPERIMENT_ID = "exp-wire"
+EXPERIMENT_ID = "exp_vaz2w4mm8hhqwak9zsg7xpffr5"
+ADMIN_TOKEN = "test-roundtrip-admin-token"
 SHORT_SUBSCRIBE_TIMEOUT = 0.2  # keep idle long-polls fast in tests
 
 
 @pytest.fixture
 def store() -> InMemoryStore:
     schema = EvaluationSchema.model_validate({"loss": "real", "acc": "real"})
-    store = InMemoryStore(EXPERIMENT_ID, evaluation_schema=schema)
-    # 12a-1 wave 5: Store.claim's §3.5 step-2 registration check
-    # requires every claimant to exist in the registry. The wire
-    # surface is auth-disabled here, so the wire's
-    # ``_worker_id_from_request`` collapses every caller onto the
-    # ``anonymous`` sentinel — register that one id so the
-    # claim/submit roundtrip paths pass the §3.5 check. (Tests that
-    # need distinct claimants enable auth inline; see
-    # ``test_wrong_claimant``.) The legacy w / w1 / etc. ids are
-    # also registered for any direct-against-Store call sites that
-    # bypass the wire entirely.
-    for wid in (
-        "anonymous",
-        "w",
-        "w1",
-        "w2",
-        "wfresh",
-        "ideator",
-        "executor",
-        "evaluator",
-        "ideator-1",
-        "executor-1",
-        "evaluator-1",
-    ):
-        store.register_worker(wid)
-    return store
+    return InMemoryStore(EXPERIMENT_ID, evaluation_schema=schema)
 
 
 @pytest.fixture
 def app(store: InMemoryStore) -> Any:
+    # Since the identity rename (#128), worker ids are opaque,
+    # system-minted; there is no way to register a worker with the
+    # literal ``anonymous`` sentinel id, so the auth-disabled
+    # collapse-to-``anonymous`` posture can no longer satisfy the §3.5
+    # registration check. These round-trip tests therefore run
+    # AUTH-ENABLED: a single "driver" worker (minted id) is the universal
+    # bearer for ``store_client``, placed in both ``admins`` and
+    # ``orchestrators`` so the §3.7 create-task gates pass. The driver's
+    # minted id is exposed via ``driver_id`` and used as the claimant
+    # everywhere a worker_id is required.
     return make_app(
         store,
         subscribe_timeout=SHORT_SUBSCRIBE_TIMEOUT,
         subscribe_poll_interval=0.02,
+        admin_token=ADMIN_TOKEN,
     )
 
 
@@ -88,8 +75,40 @@ def client(app: Any) -> Client:
 
 
 @pytest.fixture
-def store_client(client: Client) -> StoreClient:
-    return StoreClient("http://wire.test", EXPERIMENT_ID, client=client)
+def driver(client: Client) -> tuple[str, str]:
+    """Register the universal driver worker; return (minted id, token).
+
+    The driver is placed in ``admins`` and ``orchestrators`` so it can
+    create tasks, claim, submit, accept, and integrate over the
+    auth-enabled wire.
+    """
+    admin_sc = StoreClient(
+        "http://wire.test",
+        EXPERIMENT_ID,
+        client=client,
+        bearer=f"admin:{ADMIN_TOKEN}",
+    )
+    worker, token = admin_sc.register_worker(name="driver")
+    assert token is not None
+    admin_sc.register_group(name="admins", members=[worker.worker_id])
+    admin_sc.register_group(name="orchestrators", members=[worker.worker_id])
+    return worker.worker_id, token
+
+
+@pytest.fixture
+def driver_id(driver: tuple[str, str]) -> str:
+    return driver[0]
+
+
+@pytest.fixture
+def store_client(client: Client, driver: tuple[str, str]) -> StoreClient:
+    driver_worker_id, driver_token = driver
+    return StoreClient(
+        "http://wire.test",
+        EXPERIMENT_ID,
+        client=client,
+        bearer=f"{driver_worker_id}:{driver_token}",
+    )
 
 
 def _make_idea_body(idea_id: str) -> dict[str, Any]:
@@ -125,6 +144,7 @@ def _run_variant_to_success(
     task_prefix: str,
     idea_id: str,
     variant_id: str,
+    claimant_id: str,
 ) -> None:
     """Drive a variant to ``status="success"`` via the real Store API.
 
@@ -132,10 +152,14 @@ def _run_variant_to_success(
     through the full plan → implement → evaluate → accept pipeline
     over HTTP, matching what the real dispatch driver would do.
     No internal-state mutation; no ``model_copy(update=...)``.
+
+    ``claimant_id`` is the authenticated driver's minted worker id; the
+    StoreClient claim preflight requires the passed claimant to match the
+    bearer principal, so all three phases claim as the same driver.
     """
     # Plan phase — produces a ready idea.
     store_client.create_ideation_task(f"{task_prefix}-plan")
-    claim = store_client.claim(f"{task_prefix}-plan", "ideator")
+    claim = store_client.claim(f"{task_prefix}-plan", claimant_id)
     store_client.create_idea(Idea.model_validate(_make_idea_body(idea_id)))
     store_client.mark_idea_ready(idea_id)
     store_client.submit(
@@ -147,7 +171,7 @@ def _run_variant_to_success(
 
     # Implement phase — produces a variant with commit_sha.
     store_client.create_execution_task(f"{task_prefix}-impl", idea_id)
-    claim = store_client.claim(f"{task_prefix}-impl", "executor")
+    claim = store_client.claim(f"{task_prefix}-impl", claimant_id)
     store_client.create_variant(Variant.model_validate(_make_variant_body(variant_id, idea_id)))
     store_client.submit(
         f"{task_prefix}-impl",
@@ -158,7 +182,7 @@ def _run_variant_to_success(
 
     # Evaluate phase — transitions variant to success with metrics.
     store_client.create_evaluation_task(f"{task_prefix}-eval", variant_id)
-    claim = store_client.claim(f"{task_prefix}-eval", "evaluator")
+    claim = store_client.claim(f"{task_prefix}-eval", claimant_id)
     store_client.submit(
         f"{task_prefix}-eval",
         claim.worker_id,
@@ -176,10 +200,14 @@ class TestFullExperiment:
     """Plan → implement → evaluate → integrate over HTTP."""
 
     def test_ideation_execution_evaluation_integration(
-        self, store_client: StoreClient
+        self, store_client: StoreClient, driver_id: str
     ) -> None:
         _run_variant_to_success(
-            store_client, task_prefix="t1", idea_id="idea-1", variant_id="variant-1"
+            store_client,
+            task_prefix="t1",
+            idea_id="idea-1",
+            variant_id="variant-1",
+            claimant_id=driver_id,
         )
         variant_commit_sha = "c" * 40
         store_client.integrate_variant("variant-1", variant_commit_sha)
@@ -201,11 +229,15 @@ class TestErrorEnvelopeRoundtrip:
         with pytest.raises(AlreadyExists):
             store_client.create_ideation_task("dup")
 
-    def test_illegal_transition(self, store_client: StoreClient) -> None:
+    def test_illegal_transition(
+        self, store_client: StoreClient, driver_id: str
+    ) -> None:
         store_client.create_ideation_task("p1")
-        store_client.claim("p1", "w1")
+        store_client.claim("p1", driver_id)
         with pytest.raises(IllegalTransition):
-            store_client.claim("p1", "w2")
+            # Same authenticated driver re-claims an already-claimed task;
+            # the failure is the state transition, not the identity.
+            store_client.claim("p1", driver_id)
 
     def test_wrong_claimant(self) -> None:
         # WrongClaimant requires two distinct authenticated identities.
@@ -233,43 +265,45 @@ class TestErrorEnvelopeRoundtrip:
             client=client,
             bearer=f"admin:{admin_token}",
         )
-        _, w1_token = admin_sc.register_worker("w1")
-        _, w2_token = admin_sc.register_worker("w2")
-        _, creator_token = admin_sc.register_worker("creator")
+        w1, w1_token = admin_sc.register_worker(name="w1")
+        w2, w2_token = admin_sc.register_worker(name="w2")
+        creator, creator_token = admin_sc.register_worker(name="creator")
         assert w1_token is not None
         assert w2_token is not None
         assert creator_token is not None
         # ``creator`` issues ``POST /tasks`` for kind=ideation — that
         # route requires admins-or-orchestrators group membership
         # (chapter 07 §3.7), so register the group and pull
-        # ``creator`` in.
-        admin_sc.register_group("admins", members=["creator"])
+        # ``creator`` in (by its minted id).
+        admin_sc.register_group(name="admins", members=[creator.worker_id])
         creator_sc = StoreClient(
             "http://wire.test",
             EXPERIMENT_ID,
             client=client,
-            bearer=f"creator:{creator_token}",
+            bearer=f"{creator.worker_id}:{creator_token}",
         )
         w1_sc = StoreClient(
             "http://wire.test",
             EXPERIMENT_ID,
             client=client,
-            bearer=f"w1:{w1_token}",
+            bearer=f"{w1.worker_id}:{w1_token}",
         )
         w2_sc = StoreClient(
             "http://wire.test",
             EXPERIMENT_ID,
             client=client,
-            bearer=f"w2:{w2_token}",
+            bearer=f"{w2.worker_id}:{w2_token}",
         )
         creator_sc.create_ideation_task("p2")
-        w1_sc.claim("p2", "w1")
+        w1_sc.claim("p2", w1.worker_id)
         with pytest.raises(WrongClaimant):
-            w2_sc.submit("p2", "w2", IdeaSubmission(status="success"))
+            w2_sc.submit("p2", w2.worker_id, IdeaSubmission(status="success"))
 
-    def test_conflicting_resubmission(self, store_client: StoreClient) -> None:
+    def test_conflicting_resubmission(
+        self, store_client: StoreClient, driver_id: str
+    ) -> None:
         store_client.create_ideation_task("p3")
-        claim = store_client.claim("p3", "w1")
+        claim = store_client.claim("p3", driver_id)
         store_client.create_idea(Idea.model_validate(_make_idea_body("pr-a")))
         store_client.mark_idea_ready("pr-a")
         store_client.create_idea(Idea.model_validate(_make_idea_body("pr-b")))
@@ -297,15 +331,23 @@ class TestErrorEnvelopeRoundtrip:
 class TestExperimentIdHeader:
     """§1.3 — header-vs-path mismatch is rejected."""
 
-    def test_missing_header(self, client: Client) -> None:
-        resp = client.get(f"/v0/experiments/{EXPERIMENT_ID}/tasks")
+    def test_missing_header(self, client: Client, driver: tuple[str, str]) -> None:
+        driver_worker_id, driver_token = driver
+        resp = client.get(
+            f"/v0/experiments/{EXPERIMENT_ID}/tasks",
+            headers={"Authorization": f"Bearer {driver_worker_id}:{driver_token}"},
+        )
         assert resp.status_code == 400
         assert resp.json()["type"] == "eden://error/experiment-id-mismatch"
 
-    def test_header_mismatch(self, client: Client) -> None:
+    def test_header_mismatch(self, client: Client, driver: tuple[str, str]) -> None:
+        driver_worker_id, driver_token = driver
         resp = client.get(
             f"/v0/experiments/{EXPERIMENT_ID}/tasks",
-            headers={"X-Eden-Experiment-Id": "wrong"},
+            headers={
+                "X-Eden-Experiment-Id": "wrong",
+                "Authorization": f"Bearer {driver_worker_id}:{driver_token}",
+            },
         )
         assert resp.status_code == 400
         assert resp.json()["type"] == "eden://error/experiment-id-mismatch"
@@ -314,38 +356,55 @@ class TestExperimentIdHeader:
 class TestResponseCodes:
     """Spec §2.4, §3, §4, §5: success status codes and bodies."""
 
-    def test_submit_returns_200(self, client: Client, store_client: StoreClient) -> None:
+    def test_submit_returns_200(
+        self, client: Client, store_client: StoreClient, driver: tuple[str, str]
+    ) -> None:
+        driver_worker_id, driver_token = driver
         store_client.create_ideation_task("sc1")
-        # In auth-disabled mode every caller collapses to the
-        # ``anonymous`` sentinel, so claim and submit both run as
-        # the same principal and the §4.1 claim-match passes.
-        store_client.claim("sc1", "w")
+        # Auth-enabled: the driver claims and submits as the same
+        # principal, so the §4.1 claim-match passes.
+        store_client.claim("sc1", driver_worker_id)
         resp = client.post(
             f"/v0/experiments/{EXPERIMENT_ID}/tasks/sc1/submit",
-            headers={"X-Eden-Experiment-Id": EXPERIMENT_ID},
+            headers={
+                "X-Eden-Experiment-Id": EXPERIMENT_ID,
+                "Authorization": f"Bearer {driver_worker_id}:{driver_token}",
+            },
             json={"payload": {"kind": "ideation", "status": "success"}},
         )
         assert resp.status_code == 200
 
     def test_integrate_returns_200(
-        self, client: Client, store_client: StoreClient
+        self, client: Client, store_client: StoreClient, driver: tuple[str, str]
     ) -> None:
+        driver_worker_id, driver_token = driver
         _run_variant_to_success(
-            store_client, task_prefix="sc2", idea_id="sc2-idea", variant_id="sc2-variant"
+            store_client,
+            task_prefix="sc2",
+            idea_id="sc2-idea",
+            variant_id="sc2-variant",
+            claimant_id=driver_worker_id,
         )
         resp = client.post(
             f"/v0/experiments/{EXPERIMENT_ID}/variants/sc2-variant/integrate",
-            headers={"X-Eden-Experiment-Id": EXPERIMENT_ID},
+            headers={
+                "X-Eden-Experiment-Id": EXPERIMENT_ID,
+                "Authorization": f"Bearer {driver_worker_id}:{driver_token}",
+            },
             json={"variant_commit_sha": "c" * 40},
         )
         assert resp.status_code == 200
 
     def test_create_idea_returns_entity(
-        self, client: Client
+        self, client: Client, driver: tuple[str, str]
     ) -> None:
+        driver_worker_id, driver_token = driver
         resp = client.post(
             f"/v0/experiments/{EXPERIMENT_ID}/ideas",
-            headers={"X-Eden-Experiment-Id": EXPERIMENT_ID},
+            headers={
+                "X-Eden-Experiment-Id": EXPERIMENT_ID,
+                "Authorization": f"Bearer {driver_worker_id}:{driver_token}",
+            },
             json=_make_idea_body("body-idea"),
         )
         assert resp.status_code == 200
@@ -354,15 +413,19 @@ class TestResponseCodes:
         assert body["state"] == "drafting"
 
     def test_create_variant_returns_entity(
-        self, client: Client, store_client: StoreClient
+        self, client: Client, store_client: StoreClient, driver: tuple[str, str]
     ) -> None:
+        driver_worker_id, driver_token = driver
         store_client.create_idea(
             Idea.model_validate(_make_idea_body("ct-idea"))
         )
         store_client.mark_idea_ready("ct-idea")
         resp = client.post(
             f"/v0/experiments/{EXPERIMENT_ID}/variants",
-            headers={"X-Eden-Experiment-Id": EXPERIMENT_ID},
+            headers={
+                "X-Eden-Experiment-Id": EXPERIMENT_ID,
+                "Authorization": f"Bearer {driver_worker_id}:{driver_token}",
+            },
             json=_make_variant_body("ct-variant", "ct-idea"),
         )
         assert resp.status_code == 200
@@ -375,10 +438,14 @@ class TestIntegrateIdempotency:
     """§5 same-value idempotency; different-SHA divergence."""
 
     def test_same_sha_idempotent(
-        self, store: InMemoryStore, store_client: StoreClient
+        self, store: InMemoryStore, store_client: StoreClient, driver_id: str
     ) -> None:
         _run_variant_to_success(
-            store_client, task_prefix="idem", idea_id="idem-idea", variant_id="idem-t"
+            store_client,
+            task_prefix="idem",
+            idea_id="idem-idea",
+            variant_id="idem-t",
+            claimant_id=driver_id,
         )
         sha = "c" * 40
         store_client.integrate_variant("idem-t", sha)
@@ -387,10 +454,14 @@ class TestIntegrateIdempotency:
         assert len(integrated_events) == 1
 
     def test_different_sha_rejected(
-        self, store_client: StoreClient
+        self, store_client: StoreClient, driver_id: str
     ) -> None:
         _run_variant_to_success(
-            store_client, task_prefix="div", idea_id="div-idea", variant_id="div-t"
+            store_client,
+            task_prefix="div",
+            idea_id="div-idea",
+            variant_id="div-t",
+            claimant_id=driver_id,
         )
         store_client.integrate_variant("div-t", "c" * 40)
         with pytest.raises(InvalidPrecondition):
@@ -434,6 +505,35 @@ class TestSubscribe:
         events = store_client.replay()
         assert len(events) == 2
         assert all(e.type == "task.created" for e in events)
+
+
+def _make_auth_app_and_driver(
+    store: InMemoryStore,
+) -> tuple[Any, str, str]:
+    """Build an auth-enabled app + a driver worker in admins+orchestrators.
+
+    Returns ``(app, driver_worker_id, driver_token)``. Shared by the
+    indeterminate-integration tests, which need a registered claimant
+    (the ``anonymous`` sentinel can no longer be registered post-#128).
+    """
+    app = make_app(
+        store,
+        subscribe_timeout=SHORT_SUBSCRIBE_TIMEOUT,
+        subscribe_poll_interval=0.02,
+        admin_token=ADMIN_TOKEN,
+    )
+    seed = TestClient(app, base_url="http://wire.test")
+    admin_sc = StoreClient(
+        "http://wire.test",
+        EXPERIMENT_ID,
+        client=seed,
+        bearer=f"admin:{ADMIN_TOKEN}",
+    )
+    worker, token = admin_sc.register_worker(name="driver")
+    assert token is not None
+    admin_sc.register_group(name="admins", members=[worker.worker_id])
+    admin_sc.register_group(name="orchestrators", members=[worker.worker_id])
+    return app, worker.worker_id, token
 
 
 def _transport_that_loses(
@@ -495,34 +595,23 @@ class TestIndeterminateIntegration:
     the real ASGI boundary.
     """
 
-    def _make_client(
-        self, store: InMemoryStore, *, after_commit: bool
-    ) -> tuple[StoreClient, Client]:
-        app = make_app(
-            store,
-            subscribe_timeout=SHORT_SUBSCRIBE_TIMEOUT,
-            subscribe_poll_interval=0.02,
-        )
-        seed_client = TestClient(app, base_url="http://wire.test")
-        seed_store_client = StoreClient(
-            "http://wire.test", EXPERIMENT_ID, client=seed_client
-        )
-        return seed_store_client, seed_client, app  # type: ignore[return-value]
-
     def test_confirmed_success_after_response_lost(
         self, store: InMemoryStore
     ) -> None:
         """Server commits; response is lost; client read-back observes the
         expected SHA → return success (no exception, no compensation)."""
-        app = make_app(
-            store,
-            subscribe_timeout=SHORT_SUBSCRIBE_TIMEOUT,
-            subscribe_poll_interval=0.02,
-        )
+        app, driver_id, driver_token = _make_auth_app_and_driver(store)
+        bearer = f"{driver_id}:{driver_token}"
         seed = TestClient(app, base_url="http://wire.test")
-        seed_client = StoreClient("http://wire.test", EXPERIMENT_ID, client=seed)
+        seed_client = StoreClient(
+            "http://wire.test", EXPERIMENT_ID, client=seed, bearer=bearer
+        )
         _run_variant_to_success(
-            seed_client, task_prefix="cs", idea_id="cs-idea", variant_id="cs-t"
+            seed_client,
+            task_prefix="cs",
+            idea_id="cs-idea",
+            variant_id="cs-t",
+            claimant_id=driver_id,
         )
 
         flaky = Client(
@@ -533,22 +622,27 @@ class TestIndeterminateIntegration:
             ),
             base_url="http://wire.test",
         )
-        with StoreClient("http://wire.test", EXPERIMENT_ID, client=flaky) as flaky_sc:
+        with StoreClient(
+            "http://wire.test", EXPERIMENT_ID, client=flaky, bearer=bearer
+        ) as flaky_sc:
             flaky_sc.integrate_variant("cs-t", "c" * 40)  # MUST NOT raise
         assert store.read_variant("cs-t").variant_commit_sha == "c" * 40
 
     def test_indeterminate_when_no_sha(self, store: InMemoryStore) -> None:
         """Server never committed; read-back shows variant_commit_sha=None →
         IndeterminateIntegration (must NOT compensate)."""
-        app = make_app(
-            store,
-            subscribe_timeout=SHORT_SUBSCRIBE_TIMEOUT,
-            subscribe_poll_interval=0.02,
-        )
+        app, driver_id, driver_token = _make_auth_app_and_driver(store)
+        bearer = f"{driver_id}:{driver_token}"
         seed = TestClient(app, base_url="http://wire.test")
-        seed_client = StoreClient("http://wire.test", EXPERIMENT_ID, client=seed)
+        seed_client = StoreClient(
+            "http://wire.test", EXPERIMENT_ID, client=seed, bearer=bearer
+        )
         _run_variant_to_success(
-            seed_client, task_prefix="ind", idea_id="ind-idea", variant_id="ind-t"
+            seed_client,
+            task_prefix="ind",
+            idea_id="ind-idea",
+            variant_id="ind-t",
+            claimant_id=driver_id,
         )
 
         flaky = Client(
@@ -560,7 +654,9 @@ class TestIndeterminateIntegration:
             base_url="http://wire.test",
         )
         with (
-            StoreClient("http://wire.test", EXPERIMENT_ID, client=flaky) as flaky_sc,
+            StoreClient(
+                "http://wire.test", EXPERIMENT_ID, client=flaky, bearer=bearer
+            ) as flaky_sc,
             pytest.raises(IndeterminateIntegration),
         ):
             flaky_sc.integrate_variant("ind-t", "c" * 40)
@@ -570,15 +666,18 @@ class TestIndeterminateIntegration:
         """Server committed a *different* SHA previously; transport fails on
         the new attempt; read-back surfaces the different SHA →
         InvalidPrecondition, no compensation."""
-        app = make_app(
-            store,
-            subscribe_timeout=SHORT_SUBSCRIBE_TIMEOUT,
-            subscribe_poll_interval=0.02,
-        )
+        app, driver_id, driver_token = _make_auth_app_and_driver(store)
+        bearer = f"{driver_id}:{driver_token}"
         seed = TestClient(app, base_url="http://wire.test")
-        seed_client = StoreClient("http://wire.test", EXPERIMENT_ID, client=seed)
+        seed_client = StoreClient(
+            "http://wire.test", EXPERIMENT_ID, client=seed, bearer=bearer
+        )
         _run_variant_to_success(
-            seed_client, task_prefix="dv", idea_id="dv-idea", variant_id="dv-t"
+            seed_client,
+            task_prefix="dv",
+            idea_id="dv-idea",
+            variant_id="dv-t",
+            claimant_id=driver_id,
         )
         seed_client.integrate_variant("dv-t", "d" * 40)  # pre-commit a different SHA
 
@@ -591,7 +690,9 @@ class TestIndeterminateIntegration:
             base_url="http://wire.test",
         )
         with (
-            StoreClient("http://wire.test", EXPERIMENT_ID, client=flaky) as flaky_sc,
+            StoreClient(
+                "http://wire.test", EXPERIMENT_ID, client=flaky, bearer=bearer
+            ) as flaky_sc,
             pytest.raises(InvalidPrecondition),
         ):
             flaky_sc.integrate_variant("dv-t", "c" * 40)
@@ -614,8 +715,10 @@ def test_multi_app_isolation() -> None:
     log, and vice versa.
     """
     schema = EvaluationSchema.model_validate({"loss": "real", "acc": "real"})
-    store_a = InMemoryStore("exp-iso-a", evaluation_schema=schema)
-    store_b = InMemoryStore("exp-iso-b", evaluation_schema=schema)
+    exp_iso_a = "exp_a6p1kmhkf0jn7j544669b51c6h"
+    exp_iso_b = "exp_dj4p6a4f95z2qhcpbzzb9mh68m"
+    store_a = InMemoryStore(exp_iso_a, evaluation_schema=schema)
+    store_b = InMemoryStore(exp_iso_b, evaluation_schema=schema)
 
     client_a = TestClient(
         make_app(store_a, subscribe_timeout=SHORT_SUBSCRIBE_TIMEOUT),
@@ -625,8 +728,8 @@ def test_multi_app_isolation() -> None:
         make_app(store_b, subscribe_timeout=SHORT_SUBSCRIBE_TIMEOUT),
         base_url="http://wire-b.test",
     )
-    sc_a = StoreClient("http://wire-a.test", "exp-iso-a", client=client_a)
-    sc_b = StoreClient("http://wire-b.test", "exp-iso-b", client=client_b)
+    sc_a = StoreClient("http://wire-a.test", exp_iso_a, client=client_a)
+    sc_b = StoreClient("http://wire-b.test", exp_iso_b, client=client_b)
 
     sc_a.create_ideation_task("iso-a-1")
 
@@ -642,7 +745,9 @@ def test_multi_app_isolation() -> None:
     assert len(sc_a.read_range()) == 1
 
 
-def test_path_segment_scoping_no_shadow(client: Client) -> None:
+def test_path_segment_scoping_no_shadow(
+    client: Client, driver: tuple[str, str]
+) -> None:
     """``GET {base}/events`` is not shadowed by ``GET {base}`` (Decision 5).
 
     Include order is non-load-bearing only because ``{experiment_id}``
@@ -653,9 +758,13 @@ def test_path_segment_scoping_no_shadow(client: Client) -> None:
     events path would then resolve to the experiment object (which has a
     ``state`` field and no ``events``/``cursor`` fields).
     """
+    driver_worker_id, driver_token = driver
     resp = client.get(
         f"/v0/experiments/{EXPERIMENT_ID}/events",
-        headers={"X-Eden-Experiment-Id": EXPERIMENT_ID},
+        headers={
+            "X-Eden-Experiment-Id": EXPERIMENT_ID,
+            "Authorization": f"Bearer {driver_worker_id}:{driver_token}",
+        },
     )
     assert resp.status_code == 200
     body = resp.json()

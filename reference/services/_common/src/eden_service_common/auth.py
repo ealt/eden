@@ -1,22 +1,32 @@
-"""Worker-host registration + credential bootstrap (12a-1 wave 4).
+"""Worker-host credential bootstrap (identity rename #128).
 
-Implements the §D.1 startup recovery flow from
-[`docs/plans/eden-phase-12a-1-worker-identity.md`](../../../../../docs/plans/eden-phase-12a-1-worker-identity.md).
-Each worker-host service calls :func:`bootstrap_worker_credential`
-once at startup; the helper:
+After the identity rename, every per-experiment infra worker
+(operator / orchestrator / web-ui / ideator-host / executor-host /
+evaluator-host) is **minted once by setup-experiment**, which writes
+the opaque ``wkr_*`` id into ``.env`` (the service reads it via the
+appropriate ``EDEN_*_WORKER_ID`` env var) and the registration token
+into ``<credentials_dir>/<worker_id>.token``.
+
+A service therefore NEVER fresh-registers a per-experiment worker: a
+mint-always ``register_worker`` would produce a *different* opaque id
+than the one setup baked into ``.env``, severing the persisted
+identity. Each worker-host service calls
+:func:`bootstrap_worker_credential` once at startup with the
+setup-minted ``worker_id``; the helper:
 
 1. Looks for a persisted credential at ``<credentials_dir>/<worker_id>.token``.
 2. If present, verifies it via ``GET /v0/.../whoami`` (the §6.4
-   authenticated probe). On verify success → return the credential.
-3. If missing or stale, uses the admin token (passed in or read from
-   ``EDEN_ADMIN_TOKEN``) to either :py:meth:`Store.register_worker`
-   (no persisted token) or :py:meth:`Store.reissue_credential` (stale
-   token). Persists the new credential and returns it.
+   authenticated probe — now returning a ``WhoamiResult`` whose
+   ``.worker_id`` must equal the configured id). On verify success →
+   return the credential.
+3. If missing or stale, the registry row already exists (setup minted
+   it), so recovery is an admin-gated :py:meth:`Store.reissue_credential`
+   keyed on the known ``worker_id``. The freshly-issued token is
+   persisted and returned.
 
-Per plan §8.2: there is **no fall-through to fresh register** on
-credential failure — the existing registry row is the authority on
-the worker's identity, and the only documented escape from a stale
-credential is the explicit admin-gated reissue.
+There is **no fresh-register fallback**: the registry row is the
+authority on the worker's identity, and the only documented escape
+from a missing/stale credential is the admin-gated reissue.
 """
 
 from __future__ import annotations
@@ -131,18 +141,31 @@ def bootstrap_worker_credential(
     worker_id: str,
     credentials_dir: Path,
     admin_token: str | None,
-    labels: dict[str, str] | None = None,
+    labels: dict[str, str] | None = None,  # noqa: ARG001 — setup mints with labels; this helper only verifies/reissues
     timeout: float = 30.0,
 ) -> WorkerCredential:
-    """Return a usable per-worker credential, registering if needed.
+    """Return a usable per-worker credential for the setup-minted ``worker_id``.
 
-    Implements the §D.1 / §8.2 startup recovery flow:
+    ``labels`` is retained for caller-signature parity (the host CLIs
+    still pass a ``{"role": …}`` map) but is no longer applied here:
+    setup-experiment minted the worker WITH its labels, and this helper
+    only verifies the persisted token or admin-reissues the credential —
+    neither path mutates the registry row's labels.
 
-    1. If a persisted token exists and verifies via ``/whoami``, use it.
-    2. If a persisted token exists but is stale (401), reissue with
-       ``admin_token`` and persist the new one.
-    3. If no persisted token, register with ``admin_token`` and
-       persist the issued one.
+    Implements the #128 startup recovery flow. ``worker_id`` is the
+    opaque ``wkr_*`` id setup-experiment minted and baked into ``.env``;
+    this helper never mints a new one (that would diverge from the
+    persisted identity):
+
+    1. If a persisted token exists and verifies via ``/whoami``
+       (``WhoamiResult.worker_id == worker_id``), use it.
+    2. If a persisted token exists but is stale (401, or ``/whoami``
+       returns a different id), reissue with ``admin_token`` and
+       persist the new one. The registry row already exists.
+    3. If no persisted token, the local credential was lost (volume
+       wipe, fresh container) but the registry row was minted by setup
+       — recover via admin-gated ``reissue_credential(worker_id)`` and
+       persist the issued token. There is NO fresh-register fallback.
 
     Raises ``RuntimeError`` if step 2 or 3 needs the admin token but
     none is available (no ``--admin-token`` flag, no
@@ -169,13 +192,16 @@ def bootstrap_worker_credential(
                 base_url, experiment_id, bearer=bearer, timeout=timeout
             ) as probe:
                 try:
-                    returned_id = probe.whoami()
+                    # whoami() now returns a WhoamiResult; the opaque
+                    # worker_id lives on `.worker_id`.
+                    returned_id = probe.whoami().worker_id
                 except Unauthorized:
                     returned_id = None
             if returned_id == worker_id:
                 return WorkerCredential(worker_id=worker_id, token=persisted)
-            # Stale — escalate to reissue. Per §8.2: NO fall-through to
-            # fresh-register; the registry row is authoritative.
+            # Stale — escalate to reissue. NO fall-through to
+            # fresh-register; the registry row (minted by setup) is
+            # authoritative on this worker's identity.
             if admin_token is None:
                 raise RuntimeError(
                     f"persisted credential for worker_id={worker_id!r} is stale "
@@ -192,33 +218,26 @@ def bootstrap_worker_credential(
             _write_token(path, new_token)
             return WorkerCredential(worker_id=worker_id, token=new_token)
 
-        # First run under this lock: no persisted token. Register
-        # against the admin bearer.
+        # First run under this lock: no persisted token. The worker_id
+        # was minted by setup-experiment and already has a registry
+        # row; a missing local token means the credential was lost
+        # (volume wipe, fresh container). Per #128 the ONLY recovery
+        # is the admin-gated reissue — a fresh register would mint a
+        # DIFFERENT opaque id and sever the persisted identity.
         if admin_token is None:
             raise RuntimeError(
                 f"no persisted credential for worker_id={worker_id!r} at {path}; "
-                "registration requires the admin token (set --admin-token or "
-                "EDEN_ADMIN_TOKEN)"
+                "the worker is minted by setup-experiment, so recovery requires "
+                "the admin token to reissue its credential (set --admin-token "
+                "or EDEN_ADMIN_TOKEN)"
             )
         with StoreClient(
             base_url, experiment_id, bearer=f"admin:{admin_token}", timeout=timeout
         ) as admin:
-            worker, registration_token = admin.register_worker(
-                worker_id, labels=labels
-            )
-            if registration_token is None:
-                # Idempotent re-register hit an existing row. Since we
-                # hold the bootstrap lock and saw no persisted token
-                # at the start of this critical section, the row was
-                # written by an EARLIER startup whose credential file
-                # was lost (operator wipe, fresh container volume,
-                # etc.). Per §8.2 the only recovery is reissue. This
-                # is safe under the lock — no concurrent bootstrap
-                # for this worker_id is in flight to be invalidated.
-                registration_token = admin.reissue_credential(worker_id)
+            registration_token = admin.reissue_credential(worker_id)
             _write_token(path, registration_token)
             return WorkerCredential(
-                worker_id=worker.worker_id, token=registration_token
+                worker_id=worker_id, token=registration_token
             )
 
 
@@ -228,15 +247,17 @@ def resolve_worker_bearer(
     worker_id: str,
     labels: dict[str, str] | None = None,
 ) -> str | None:
-    """Return the bearer the host should use, registering as needed.
+    """Return the bearer the host should use, verifying/reissuing as needed.
 
-    Three postures (evaluated in order):
+    ``worker_id`` is the setup-minted opaque ``wkr_*`` id (read from
+    the service's ``EDEN_*_WORKER_ID`` env var); this resolver never
+    fresh-registers. Three postures (evaluated in order):
 
     1. ``args.admin_token`` (or ``$EDEN_ADMIN_TOKEN``) is set → run
        :func:`bootstrap_worker_credential` and return the §13.1
        ``<worker_id>:<token>`` bearer. This is the production
-       deployment posture; bootstrap covers fresh-register +
-       persisted-verify + admin-gated reissue.
+       deployment posture; bootstrap covers persisted-verify +
+       admin-gated reissue (NO fresh-register — setup minted the row).
     2. No admin token, but a persisted credential exists at
        ``<credentials_dir>/<worker_id>.token`` → run bootstrap
        without an admin token. Bootstrap's first branch verifies the
@@ -244,19 +265,18 @@ def resolve_worker_bearer(
        without needing admin access. This is the production
        restart-with-existing-credential posture (operator removed
        ``EDEN_ADMIN_TOKEN`` from the host's environment after
-       initial provisioning; bootstrap.§D.1's "no fall-through to
-       fresh register" rule remains intact because bootstrap raises
-       if the persisted token is stale and reissue would be needed).
+       initial provisioning; the "no fresh-register" rule remains
+       intact because bootstrap raises if the persisted token is
+       stale and reissue would be needed).
     3. Neither admin token nor persisted credential → return
        ``None``. Suitable for in-process / TestClient test postures
        where the task-store-server runs without ``--admin-token``;
        the wire's worker_id falls back to the
        :func:`_worker_id_from_request` shim's header read.
 
-    The resolver does not validate ``worker_id`` against the §6.1
-    grammar; ``StoreClient.register_worker`` (and the admin register
-    endpoint) does that and surfaces ``BadRequest`` /
-    ``ReservedIdentifier`` errors as needed.
+    The resolver does not validate ``worker_id`` against the opaque
+    ``wkr_*`` grammar; the wire's whoami/reissue endpoints surface a
+    ``NotFound`` if the configured id has no registry row.
     """
     # Local import: cli.py imports auth.py for DEFAULT_CREDENTIALS_DIR,
     # so importing cli.py at module level here would create a cycle.
