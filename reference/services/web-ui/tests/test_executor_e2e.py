@@ -161,6 +161,18 @@ def test_executor_full_flow_through_ui(tmp_path: Path) -> None:
         committer_date=_E2E_DATE,
     )
 
+    # Identity rename (#128): worker_ids are OPAQUE + system-minted
+    # (wkr_*); the wire collapses every auth-disabled claimant onto the
+    # un-registerable ``anonymous`` sentinel, so the claim-driving
+    # executor flow must run auth-ENABLED. Register the web-ui worker
+    # under the admin bearer (server mints the wkr_* id) and thread the
+    # minted id + admin token + creds dir into the web-ui so it
+    # self-bootstraps its per-worker credential; its UI-issued claims
+    # then attribute to the minted id.
+    admin_token = "e2e-admin-secret"
+    creds_dir = tmp_path / "creds"
+    creds_dir.mkdir()
+
     server_log = logs_dir / "server.log"
     server = _spawn(
         [
@@ -177,22 +189,37 @@ def test_executor_full_flow_through_ui(tmp_path: Path) -> None:
             "0",
             "--subscribe-timeout",
             "1.0",
+            "--admin-token",
+            admin_token,
         ],
         server_log,
     )
     server_port = _read_port(server_log, server, _TASK_STORE_RE)
     task_store_url = f"http://127.0.0.1:{server_port}"
 
-    # Identity rename (#128): mint the web-ui worker; the server mints
-    # the opaque id, which the UI's claims are attributed to.
     from eden_wire import StoreClient
 
-    pre_seed = StoreClient(base_url=task_store_url, experiment_id=experiment_id)
+    pre_seed = StoreClient(
+        base_url=task_store_url,
+        experiment_id=experiment_id,
+        bearer=f"admin:{admin_token}",
+    )
     try:
         ui_impl_worker, _ = pre_seed.register_worker("ui-impl")
         ui_impl_id = ui_impl_worker.worker_id
+        # create_task is admins/orchestrators-gated and rejects admin
+        # bearers (§13.3); the create_idea / mark-ready steps are
+        # worker-gated. Seed everything under a ``seeder`` worker in the
+        # reserved ``orchestrators`` group.
+        seeder_worker, seeder_token = pre_seed.register_worker("seeder")
+        seeder_id = seeder_worker.worker_id
+        assert seeder_token is not None
+        pre_seed.register_group(
+            "orchestrators", members=[seeder_id], allow_reserved=True
+        )
     finally:
         pre_seed.close()
+    seeder_bearer = f"{seeder_id}:{seeder_token}"
 
     web_ui_log = logs_dir / "web-ui.log"
     web_ui = _spawn(
@@ -208,6 +235,10 @@ def test_executor_full_flow_through_ui(tmp_path: Path) -> None:
             "x" * 32,
             "--worker-id",
             ui_impl_id,
+            "--admin-token",
+            admin_token,
+            "--credentials-dir",
+            str(creds_dir),
             "--artifacts-dir",
             str(artifacts_dir),
             "--repo-path",
@@ -234,6 +265,7 @@ def test_executor_full_flow_through_ui(tmp_path: Path) -> None:
         seed = StoreClient(
             base_url=task_store_url,
             experiment_id=experiment_id,
+            bearer=seeder_bearer,
         )
         try:
             artifact_path = artifacts_dir / "p-impl.md"

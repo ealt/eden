@@ -125,9 +125,22 @@ def test_ideator_full_flow_through_ui(tmp_path: Path) -> None:
     """Sign in, claim a ideation task, draft + submit, verify state in the store."""
     db_path = tmp_path / "eden.sqlite"
     artifacts_dir = tmp_path / "artifacts"
-    experiment_id = "exp-web-ui-e2e"
+    # Identity rename (#128): opaque experiment id.
+    experiment_id = "exp_0123456789abcdefghjkmnpqrs"
     logs_dir = tmp_path / "logs"
     logs_dir.mkdir()
+    creds_dir = tmp_path / "creds"
+    creds_dir.mkdir()
+
+    # Identity rename (#128): worker_ids are OPAQUE + system-minted
+    # (wkr_*), and the wire collapses every auth-disabled claimant onto
+    # the un-registerable ``anonymous`` sentinel — so a claim-driving
+    # flow can no longer run with auth off. Run the server auth-ENABLED:
+    # register the web-ui worker under the admin bearer (the server mints
+    # the wkr_* id), then thread the minted id + admin token + creds dir
+    # into the web-ui so it self-bootstraps its own per-worker credential
+    # at startup and its UI-issued claims attribute to the minted id.
+    admin_token = "e2e-admin-secret"
 
     server_log = logs_dir / "server.log"
     server = _spawn(
@@ -145,11 +158,44 @@ def test_ideator_full_flow_through_ui(tmp_path: Path) -> None:
             "0",
             "--subscribe-timeout",
             "1.0",
+            "--admin-token",
+            admin_token,
         ],
         server_log,
     )
     server_port = _read_announcement(server_log, server, _TASK_STORE_RE)
     task_store_url = f"http://127.0.0.1:{server_port}"
+
+    from eden_wire import StoreClient
+
+    seed = StoreClient(
+        base_url=task_store_url,
+        experiment_id=experiment_id,
+        bearer=f"admin:{admin_token}",
+    )
+    try:
+        ui_worker, _ = seed.register_worker("ui-w")
+        ui_worker_id = ui_worker.worker_id
+        # create_task is admins/orchestrators-gated and rejects admin
+        # bearers (§13.3); seed the ideation task under a ``seeder``
+        # worker in the reserved ``orchestrators`` group.
+        seeder_worker, seeder_token = seed.register_worker("seeder")
+        seeder_id = seeder_worker.worker_id
+        assert seeder_token is not None
+        seed.register_group(
+            "orchestrators", members=[seeder_id], allow_reserved=True
+        )
+    finally:
+        seed.close()
+    task_seed = StoreClient(
+        base_url=task_store_url,
+        experiment_id=experiment_id,
+        bearer=f"{seeder_id}:{seeder_token}",
+    )
+    try:
+        task_seed.create_ideation_task("t-ui-1")
+    finally:
+        task_seed.close()
 
     web_ui_log = logs_dir / "web-ui.log"
     web_ui = _spawn(
@@ -164,7 +210,11 @@ def test_ideator_full_flow_through_ui(tmp_path: Path) -> None:
             "--session-secret",
             "x" * 32,
             "--worker-id",
-            "ui-w",
+            ui_worker_id,
+            "--admin-token",
+            admin_token,
+            "--credentials-dir",
+            str(creds_dir),
             "--artifacts-dir",
             str(artifacts_dir),
             "--host",
@@ -185,20 +235,6 @@ def test_ideator_full_flow_through_ui(tmp_path: Path) -> None:
     }
 
     try:
-        # Seed one ideation task via the wire StoreClient.
-        from eden_wire import StoreClient
-
-        seed = StoreClient(
-            base_url=task_store_url,
-            experiment_id=experiment_id,
-        )
-        try:
-            seed.register_worker("anonymous")  # auth-disabled wire collapse
-            seed.register_worker("ui-w")
-            seed.create_ideation_task("t-ui-1")
-        finally:
-            seed.close()
-
         with httpx.Client(base_url=web_url, timeout=10.0) as ui:
             # Sign in.
             resp = ui.post("/signin", follow_redirects=False)
@@ -300,9 +336,20 @@ def test_stranded_claim_recovered_by_orchestrator_loop(tmp_path: Path) -> None:
     )
     seed_bare_repo(str(bare_repo))
 
-    experiment_id = "exp-strand"
+    # Identity rename (#128): opaque experiment id.
+    experiment_id = "exp_0123456789abcdefghjkmnpqrs"
     logs_dir = tmp_path / "logs"
     logs_dir.mkdir()
+    creds_dir = tmp_path / "creds"
+    creds_dir.mkdir()
+
+    # Identity rename (#128): run auth-ENABLED so the web-ui's UI-issued
+    # claim attributes to a registered (minted) worker rather than the
+    # un-registerable ``anonymous`` sentinel. The web-ui + orchestrator
+    # each self-bootstrap their own per-worker credential from the admin
+    # token; the orchestrator additionally self-joins the `orchestrators`
+    # group at startup.
+    admin_token = "e2e-admin-secret"
 
     server_log = logs_dir / "server.log"
     server = _spawn(
@@ -320,11 +367,46 @@ def test_stranded_claim_recovered_by_orchestrator_loop(tmp_path: Path) -> None:
             "0",
             "--subscribe-timeout",
             "1.0",
+            "--admin-token",
+            admin_token,
         ],
         server_log,
     )
     server_port = _read_announcement(server_log, server, _TASK_STORE_RE)
     task_store_url = f"http://127.0.0.1:{server_port}"
+
+    from eden_wire import StoreClient
+
+    seed = StoreClient(
+        base_url=task_store_url,
+        experiment_id=experiment_id,
+        bearer=f"admin:{admin_token}",
+    )
+    try:
+        ui_worker, _ = seed.register_worker("ui-w")
+        ui_worker_id = ui_worker.worker_id
+        orch_worker, _ = seed.register_worker("orchestrator-1")
+        orchestrator_id = orch_worker.worker_id
+        # create_task is admins/orchestrators-gated and rejects admin
+        # bearers (§13.3); seed the ideation task under a ``seeder``
+        # worker in the reserved ``orchestrators`` group.
+        seeder_worker, seeder_token = seed.register_worker("seeder")
+        seeder_id = seeder_worker.worker_id
+        assert seeder_token is not None
+        seed.register_group(
+            "orchestrators", members=[seeder_id], allow_reserved=True
+        )
+    finally:
+        seed.close()
+    task_seed = StoreClient(
+        base_url=task_store_url,
+        experiment_id=experiment_id,
+        bearer=f"{seeder_id}:{seeder_token}",
+    )
+    try:
+        task_seed.create_ideation_task("t-strand")
+    finally:
+        task_seed.close()
 
     web_ui_log = logs_dir / "web-ui.log"
     web_ui = _spawn(
@@ -339,7 +421,11 @@ def test_stranded_claim_recovered_by_orchestrator_loop(tmp_path: Path) -> None:
             "--session-secret",
             "x" * 32,
             "--worker-id",
-            "ui-w",
+            ui_worker_id,
+            "--admin-token",
+            admin_token,
+            "--credentials-dir",
+            str(creds_dir),
             "--artifacts-dir",
             str(artifacts_dir),
             "--host",
@@ -360,20 +446,6 @@ def test_stranded_claim_recovered_by_orchestrator_loop(tmp_path: Path) -> None:
     }
 
     try:
-        # Seed one ideation task via the wire StoreClient.
-        from eden_wire import StoreClient
-
-        seed = StoreClient(
-            base_url=task_store_url,
-            experiment_id=experiment_id,
-        )
-        try:
-            seed.register_worker("anonymous")  # auth-disabled wire collapse
-            seed.register_worker("ui-w")
-            seed.create_ideation_task("t-strand")
-        finally:
-            seed.close()
-
         # Claim through UI with 1s TTL.
         with httpx.Client(base_url=web_url, timeout=10.0) as ui:
             ui.post("/signin", follow_redirects=False)
@@ -416,6 +488,12 @@ def test_stranded_claim_recovered_by_orchestrator_loop(tmp_path: Path) -> None:
                 task_store_url,
                 "--experiment-id",
                 experiment_id,
+                "--worker-id",
+                orchestrator_id,
+                "--admin-token",
+                admin_token,
+                "--credentials-dir",
+                str(creds_dir),
                 "--repo-path",
                 str(bare_repo),
                 "--experiment-config",
@@ -446,6 +524,7 @@ def test_stranded_claim_recovered_by_orchestrator_loop(tmp_path: Path) -> None:
         client = StoreClient(
             base_url=task_store_url,
             experiment_id=experiment_id,
+            bearer=f"admin:{admin_token}",
         )
         try:
             assert client.read_task("t-strand").state == "pending"

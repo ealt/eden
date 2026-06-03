@@ -22,9 +22,9 @@ EDEN_EXP=/Users/ericalt/Documents/eden-worktrees/test-main/reference/scripts/man
 
 Subcommands:
 
-- `up <config> --experiment-id <id> [--seed-from <dir>] [--with-workers] [--port <n>]`
+- `up <config> [--name <display-name>] [--seed-from <dir>] [--with-workers] [--port <n>]`
 - `down [--purge]`
-- `reset <config> --experiment-id <id> [--seed-from <dir>] [--with-workers] [--port <n>]`
+- `reset <config> [--name <display-name>] [--seed-from <dir>] [--with-workers] [--port <n>]`
 - `status`
 - `checkpoint <name> [--force]` — snapshot postgres + forgejo + artifacts + .env
 - `restore <name>` — load a checkpoint into a fresh stack (requires `down` first)
@@ -51,9 +51,12 @@ and bail?"
 
 Ask the user — concisely, one prompt — for:
 
-1. **Experiment id** (required). Suggest a short kebab-case name. If they
-   don't care, propose one based on context (e.g., `manual-<date>` or
-   `<topic>-<n>`).
+1. **Experiment name** (optional, post-#128). The system mints the
+   opaque `exp_<ULID>` id; the operator supplies an optional *display
+   name* via `--name`. Suggest a short human label (e.g., `manual-<date>`
+   or `<topic>-<n>`); if they don't care, omit it (the experiment then
+   renders by its bare opaque id). The name is a label, not an
+   identifier — names MAY collide; disambiguate by id.
 
 2. **Experiment config** (required). Default: the fixture at
    `tests/fixtures/experiment/.eden/config.yaml`. If the user wants a
@@ -77,16 +80,21 @@ Ask the user — concisely, one prompt — for:
 ### Phase 3: Spin up (automatic)
 
 ```bash
-$EDEN_EXP up <config> --experiment-id <id> [--seed-from <dir>] [--with-workers]
+$EDEN_EXP up <config> [--name <display-name>] [--seed-from <dir>] [--with-workers]
 ```
 
-Surface the resulting status output (experiment id, seed SHA, web-ui
-URL). If `--seed-from` was used, *verify the seed*:
+Surface the resulting status output (the minted `exp_*` id + display
+name if supplied, seed SHA, web-ui URL). Setup-experiment mints the
+opaque ids and writes them to `.env` (`EDEN_EXPERIMENT_ID` is now an
+`exp_*` value, not the operator's typed string). If `--seed-from` was
+used, *verify the seed* — note the forgejo repo path is the opaque id,
+so read it from `.env` rather than the display name:
 
 ```bash
+EXP=$(grep '^EDEN_EXPERIMENT_ID=' /Users/ericalt/Documents/eden-worktrees/test-main/reference/compose/.env | cut -d= -f2)
 PASS=$(grep '^FORGEJO_REMOTE_PASSWORD=' /Users/ericalt/Documents/eden-worktrees/test-main/reference/compose/.env | cut -d= -f2)
 curl -fsS -u "eden:$PASS" \
-  http://localhost:3001/api/v1/repos/eden/<experiment-id>/contents \
+  "http://localhost:3001/api/v1/repos/eden/$EXP/contents" \
   | python3 -m json.tool
 ```
 
@@ -177,7 +185,7 @@ If the user wants a clean slate to run a NEW experiment under a different
 name or seed: use `reset`. Treat the elicitation same as `up`, then run:
 
 ```bash
-$EDEN_EXP reset <config> --experiment-id <id> [--seed-from <dir>]
+$EDEN_EXP reset <config> [--name <display-name>] [--seed-from <dir>]
 ```
 
 ## Best practices

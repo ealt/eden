@@ -57,10 +57,10 @@ Default: claim the first pending ideation task. If multiple, briefly
 mention the others. Don't ask unless the user has expressed a preference.
 
 ```bash
-$EDEN claim <task-id> --worker-id eden-manual
+$EDEN claim <task-id> --worker-name eden-manual
 ```
 
-Post-12a-1: claim ownership is identity-keyed (no per-claim opaque token). The CLI persists `{worker_id}` per task in `/tmp/eden-manual/.claims.json` so the submit step picks the matching worker bearer (cached at `/tmp/eden-manual/.credentials.json`).
+Post-#128: worker ids are opaque, system-minted `wkr_*` strings; the operator supplies a display *name*, not the id. On first use the CLI registers a worker with `--worker-name eden-manual` (default `eden-manual`), reads the minted `worker_id` back from the wire response, and caches `{worker_id, name, token}` at `/tmp/eden-manual/.credentials.json`. Subsequent claims reuse that cached `worker_id`. Claim ownership is identity-keyed (no per-claim opaque token); the CLI persists the resolved `{worker_id}` per task in `/tmp/eden-manual/.claims.json` so the submit step picks the matching worker bearer. When you echo the claimant back to the user, render it as `<name> (<worker_id>)` — e.g. `eden-manual (wkr_01hqs3m4n5p6q7r8s9t0v1w2x3)`.
 
 ### Phase 3: Elicit ideas from the user (judgment)
 
@@ -147,6 +147,12 @@ cd /Users/ericalt/Documents/eden-worktrees/test-main/reference/compose && \
   on a nonsense SHA.
 - **Content is the spec** the executor reads. Prefer concrete language
   over vague ("add a single line to README" beats "improve docs").
+- **Worker identity is name-supplied, id-returned.** Never hardcode an
+  opaque `worker_id` (they're `wkr_<26-char-ULID>` and minted by the
+  server). Pass `--worker-name <name>` at registration; the CLI reads
+  the minted id from the wire response and caches it. To find a worker
+  by display name, `GET .../workers?name=<name>` returns 0..N matches
+  (names MAY collide) — disambiguate by id.
 - **`wire error 401` on `/workers...`?** The running stack's
   `EDEN_ADMIN_TOKEN` has diverged from the `.env` file the CLI is
   reading. Bounce the stack against the current `.env`, or re-checkout
