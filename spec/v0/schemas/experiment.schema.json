@@ -41,7 +41,7 @@
       "description": "The experiment seed commit on main, recorded at registration / repo-init time (spec/v0/02-data-model.md \u00a72.5). The orchestrator reads this per experiment to create the kind=='baseline' variant (\u00a79.4); both single- and multi-experiment modes read it via read_experiment. Absent (never JSON null) on experiments registered before this field existed; such experiments never acquire a baseline."
     },
     "imported_from": {
-      "description": "Provenance of the experiment when it was imported from a portable checkpoint (spec/v0/10-checkpoints.md \u00a710). Absent (or JSON null) on natively-created experiments; present on experiments produced by the import endpoint (07-wire-protocol.md \u00a714.2). Recovery probe: a client that lost the import 201 response queries this field and matches checkpoint_exported_at against the local manifest's exported_at.",
+      "description": "Provenance of the experiment when it was imported from a portable checkpoint (spec/v0/10-checkpoints.md \u00a710). Absent (or JSON null) on natively-created experiments; present on experiments produced by the import endpoint (07-wire-protocol.md \u00a714.2). Recovery probe: a client that lost the import 201 response queries this field and matches the (source_experiment_id, checkpoint_exported_at) pair against the local manifest's (experiment_id, exported_at).",
       "oneOf": [
         {
           "type": "null"
