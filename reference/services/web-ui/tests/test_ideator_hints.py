@@ -47,7 +47,7 @@ def _seed_integrated_variant(
     eval_task_id, _, _ = seed_evaluate_task(
         store, slug=slug, variant_id=variant_id
     )
-    eval_claim = store.claim(eval_task_id, "evaluator-w")
+    eval_claim = store.claim(eval_task_id, store._test_worker_ids["evaluator-w"])
     store.submit(
         eval_task_id,
         eval_claim.worker_id,

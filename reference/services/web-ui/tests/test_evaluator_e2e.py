@@ -110,7 +110,8 @@ def test_evaluator_full_flow_through_ui(tmp_path: Path) -> None:
     db_path = tmp_path / "eden.sqlite"
     artifacts_dir = tmp_path / "artifacts"
     artifacts_dir.mkdir()
-    experiment_id = "exp-eval-e2e"
+    # Identity rename (#128): opaque experiment id.
+    experiment_id = "exp_0123456789abcdefghjkmnpqrs"
     logs_dir = tmp_path / "logs"
     logs_dir.mkdir()
 
@@ -136,6 +137,20 @@ def test_evaluator_full_flow_through_ui(tmp_path: Path) -> None:
     server_port = _read_port(server_log, server, _TASK_STORE_RE)
     task_store_url = f"http://127.0.0.1:{server_port}"
 
+    # Identity rename (#128): mint the web-ui + executor workers (the
+    # server mints opaque ids); the web-ui session principal must be a
+    # registered worker for its UI-issued claims.
+    from eden_wire import StoreClient
+
+    pre_seed = StoreClient(base_url=task_store_url, experiment_id=experiment_id)
+    try:
+        ui_eval_worker, _ = pre_seed.register_worker("ui-eval")
+        ui_eval_id = ui_eval_worker.worker_id
+        executor_worker, _ = pre_seed.register_worker("executor-w")
+        executor_id = executor_worker.worker_id
+    finally:
+        pre_seed.close()
+
     web_ui_log = logs_dir / "web-ui.log"
     web_ui = _spawn(
         [
@@ -149,7 +164,7 @@ def test_evaluator_full_flow_through_ui(tmp_path: Path) -> None:
             "--session-secret",
             "y" * 32,
             "--worker-id",
-            "ui-eval",
+            ui_eval_id,
             "--artifacts-dir",
             str(artifacts_dir),
             "--host",
@@ -173,16 +188,11 @@ def test_evaluator_full_flow_through_ui(tmp_path: Path) -> None:
         # Seed: ready idea + execution task; drive it to a
         # starting variant with commit_sha so the evaluation task can be
         # created.
-        from eden_wire import StoreClient
-
         seed = StoreClient(
             base_url=task_store_url,
             experiment_id=experiment_id,
         )
         try:
-            seed.register_worker("anonymous")  # auth-disabled wire collapse
-            seed.register_worker("ui-eval")
-            seed.register_worker("executor-w")
             artifact_path = artifacts_dir / "p-eval.md"
             artifact_path.write_text("content")
             idea = Idea(
@@ -211,7 +221,7 @@ def test_evaluator_full_flow_through_ui(tmp_path: Path) -> None:
                 started_at="2026-04-24T12:00:00Z",
             )
             seed.create_variant(variant)
-            claim = seed.claim("t-exec-1", "executor-w")
+            claim = seed.claim("t-exec-1", executor_id)
             seed.submit(
                 "t-exec-1",
                 claim.worker_id,

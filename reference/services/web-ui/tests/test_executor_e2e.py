@@ -140,7 +140,8 @@ def test_executor_full_flow_through_ui(tmp_path: Path) -> None:
     artifacts_dir = tmp_path / "artifacts"
     artifacts_dir.mkdir()
     repo_dir = tmp_path / "bare-repo.git"
-    experiment_id = "exp-impl-e2e"
+    # Identity rename (#128): opaque experiment id.
+    experiment_id = "exp_0123456789abcdefghjkmnpqrs"
     logs_dir = tmp_path / "logs"
     logs_dir.mkdir()
 
@@ -182,6 +183,17 @@ def test_executor_full_flow_through_ui(tmp_path: Path) -> None:
     server_port = _read_port(server_log, server, _TASK_STORE_RE)
     task_store_url = f"http://127.0.0.1:{server_port}"
 
+    # Identity rename (#128): mint the web-ui worker; the server mints
+    # the opaque id, which the UI's claims are attributed to.
+    from eden_wire import StoreClient
+
+    pre_seed = StoreClient(base_url=task_store_url, experiment_id=experiment_id)
+    try:
+        ui_impl_worker, _ = pre_seed.register_worker("ui-impl")
+        ui_impl_id = ui_impl_worker.worker_id
+    finally:
+        pre_seed.close()
+
     web_ui_log = logs_dir / "web-ui.log"
     web_ui = _spawn(
         [
@@ -195,7 +207,7 @@ def test_executor_full_flow_through_ui(tmp_path: Path) -> None:
             "--session-secret",
             "x" * 32,
             "--worker-id",
-            "ui-impl",
+            ui_impl_id,
             "--artifacts-dir",
             str(artifacts_dir),
             "--repo-path",
@@ -219,15 +231,11 @@ def test_executor_full_flow_through_ui(tmp_path: Path) -> None:
 
     try:
         # Seed idea + execution task via wire client.
-        from eden_wire import StoreClient
-
         seed = StoreClient(
             base_url=task_store_url,
             experiment_id=experiment_id,
         )
         try:
-            seed.register_worker("anonymous")  # auth-disabled wire collapse
-            seed.register_worker("ui-impl")
             artifact_path = artifacts_dir / "p-impl.md"
             artifact_path.write_text("content")
             idea = Idea(

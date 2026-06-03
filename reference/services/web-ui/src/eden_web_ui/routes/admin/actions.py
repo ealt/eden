@@ -16,9 +16,9 @@ from ._common import (
     _DISPATCH_MODE_KEYS,
     _DISPATCH_MODE_OUTCOMES,
     _DISPATCH_MODE_VALUES,
+    _MEMBER_ID_RE,
     _REASSIGN_OUTCOMES,
     _REASSIGN_TARGET_KINDS,
-    _REGISTRY_ID_RE,
     _csrf_failure_response,
     _outcome,
     _read_failure_response,
@@ -99,6 +99,10 @@ async def task_reassign_form(
             "can_reassign": can_reassign,
             "workers": [w.worker_id for w in workers],
             "groups": [g.group_id for g in groups],
+            "member_names": {
+                **{w.worker_id: w.name for w in workers if w.name},
+                **{g.group_id: g.name for g in groups if g.name},
+            },
             "target_kinds": _REASSIGN_TARGET_KINDS,
             "outcome": outcome,
         },
@@ -135,7 +139,7 @@ def _resolve_new_target(
     # directly without flipping between fields.
     fallback = target_id_worker if target_kind == "worker" else target_id_group
     resolved_id = target_id.strip() or fallback.strip()
-    if not _REGISTRY_ID_RE.fullmatch(resolved_id):
+    if not _MEMBER_ID_RE.fullmatch(resolved_id):
         raise _ReassignBail("invalid-target")
     # Existence check against the registry. The wave-2 Store contract
     # requires the target to identify a real worker / group for the
@@ -372,7 +376,7 @@ async def create_execution_task(
         )
     target: TaskTarget | None = None
     if target_kind != "none":
-        if not _REGISTRY_ID_RE.fullmatch(target_id):
+        if not _MEMBER_ID_RE.fullmatch(target_id):
             return RedirectResponse(
                 url=f"{redirect_base}?error=invalid-target", status_code=303
             )

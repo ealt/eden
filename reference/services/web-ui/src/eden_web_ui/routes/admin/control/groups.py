@@ -16,10 +16,12 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from eden_contracts._common import MEMBER_ID_PATTERN, _check_display_name
 from eden_control_plane import ControlPlaneClient
+from eden_storage import RESERVED_GROUP_NAMES
 from eden_storage.errors import (
-    AlreadyExists,
     CycleDetected,
+    InvalidName,
     InvalidPrecondition,
     ReservedIdentifier,
 )
@@ -30,15 +32,16 @@ from eden_wire.errors import BadRequest
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
+from ..._display import sort_by_name_then_id
 from ..._helpers import csrf_ok, get_session
 from ...admin_groups import walk_transitive_workers
 
 router = APIRouter(prefix="/admin/control/groups")
 
 
-# Spec §6.1 / §7.1 grammar (shared with workers).
-_GROUP_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
-_RESERVED_IDENTIFIERS = frozenset({"admin", "system", "internal"})
+# Opaque member-id grammar (``wkr_*`` / ``grp_*``) per
+# spec/v0/02-data-model.md §1.6 (identity rename #128).
+_MEMBER_ID_RE = re.compile(MEMBER_ID_PATTERN)
 
 
 _GROUP_OUTCOMES: dict[str, tuple[str, str]] = {
@@ -54,31 +57,22 @@ _GROUP_OUTCOMES: dict[str, tuple[str, str]] = {
         "adding this member would create a cycle",
     ),
     "group-not-found": ("error", "group no longer exists"),
-    "reserved-identifier": (
+    "reserved-name": (
         "error",
-        "identifier is reserved (admin / system / internal)",
+        "this name is reserved (admins / orchestrators)",
     ),
-    "reserved-member-id": (
+    "invalid-name": (
         "error",
-        "member_id is reserved (admin / system / internal)",
-    ),
-    "invalid-group-id": (
-        "error",
-        "group_id must match [a-z0-9][a-z0-9_-]{0,63}",
+        "name must be 1–128 visible characters (no control chars; "
+        "no leading/trailing whitespace)",
     ),
     "invalid-member-id": (
         "error",
-        "member_id must match [a-z0-9][a-z0-9_-]{0,63}",
+        "member_id must be an opaque wkr_*/grp_* id",
     ),
     "invalid-members": (
         "error",
         "one of the initial members failed validation",
-    ),
-    "already-exists": ("error", "a group with this id already exists"),
-    "id-collides-with-worker": (
-        "error",
-        "a worker already has this identifier; worker_ids and "
-        "group_ids share a namespace per spec ch02 §7.1",
     ),
     "transport": (
         "error",
@@ -102,18 +96,19 @@ def _outcome(
     return None
 
 
-def _validate_group_id(value: str) -> str | None:
-    if value in _RESERVED_IDENTIFIERS:
-        return "reserved-identifier"
-    if not _GROUP_ID_RE.match(value):
-        return "invalid-group-id"
+def _validate_group_name(value: str) -> str | None:
+    """Return a banner-key for an invalid display ``name``, else ``None`` (#128)."""
+    if value in RESERVED_GROUP_NAMES:
+        return "reserved-name"
+    try:
+        _check_display_name(value)
+    except ValueError:
+        return "invalid-name"
     return None
 
 
 def _validate_member_id(value: str) -> str | None:
-    if value in _RESERVED_IDENTIFIERS:
-        return "reserved-member-id"
-    if not _GROUP_ID_RE.match(value):
+    if not _MEMBER_ID_RE.match(value):
         return "invalid-member-id"
     return None
 
@@ -170,17 +165,25 @@ async def groups_index(request: Request) -> HTMLResponse | RedirectResponse:
 
     q_raw = request.query_params.get("q") or ""
     q = q_raw[:64].lower() if q_raw else None
+    name_raw = request.query_params.get("name") or ""
+    name_filter = name_raw[:128] if name_raw else None
 
     try:
-        groups = cp.list_groups()
+        groups = (
+            cp.list_groups(name=name_filter)
+            if name_filter is not None
+            else cp.list_groups()
+        )
     except Exception:  # noqa: BLE001 — transport-shaped
         return _read_failure_response(request, "could not load groups")
 
+    ordered = sort_by_name_then_id(groups, id_attr="group_id")
+    reserved_rows: list[dict[str, Any]] = []
     rows: list[dict[str, Any]] = []
     total_transport_errors = 0
     any_truncated = False
-    for g in groups:
-        if q and q not in g.group_id.lower():
+    for g in ordered:
+        if q and q not in g.group_id.lower() and q not in (g.name or "").lower():
             continue
         walk = walk_transitive_workers(cp, g.group_id)
         total_transport_errors += walk["transport_errors"]
@@ -192,18 +195,20 @@ async def groups_index(request: Request) -> HTMLResponse | RedirectResponse:
             if (walk["truncated_breadth"] or walk["truncated_depth"])
             else str(transitive_worker_count)
         )
-        rows.append(
-            {
-                "group_id": g.group_id,
-                "created_at": g.created_at,
-                "created_by": g.created_by,
-                "member_count": len(g.members),
-                "transitive_worker_count": transitive_worker_count,
-                "transitive_worker_label": transitive_label,
-                "members_preview": list(g.members[:3]),
-                "members_more": max(0, len(g.members) - 3),
-            }
-        )
+        is_reserved = g.name in RESERVED_GROUP_NAMES
+        row = {
+            "group_id": g.group_id,
+            "name": g.name,
+            "is_reserved": is_reserved,
+            "created_at": g.created_at,
+            "created_by": g.created_by,
+            "member_count": len(g.members),
+            "transitive_worker_count": transitive_worker_count,
+            "transitive_worker_label": transitive_label,
+            "members_preview": list(g.members[:3]),
+            "members_more": max(0, len(g.members) - 3),
+        }
+        (reserved_rows if is_reserved else rows).append(row)
 
     return request.app.state.templates.TemplateResponse(
         request,
@@ -212,7 +217,9 @@ async def groups_index(request: Request) -> HTMLResponse | RedirectResponse:
             "session": session,
             "csrf_token": session.csrf,
             "rows": rows,
+            "reserved_rows": reserved_rows,
             "q": q_raw,
+            "name_filter": name_raw,
             "membership_transport_errors": total_transport_errors,
             "any_truncated": any_truncated,
             "outcome": _outcome(request, _GROUP_OUTCOMES),
@@ -224,7 +231,7 @@ async def groups_index(request: Request) -> HTMLResponse | RedirectResponse:
 async def groups_register(
     request: Request,
     csrf_token: str = Form(""),
-    group_id: str = Form(""),
+    name: str = Form(""),
     members: str = Form(""),
 ) -> RedirectResponse | HTMLResponse:
     session = get_session(request)
@@ -234,11 +241,16 @@ async def groups_register(
         return _csrf_failure_response()
     cp = _control_plane(request)
 
-    bad = _validate_group_id(group_id)
-    if bad is not None:
-        return RedirectResponse(
-            url=f"/admin/control/groups/?error={bad}", status_code=303
-        )
+    # The control plane mints the opaque group_id; the operator supplies
+    # only an OPTIONAL display name (#128). Empty/whitespace-only →
+    # nameless; otherwise the RAW name is validated.
+    name = name if name.strip() else ""
+    if name:
+        bad = _validate_group_name(name)
+        if bad is not None:
+            return RedirectResponse(
+                url=f"/admin/control/groups/?error={bad}", status_code=303
+            )
 
     initial_members, bad_members = _parse_member_lines(members)
     if bad_members is not None:
@@ -247,22 +259,16 @@ async def groups_register(
             status_code=303,
         )
 
-    # Pre-flight worker-collision check so the AlreadyExists banner
-    # below distinguishes "group with this id exists" from the
-    # cross-registry collision per spec ch02 §7.1.
-    worker_collision = False
     try:
-        cp.read_worker(group_id)
-        worker_collision = True
-    except StorageNotFound:
-        pass
-    except Exception:  # noqa: BLE001 — transport-shaped
-        pass
-    try:
-        cp.register_group(group_id, members=initial_members or None)
+        group = cp.register_group(name or None, members=initial_members or None)
     except ReservedIdentifier:
         return RedirectResponse(
-            url="/admin/control/groups/?error=reserved-identifier",
+            url="/admin/control/groups/?error=reserved-name",
+            status_code=303,
+        )
+    except InvalidName:
+        return RedirectResponse(
+            url="/admin/control/groups/?error=invalid-name",
             status_code=303,
         )
     except CycleDetected:
@@ -270,19 +276,9 @@ async def groups_register(
             url="/admin/control/groups/?error=cycle-detected",
             status_code=303,
         )
-    except AlreadyExists:
-        if worker_collision:
-            return RedirectResponse(
-                url="/admin/control/groups/?error=id-collides-with-worker",
-                status_code=303,
-            )
-        return RedirectResponse(
-            url="/admin/control/groups/?error=already-exists",
-            status_code=303,
-        )
     except (BadRequest, InvalidPrecondition):
         return RedirectResponse(
-            url="/admin/control/groups/?error=invalid-group-id",
+            url="/admin/control/groups/?error=invalid-name",
             status_code=303,
         )
     except Exception:  # noqa: BLE001 — transport-shaped
@@ -291,7 +287,7 @@ async def groups_register(
         )
 
     return RedirectResponse(
-        url=f"/admin/control/groups/{group_id}/?ok=registered",
+        url=f"/admin/control/groups/{group.group_id}/?ok=registered",
         status_code=303,
     )
 
@@ -312,6 +308,8 @@ async def group_detail(
 
     try:
         group = cp.read_group(group_id)
+        all_workers = cp.list_workers()
+        all_groups = cp.list_groups()
     except StorageNotFound:
         raise
     except Exception:  # noqa: BLE001 — transport-shaped
@@ -324,6 +322,11 @@ async def group_detail(
             request, "could not walk group membership"
         )
 
+    member_names: dict[str, str] = {
+        w.worker_id: w.name for w in all_workers if w.name
+    }
+    member_names.update({g.group_id: g.name for g in all_groups if g.name})
+
     return request.app.state.templates.TemplateResponse(
         request,
         "admin_control_group_detail.html",
@@ -332,6 +335,9 @@ async def group_detail(
             "csrf_token": session.csrf,
             "group": group,
             "transitive": walk,
+            "member_names": member_names,
+            "worker_names": member_names,
+            "is_reserved": group.name in RESERVED_GROUP_NAMES,
             "outcome": _outcome(request, _GROUP_OUTCOMES),
         },
     )
@@ -373,11 +379,6 @@ async def group_add_member(
     except StorageNotFound:
         return RedirectResponse(
             url="/admin/control/groups/?error=group-not-found",
-            status_code=303,
-        )
-    except ReservedIdentifier:
-        return RedirectResponse(
-            url=f"/admin/control/groups/{group_id}/?error=reserved-member-id",
             status_code=303,
         )
     except (BadRequest, InvalidPrecondition):

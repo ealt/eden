@@ -10,7 +10,7 @@ tests.
 from __future__ import annotations
 
 import pytest
-from conftest import seed_evaluate_task
+from conftest import group_id_by_name, seed_evaluate_task
 from eden_contracts import TaskTarget
 from eden_storage import InMemoryStore
 from fastapi.testclient import TestClient
@@ -53,7 +53,7 @@ class TestColumns:
             slug="alpha",
             variant_id="va",
             priority=3.0,
-            created_by="ideator-1",
+            created_by=store._test_worker_ids["ideator-1"],
         )
         resp = client.get("/evaluator/")
         assert resp.status_code == 200
@@ -138,7 +138,7 @@ class TestEligibilityFilter:
             store,
             slug="alpha",
             variant_id="va",
-            target=TaskTarget(kind="worker", id="other-w"),
+            target=TaskTarget(kind="worker", id=store._test_worker_ids["other-w"]),
         )
         resp = client.get("/evaluator/")
         pending = _pending_html(resp.text)
@@ -153,7 +153,7 @@ class TestEligibilityFilter:
             store,
             slug="alpha",
             variant_id="va",
-            target=TaskTarget(kind="worker", id="other-w"),
+            target=TaskTarget(kind="worker", id=store._test_worker_ids["other-w"]),
         )
         resp = client.get("/evaluator/?eligible=0")
         body = resp.text
@@ -170,7 +170,7 @@ class TestEligibilityFilter:
             store,
             slug="alpha",
             variant_id="va",
-            target=TaskTarget(kind="group", id="admins"),
+            target=TaskTarget(kind="group", id=group_id_by_name(store, "admins")),
         )
         resp = client.get("/evaluator/")
         assert f'action="/evaluator/{eval_id}/claim"' in resp.text
@@ -186,7 +186,7 @@ class TestTargetFilter:
             store,
             slug="bound",
             variant_id="vb",
-            target=TaskTarget(kind="group", id="admins"),
+            target=TaskTarget(kind="group", id=group_id_by_name(store, "admins")),
         )
         resp = client.get("/evaluator/?target=targeted")
         pending = _pending_html(resp.text)
@@ -202,7 +202,7 @@ class TestTargetFilter:
             store,
             slug="bound",
             variant_id="vb",
-            target=TaskTarget(kind="group", id="admins"),
+            target=TaskTarget(kind="group", id=group_id_by_name(store, "admins")),
         )
         resp = client.get("/evaluator/?target=untargeted")
         pending = _pending_html(resp.text)
@@ -216,10 +216,10 @@ class TestGroupByCreator:
     ) -> None:
         _signed_in(client)
         seed_evaluate_task(
-            store, slug="a1", variant_id="va", created_by="ideator-1"
+            store, slug="a1", variant_id="va", created_by=store._test_worker_ids["ideator-1"]
         )
         seed_evaluate_task(
-            store, slug="b1", variant_id="vb", created_by="ideator-w"
+            store, slug="b1", variant_id="vb", created_by=store._test_worker_ids["ideator-w"]
         )
         resp = client.get("/evaluator/?group=1")
         body = resp.text
@@ -234,7 +234,7 @@ class TestExpansion:
     ) -> None:
         _signed_in(client)
         eval_id, variant_id, idea_id = seed_evaluate_task(
-            store, slug="alpha", variant_id="va", created_by="ideator-1"
+            store, slug="alpha", variant_id="va", created_by=store._test_worker_ids["ideator-1"]
         )
         resp = client.get("/evaluator/")
         body = resp.text
@@ -243,7 +243,7 @@ class TestExpansion:
         assert f"/admin/variants/{variant_id}/" in body
         assert "work/va-alpha" in body
         assert f"/admin/ideas/{idea_id}/" in body
-        assert "/admin/workers/ideator-1/" in body
+        assert f"/admin/workers/{store._test_worker_ids['ideator-1']}/" in body
 
 
 class TestDegradedRows:
@@ -340,7 +340,7 @@ class TestRegistrationLadder:
             store,
             slug="alpha",
             variant_id="va",
-            target=TaskTarget(kind="group", id="admins"),
+            target=TaskTarget(kind="group", id=group_id_by_name(store, "admins")),
         )
 
         def _flaky(_w: str, _g: str) -> bool:

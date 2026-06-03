@@ -16,6 +16,7 @@ from eden_storage.errors import NotFound as StorageNotFound
 from fastapi import APIRouter, Request, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
 
+from .._display import worker_name_map
 from .._helpers import (
     get_session,
     read_idea_content,
@@ -51,6 +52,19 @@ from ._common import (
 )
 
 router = APIRouter(prefix="/admin")
+
+
+def _worker_name_map(store: Any) -> dict[str, str]:
+    """Build the attribution id → display-name map for the active store (#128).
+
+    Best-effort: a transport blip on ``list_workers`` yields an empty
+    map (attribution falls back to bare ids) rather than failing the
+    whole page render.
+    """
+    try:
+        return worker_name_map(store.list_workers())
+    except Exception:  # noqa: BLE001 — transport/store-domain; degrade to bare ids
+        return {}
 
 
 @dataclass(frozen=True)
@@ -166,6 +180,7 @@ async def tasks_index(request: Request) -> HTMLResponse | RedirectResponse:
         {
             "session": session,
             "rows": rows,
+            "worker_names": _worker_name_map(store),
             "selected_kind": filters.kind_select,
             "selected_state": filters.state_select,
             "selected_worker": filters.worker_select,
@@ -191,6 +206,7 @@ async def task_detail(
     try:
         task = store.read_task(task_id)
         events_full = store.replay()
+        worker_names = _worker_name_map(store)
     except StorageNotFound:
         raise
     except Exception:  # noqa: BLE001 — transport/store-domain
@@ -218,6 +234,7 @@ async def task_detail(
             "session": session,
             "csrf_token": session.csrf,
             "task": task,
+            "worker_names": worker_names,
             "payload_json": task.payload.model_dump(mode="json"),
             "claim_age": _claim_age_seconds(task, now),
             "claim_expired": _claim_expired(task, now),
@@ -370,6 +387,7 @@ async def variant_detail(
             "session": session,
             "variant": variant,
             "idea": idea,
+            "worker_names": _worker_name_map(store),
             "related_events": list(reversed(related))[:_TRIAL_DETAIL_EVENT_CAP],
             "related_total": total_related,
             "variant_artifact_inline": inline_artifact,
@@ -472,6 +490,7 @@ async def ideas_index(request: Request) -> HTMLResponse | RedirectResponse:
             {
                 "session": session,
                 "rows": [],
+                "worker_names": {},
                 "idea_states": _IDEA_STATE_VALUES,
                 "selected_state": request.query_params.get("state", "*"),
             },
@@ -516,6 +535,7 @@ async def ideas_index(request: Request) -> HTMLResponse | RedirectResponse:
         {
             "session": session,
             "rows": rows,
+            "worker_names": _worker_name_map(store),
             "idea_states": _IDEA_STATE_VALUES,
             "selected_state": state or "*",
         },
@@ -568,6 +588,8 @@ async def idea_detail(
             "live_execution_tasks": live_execution_tasks,
             "workers": [w.worker_id for w in workers_list],
             "groups": [g.group_id for g in groups_list],
+            "worker_names": worker_name_map(workers_list),
+            "group_names": {g.group_id: g.name for g in groups_list if g.name},
             "can_create_execution": can_create_execution,
             "outcome": _outcome(
                 request, "created", "error", _CREATE_EXECUTION_OUTCOMES

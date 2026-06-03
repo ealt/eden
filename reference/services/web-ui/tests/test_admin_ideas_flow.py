@@ -18,7 +18,7 @@ def _drive_pipeline(store: InMemoryStore) -> dict[str, str]:
     from eden_contracts import Idea, Variant
 
     store.create_ideation_task("plan-1")
-    pclaim = store.claim("plan-1", "ideator-w")
+    pclaim = store.claim("plan-1", store._test_worker_ids["ideator-w"])
     idea_id = "idea-alpha"
     store.create_idea(
         Idea(
@@ -30,7 +30,7 @@ def _drive_pipeline(store: InMemoryStore) -> dict[str, str]:
             artifacts_uri="https://example.invalid/x.md",
             state="drafting",
             created_at="2026-04-24T11:00:00Z",
-            created_by="ideator-w",
+            created_by=store._test_worker_ids["ideator-w"],
         )
     )
     store.mark_idea_ready(idea_id)
@@ -42,7 +42,7 @@ def _drive_pipeline(store: InMemoryStore) -> dict[str, str]:
     store.accept("plan-1")
 
     store.create_execution_task("exec-1", idea_id)
-    eclaim = store.claim("exec-1", "executor-w")
+    eclaim = store.claim("exec-1", store._test_worker_ids["executor-w"])
     store.create_variant(
         Variant(
             variant_id="v-1",
@@ -94,7 +94,7 @@ class TestIdeasFlow:
 
         # First ideation task (unrelated)
         store.create_ideation_task("plan-A")
-        a_claim = store.claim("plan-A", "ideator-w")
+        a_claim = store.claim("plan-A", store._test_worker_ids["ideator-w"])
         store.create_idea(
             Idea(
                 idea_id="idea-unrelated",
@@ -116,7 +116,7 @@ class TestIdeasFlow:
 
         # Second ideation task — the one we want to find
         store.create_ideation_task("plan-B")
-        b_claim = store.claim("plan-B", "ideator-w")
+        b_claim = store.claim("plan-B", store._test_worker_ids["ideator-w"])
         store.create_idea(
             Idea(
                 idea_id="idea-target",

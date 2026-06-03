@@ -32,17 +32,22 @@ import pytest
 from conftest import (
     EXPERIMENT_ID,
     SESSION_SECRET,
-    WORKER_ID,
     _config,
     _now,
     _one_experiment_factory,
     get_csrf,
+    web_ui_worker_id,
 )
 from eden_contracts import Idea, TaskTarget, Variant
 from eden_storage import InMemoryStore
 from eden_web_ui import make_app
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+
+
+def _wid(store: InMemoryStore, name: str) -> str:
+    """Resolve a conventional display name → minted opaque worker id (#128)."""
+    return store._test_worker_ids[name]  # type: ignore[attr-defined]
 
 
 def _seed_pending_ideation_task(
@@ -55,21 +60,22 @@ def _seed_pending_ideation_task(
 def _seed_claimed_ideation_task(
     store: InMemoryStore,
     task_id: str = "ideation-claim",
-    worker_id: str = "ideator-w",
+    worker_name: str = "ideator-w",
 ) -> str:
     store.create_ideation_task(task_id)
-    store.claim(task_id, worker_id)
+    store.claim(task_id, _wid(store, worker_name))
     return task_id
 
 
 def _seed_terminal_ideation_task(
     store: InMemoryStore,
     task_id: str = "ideation-done",
-    worker_id: str = "ideator-w",
+    worker_name: str = "ideator-w",
 ) -> str:
     from eden_storage import IdeaSubmission
 
     store.create_ideation_task(task_id)
+    worker_id = _wid(store, worker_name)
     store.claim(task_id, worker_id)
     store.submit(task_id, worker_id, IdeaSubmission(status="success"))
     store.accept(task_id)
@@ -100,7 +106,7 @@ def _seed_starting_variant_for_reassign_test(
     store.mark_idea_ready(idea_id)
     exec_task_id = f"execute-{idea_id}"
     store.create_execution_task(exec_task_id, idea_id)
-    store.claim(exec_task_id, "executor-w")
+    store.claim(exec_task_id, _wid(store, "executor-w"))
     store.create_variant(
         Variant(
             variant_id=variant_id,
@@ -179,9 +185,9 @@ class TestDispatchModeGet:
     def test_renders_with_store_state(
         self, signed_in_client: TestClient, store: InMemoryStore
     ) -> None:
-        store.register_worker("admin-eric")
+        admin_worker, _ = store.register_worker("admin-eric")
         store.update_dispatch_mode(
-            {"integration": "manual"}, updated_by="admin-eric"
+            {"integration": "manual"}, updated_by=admin_worker.worker_id
         )
         resp = signed_in_client.get("/admin/dispatch-mode/")
         # The integration row's manual radio should now be checked.
@@ -225,8 +231,9 @@ class TestDispatchModePost:
         assert [e.type for e in new_events] == [
             "experiment.dispatch_mode_changed"
         ]
-        # Server stamps updated_by from app.state.worker_id ("ui-w").
-        assert new_events[0].data["updated_by"] == WORKER_ID
+        # Server stamps updated_by from app.state.worker_id (the
+        # minted web-ui worker id).
+        assert new_events[0].data["updated_by"] == web_ui_worker_id(store)
         assert new_events[0].data["changed"] == {"ideation_creation": "manual"}
 
     def test_no_change_emits_no_event(
@@ -367,13 +374,14 @@ class TestReassignGet:
         signed_in_client: TestClient,
         store: InMemoryStore,
     ) -> None:
-        store.register_worker("worker-extra")
-        store.register_group("humans", members=["worker-extra"])
+        extra, _ = store.register_worker("worker-extra")
+        group = store.register_group("humans", members=[extra.worker_id])
         task_id = _seed_pending_ideation_task(store)
         resp = signed_in_client.get(f"/admin/tasks/{task_id}/reassign")
         body = resp.text
-        assert "worker-extra" in body
-        assert "humans" in body
+        # The worker/group dropdowns carry the minted opaque ids.
+        assert extra.worker_id in body
+        assert group.group_id in body
 
     def test_terminal_task_shows_read_only_banner(
         self, signed_in_client: TestClient, store: InMemoryStore
@@ -393,7 +401,7 @@ class TestReassignPost:
         signed_in_client: TestClient,
         store: InMemoryStore,
     ) -> None:
-        store.register_worker("specific-w")
+        specific, _ = store.register_worker("specific-w")
         task_id = _seed_pending_ideation_task(store)
         csrf = get_csrf(signed_in_client)
         resp = signed_in_client.post(
@@ -401,7 +409,7 @@ class TestReassignPost:
             data={
                 "csrf_token": csrf,
                 "target_kind": "worker",
-                "target_id_worker": "specific-w",
+                "target_id_worker": specific.worker_id,
                 "reason": "manual route",
             },
             follow_redirects=False,
@@ -411,14 +419,14 @@ class TestReassignPost:
         task = store.read_task(task_id)
         assert task.target is not None
         assert task.target.kind == "worker"
-        assert task.target.id == "specific-w"
+        assert task.target.id == specific.worker_id
 
     def test_pending_task_to_group_target(
         self,
         signed_in_client: TestClient,
         store: InMemoryStore,
     ) -> None:
-        store.register_group("humans", members=[])
+        group = store.register_group("humans", members=[])
         task_id = _seed_pending_ideation_task(store)
         csrf = get_csrf(signed_in_client)
         resp = signed_in_client.post(
@@ -426,7 +434,7 @@ class TestReassignPost:
             data={
                 "csrf_token": csrf,
                 "target_kind": "group",
-                "target_id_group": "humans",
+                "target_id_group": group.group_id,
                 "reason": "team route",
             },
             follow_redirects=False,
@@ -435,21 +443,21 @@ class TestReassignPost:
         task = store.read_task(task_id)
         assert task.target is not None
         assert task.target.kind == "group"
-        assert task.target.id == "humans"
+        assert task.target.id == group.group_id
 
     def test_pending_task_to_none_emits_event(
         self,
         signed_in_client: TestClient,
         store: InMemoryStore,
     ) -> None:
-        store.register_worker("specific-w")
+        specific, _ = store.register_worker("specific-w")
         task_id = _seed_pending_ideation_task(store)
         # Set a non-null target first.
         store.reassign_task(
             task_id,
-            TaskTarget(kind="worker", id="specific-w"),
+            TaskTarget(kind="worker", id=specific.worker_id),
             reason="initial",
-            reassigned_by=WORKER_ID,
+            reassigned_by=web_ui_worker_id(store),
         )
         before = len(store.replay())
         csrf = get_csrf(signed_in_client)
@@ -496,7 +504,7 @@ class TestReassignPost:
             "task.reassigned",
         ]
         assert new_events[0].data["cause"] == "operator"
-        assert new_events[1].data["reassigned_by"] == WORKER_ID
+        assert new_events[1].data["reassigned_by"] == web_ui_worker_id(store)
 
     def test_claimed_execution_task_composite_errors_variant(
         self,
@@ -570,7 +578,7 @@ class TestReassignPost:
         signed_in_client: TestClient,
         store: InMemoryStore,
     ) -> None:
-        """Target id that doesn't match any registered worker → unknown-target."""
+        """Well-formed but unregistered target id → unknown-target."""
         task_id = _seed_pending_ideation_task(store)
         csrf = get_csrf(signed_in_client)
         resp = signed_in_client.post(
@@ -578,7 +586,8 @@ class TestReassignPost:
             data={
                 "csrf_token": csrf,
                 "target_kind": "worker",
-                "target_id": "ghost-worker",
+                # Valid wkr_* grammar but not registered.
+                "target_id": "wkr_never000000000000000000000",
                 "reason": "spoof",
             },
             follow_redirects=False,
@@ -612,7 +621,7 @@ class TestReassignBannerAllowlist:
         ("query", "expected_text"),
         [
             ("reassigned=ok", "task reassigned"),
-            ("error=invalid-target", "§6.1 grammar"),
+            ("error=invalid-target", "opaque wkr_*/grp_* member id"),
             ("error=missing-reason", "reason is required"),
             ("error=illegal-state", "cannot be reassigned"),
             ("error=unknown-target", "not registered"),
@@ -693,8 +702,8 @@ class TestCrossRequestFlows:
         store: InMemoryStore,
     ) -> None:
         """Reassign to a worker target → subsequent claim by a different worker is rejected."""
-        store.register_worker("eligible-w")
-        store.register_worker("other-w")
+        eligible, _ = store.register_worker("eligible-w")
+        other, _ = store.register_worker("other-w-2")
         task_id = _seed_pending_ideation_task(store)
         csrf = get_csrf(signed_in_client)
         resp = signed_in_client.post(
@@ -702,7 +711,7 @@ class TestCrossRequestFlows:
             data={
                 "csrf_token": csrf,
                 "target_kind": "worker",
-                "target_id_worker": "eligible-w",
+                "target_id_worker": eligible.worker_id,
                 "reason": "scoped",
             },
             follow_redirects=False,
@@ -712,10 +721,10 @@ class TestCrossRequestFlows:
         from eden_storage.errors import WorkerNotEligible
 
         with pytest.raises(WorkerNotEligible):
-            store.claim(task_id, "other-w")
+            store.claim(task_id, other.worker_id)
         # The targeted worker can claim.
-        claim = store.claim(task_id, "eligible-w")
-        assert claim.worker_id == "eligible-w"
+        claim = store.claim(task_id, eligible.worker_id)
+        assert claim.worker_id == eligible.worker_id
 
 
 # ----------------------------------------------------------------------
@@ -832,7 +841,7 @@ def test_reassign_url_pattern_is_under_tasks_not_workers_or_groups(
         store_factory=_one_experiment_factory(store),
         experiment_id=EXPERIMENT_ID,
         experiment_config=_config(),
-        worker_id=WORKER_ID,
+        worker_id=web_ui_worker_id(store),
         session_secret=SESSION_SECRET,
         claim_ttl_seconds=3600,
         artifacts_dir=__import__("pathlib").Path("/tmp"),

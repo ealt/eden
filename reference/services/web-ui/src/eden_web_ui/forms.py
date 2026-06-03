@@ -19,11 +19,14 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 from eden_contracts import EvaluationSchema, TaskTarget
+from eden_contracts._common import MEMBER_ID_PATTERN
 from pydantic import ValidationError
 
-# Registry-id grammar per spec/v0/02-data-model.md §6.1; reused for
-# the 12a-3 `intended_executor` field's worker_id / group_id slot.
-_REGISTRY_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+# Opaque member-id grammar (``wkr_*`` / ``grp_*``) per
+# spec/v0/02-data-model.md §1.6 (identity rename #128); reused for the
+# 12a-3 `intended_executor` field's worker_id / group_id slot, which is
+# a TaskTarget.id (a MemberId).
+_MEMBER_ID_PATTERN = re.compile(MEMBER_ID_PATTERN)
 
 
 @dataclass(frozen=True)
@@ -160,11 +163,11 @@ def _parse_intended_executor(
             f"intended_executor id is required for kind={kind_raw!r}",
         )
         return None
-    if not _REGISTRY_ID_PATTERN.fullmatch(id_raw):
+    if not _MEMBER_ID_PATTERN.fullmatch(id_raw):
         errors.add(
             i,
             "intended_executor",
-            "intended_executor id must match the §6.1 registry-id grammar",
+            "intended_executor id must be an opaque wkr_*/grp_* member id",
         )
         return None
     return TaskTarget(kind=kind_raw, id=id_raw)

@@ -25,8 +25,10 @@ from eden_storage import InMemoryStore
 from eden_web_ui import make_app as make_web_ui_app
 from fastapi.testclient import TestClient
 
-EXPERIMENT_ID = "exp-1"
-WORKER_ID = "auto-orchestrator-1"
+EXPERIMENT_ID = "exp_0123456789abcdefghjkmnpqrs"
+WORKER_NAME = "auto-orchestrator-1"
+# A valid opaque holder id for lease tests (holder is a WorkerId, #128).
+HOLDER_WORKER_ID = "wkr_0123456789abcdefghjkmnpqrs"
 SESSION_SECRET = "test-session-secret-padding-padding-padding"
 
 _FIXTURE_CONFIG = (
@@ -67,12 +69,13 @@ class _StoreBackedClient:
     def read_experiment_metadata(self, experiment_id: str):  # noqa: ANN201
         return self._store.read_experiment_metadata(experiment_id)
 
-    def register_experiment(self, experiment_id: str, config_uri: str):  # noqa: ANN201
+    def register_experiment(self, config_uri: str, *, name=None):  # noqa: ANN201, ANN001
         # ControlPlaneClient returns just `RegisteredExperiment`; the
-        # store-side Protocol now returns `(entry, created)` to support
-        # the 201/200 atomic decision. Adapt by unpacking the tuple.
+        # store-side Protocol returns `(entry, created)`. The server
+        # mints the opaque exp_* (#128); the caller supplies config_uri
+        # + optional name. Adapt by unpacking the tuple.
         entry, _created = self._store.register_experiment(
-            experiment_id, config_uri
+            config_uri, name=name
         )
         return entry
 
@@ -90,11 +93,16 @@ def cp_client(cp_store: InMemoryControlPlaneStore) -> ControlPlaneClient:
 def store() -> InMemoryStore:
     s = InMemoryStore(experiment_id=EXPERIMENT_ID)
     # Issue #144: the /admin/* middleware gates on admins-group
-    # membership; signed_in_client posts /signin as WORKER_ID so
-    # WORKER_ID must be a member of the `admins` group.
-    s.register_worker(WORKER_ID)
-    s.register_group("admins", members=[WORKER_ID])
+    # membership; signed_in_client posts /signin as the minted session
+    # worker id, which must be a member of the `admins` group (#128).
+    worker, _ = s.register_worker(WORKER_NAME)
+    s.register_group("admins", members=[worker.worker_id], allow_reserved=True)
+    s._session_worker_id = worker.worker_id  # type: ignore[attr-defined]
     return s
+
+
+def _session_worker_id(store: InMemoryStore) -> str:
+    return store._session_worker_id  # type: ignore[attr-defined]
 
 
 @pytest.fixture
@@ -114,7 +122,7 @@ def signed_in_client(
         store_factory=_one_experiment_factory(store, admin_store=store),
         experiment_id=EXPERIMENT_ID,
         experiment_config=_config(),
-        worker_id=WORKER_ID,
+        worker_id=_session_worker_id(store),
         session_secret=SESSION_SECRET,
         claim_ttl_seconds=3600,
         artifacts_dir=artifacts_dir,
@@ -152,12 +160,15 @@ def test_dashboard_lists_registered_experiments(
     signed_in_client: TestClient,
     cp_store: InMemoryControlPlaneStore,
 ) -> None:
-    cp_store.register_experiment("exp-a", "file:///etc/a.yaml")
-    cp_store.register_experiment("exp-b", "file:///etc/b.yaml")
+    a, _ = cp_store.register_experiment("file:///etc/a.yaml", name="exp-a")
+    b, _ = cp_store.register_experiment("file:///etc/b.yaml", name="exp-b")
     r = signed_in_client.get("/admin/experiments/")
     assert r.status_code == 200
+    # Rendered as name(id): both names + ids appear.
     assert "exp-a" in r.text
     assert "exp-b" in r.text
+    assert a.experiment_id in r.text
+    assert b.experiment_id in r.text
 
 
 def test_dashboard_redirects_unauthenticated(
@@ -170,7 +181,7 @@ def test_dashboard_redirects_unauthenticated(
         store_factory=_one_experiment_factory(store),
         experiment_id=EXPERIMENT_ID,
         experiment_config=_config(),
-        worker_id=WORKER_ID,
+        worker_id=_session_worker_id(store),
         session_secret=SESSION_SECRET,
         claim_ttl_seconds=3600,
         artifacts_dir=artifacts_dir,
@@ -186,13 +197,13 @@ def test_dashboard_surfaces_lease_holder(
     signed_in_client: TestClient,
     cp_store: InMemoryControlPlaneStore,
 ) -> None:
-    cp_store.register_experiment("exp-a", "file:///etc/a.yaml")
+    a, _ = cp_store.register_experiment("file:///etc/a.yaml", name="exp-a")
     cp_store.acquire_lease(
-        "exp-a", "auto-orchestrator-x", "uuid-1", lease_duration_seconds=30
+        a.experiment_id, HOLDER_WORKER_ID, "uuid-1", lease_duration_seconds=30
     )
     r = signed_in_client.get("/admin/experiments/")
     assert r.status_code == 200
-    assert "auto-orchestrator-x" in r.text
+    assert HOLDER_WORKER_ID in r.text
 
 
 # ---------------------------------------------------------------------
@@ -209,16 +220,16 @@ def test_register_experiment_round_trips(
         "/admin/experiments/register",
         data={
             "csrf_token": csrf,
-            "experiment_id": "exp-new",
+            "name": "exp-new",
             "config_uri": "file:///etc/new.yaml",
         },
         follow_redirects=False,
     )
     assert r.status_code == 303
     assert r.headers["location"] == "/admin/experiments/?registered=ok"
-    # Verify it actually landed in the control plane.
+    # Verify it actually landed (server minted the opaque id).
     entries = cp_store.list_experiments()
-    assert "exp-new" in [e.experiment_id for e in entries]
+    assert "exp-new" in [e.name for e in entries]
 
 
 def test_register_experiment_rejects_bad_csrf(
@@ -229,7 +240,7 @@ def test_register_experiment_rejects_bad_csrf(
         "/admin/experiments/register",
         data={
             "csrf_token": "wrong",
-            "experiment_id": "exp-new",
+            "name": "exp-new",
             "config_uri": "file:///etc/new.yaml",
         },
         follow_redirects=False,
@@ -242,33 +253,35 @@ def test_register_experiment_rejects_bad_csrf(
     assert cp_store.list_experiments() == []
 
 
-def test_register_experiment_409_already_exists(
+def test_register_experiment_invalid_name_rejected(
     signed_in_client: TestClient,
     cp_store: InMemoryControlPlaneStore,
 ) -> None:
-    cp_store.register_experiment("exp-a", "file:///etc/a.yaml")
+    # The opaque id is minted server-side, so there is no id-collision
+    # case anymore; the operator-facing failure is an invalid name (#128).
     csrf = _csrf_token(signed_in_client)
     r = signed_in_client.post(
         "/admin/experiments/register",
         data={
             "csrf_token": csrf,
-            "experiment_id": "exp-a",
-            "config_uri": "file:///etc/DIFFERENT.yaml",
+            "name": " bad-leading-space",
+            "config_uri": "file:///etc/x.yaml",
         },
         follow_redirects=False,
     )
     assert r.status_code == 303
-    assert "already-exists" in r.headers["location"]
+    assert "invalid-name" in r.headers["location"]
+    assert cp_store.list_experiments() == []
 
 
 def test_unregister_blocked_while_running(
     signed_in_client: TestClient,
     cp_store: InMemoryControlPlaneStore,
 ) -> None:
-    cp_store.register_experiment("exp-a", "file:///etc/a.yaml")
+    a, _ = cp_store.register_experiment("file:///etc/a.yaml", name="exp-a")
     csrf = _csrf_token(signed_in_client)
     r = signed_in_client.post(
-        "/admin/experiments/exp-a/unregister",
+        f"/admin/experiments/{a.experiment_id}/unregister",
         data={"csrf_token": csrf},
         follow_redirects=False,
     )
@@ -280,11 +293,11 @@ def test_unregister_succeeds_after_terminated(
     signed_in_client: TestClient,
     cp_store: InMemoryControlPlaneStore,
 ) -> None:
-    cp_store.register_experiment("exp-a", "file:///etc/a.yaml")
-    cp_store.update_last_known_state("exp-a", "terminated")
+    a, _ = cp_store.register_experiment("file:///etc/a.yaml", name="exp-a")
+    cp_store.update_last_known_state(a.experiment_id, "terminated")
     csrf = _csrf_token(signed_in_client)
     r = signed_in_client.post(
-        "/admin/experiments/exp-a/unregister",
+        f"/admin/experiments/{a.experiment_id}/unregister",
         data={"csrf_token": csrf},
         follow_redirects=False,
     )
@@ -297,10 +310,10 @@ def test_select_records_experiment_in_session(
     signed_in_client: TestClient,
     cp_store: InMemoryControlPlaneStore,
 ) -> None:
-    cp_store.register_experiment("exp-a", "file:///etc/a.yaml")
+    a, _ = cp_store.register_experiment("file:///etc/a.yaml", name="exp-a")
     csrf = _csrf_token(signed_in_client)
     r = signed_in_client.post(
-        "/admin/experiments/exp-a/select",
+        f"/admin/experiments/{a.experiment_id}/select",
         data={"csrf_token": csrf},
         follow_redirects=False,
     )
@@ -313,7 +326,7 @@ def test_select_records_experiment_in_session(
 
     session = SessionCodec(SESSION_SECRET).decode(raw)
     assert session is not None
-    assert session.selected_experiment_id == "exp-a"
+    assert session.selected_experiment_id == a.experiment_id
 
 
 def test_force_release_route_is_404(
@@ -326,13 +339,13 @@ def test_force_release_route_is_404(
     returns 405 (no handler accepts POST) or 404. Either way, the
     operator cannot bypass natural lease expiration via the UI.
     """
-    cp_store.register_experiment("exp-a", "file:///etc/a.yaml")
+    a, _ = cp_store.register_experiment("file:///etc/a.yaml", name="exp-a")
     lease = cp_store.acquire_lease(
-        "exp-a", "auto-orchestrator-x", "uuid-1", lease_duration_seconds=30
+        a.experiment_id, HOLDER_WORKER_ID, "uuid-1", lease_duration_seconds=30
     )
     csrf = _csrf_token(signed_in_client)
     r = signed_in_client.post(
-        "/admin/experiments/exp-a/release-lease",
+        f"/admin/experiments/{a.experiment_id}/release-lease",
         data={
             "csrf_token": csrf,
             "lease_id": lease.lease_id,
@@ -343,7 +356,7 @@ def test_force_release_route_is_404(
     assert r.status_code in {404, 405}
     # And the lease is STILL active in the store — UI cannot
     # bypass the natural expiration path.
-    refreshed = cp_store.read_experiment_metadata("exp-a")
+    refreshed = cp_store.read_experiment_metadata(a.experiment_id)
     assert refreshed.lease is not None
 
 
@@ -361,7 +374,7 @@ def test_routes_hidden_when_control_plane_unset(
         store_factory=_one_experiment_factory(store),
         experiment_id=EXPERIMENT_ID,
         experiment_config=_config(),
-        worker_id=WORKER_ID,
+        worker_id=_session_worker_id(store),
         session_secret=SESSION_SECRET,
         claim_ttl_seconds=3600,
         artifacts_dir=artifacts_dir,
@@ -381,29 +394,29 @@ def test_switcher_widget_renders_registered_experiments(
     signed_in_client: TestClient,
     cp_store: InMemoryControlPlaneStore,
 ) -> None:
-    cp_store.register_experiment("exp-a", "file:///etc/a.yaml")
-    cp_store.register_experiment("exp-b", "file:///etc/b.yaml")
+    a, _ = cp_store.register_experiment("file:///etc/a.yaml", name="exp-a")
+    b, _ = cp_store.register_experiment("file:///etc/b.yaml", name="exp-b")
     r = signed_in_client.get("/admin/experiments/")
     assert r.status_code == 200
     assert 'class="switcher"' in r.text
-    assert "/admin/experiments/exp-a/select" in r.text
-    assert "/admin/experiments/exp-b/select" in r.text
+    assert f"/admin/experiments/{a.experiment_id}/select" in r.text
+    assert f"/admin/experiments/{b.experiment_id}/select" in r.text
 
 
 def test_switcher_marks_the_selected_experiment_active(
     signed_in_client: TestClient,
     cp_store: InMemoryControlPlaneStore,
 ) -> None:
-    cp_store.register_experiment("exp-a", "file:///etc/a.yaml")
+    a, _ = cp_store.register_experiment("file:///etc/a.yaml", name="exp-a")
     csrf = _csrf_token(signed_in_client)
     signed_in_client.post(
-        "/admin/experiments/exp-a/select",
+        f"/admin/experiments/{a.experiment_id}/select",
         data={"csrf_token": csrf},
         follow_redirects=False,
     )
     r = signed_in_client.get("/admin/experiments/")
     assert "Active:" in r.text
-    assert "exp-a" in r.text
+    assert a.experiment_id in r.text
 
 
 def test_dashboard_renders_stale_selection_banner(
@@ -433,7 +446,7 @@ def test_switcher_absent_without_control_plane(
         store_factory=_one_experiment_factory(store, admin_store=store),
         experiment_id=EXPERIMENT_ID,
         experiment_config=_config(),
-        worker_id=WORKER_ID,
+        worker_id=_session_worker_id(store),
         session_secret=SESSION_SECRET,
         claim_ttl_seconds=3600,
         artifacts_dir=artifacts_dir,

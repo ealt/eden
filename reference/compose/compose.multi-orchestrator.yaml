@@ -3,14 +3,18 @@
 # Layered on top of compose.yaml to exercise the §6.4 multi-instance
 # safety invariants in the smoke-multi-orchestrator drill. Adds a
 # second orchestrator container that holds its own unique worker_id
-# (`orchestrator-2`) and joins the `orchestrators` group at startup
-# via the same `_ensure_orchestrators_membership` helper the primary
-# orchestrator uses.
+# and joins the `orchestrators` group at startup via the same
+# `_ensure_orchestrators_membership` helper the primary orchestrator
+# uses.
 #
-# The primary orchestrator from compose.yaml keeps its default
-# worker_id (`orchestrator`); two unique ids are required because
-# 12a-1 worker registry is identity-keyed and a duplicate id would
-# clobber the credential.
+# #128: the worker id is an opaque `wkr_*` supplied via
+# EDEN_ORCHESTRATOR_2_WORKER_ID. setup-experiment mints only the
+# single-replica infra workers, so the multi-orchestrator smoke (the
+# only consumer of this overlay) mints + exports this second id before
+# bringing the overlay up. The primary orchestrator from compose.yaml
+# uses EDEN_ORCHESTRATOR_WORKER_ID; two unique opaque ids are required
+# because the worker registry is identity-keyed and a duplicate id
+# would clobber the credential.
 #
 # Compose drops this overlay's services on `compose down`; nothing
 # here is needed outside the multi-orchestrator smoke.
@@ -37,7 +41,9 @@ services:
       - --admin-token
       - ${EDEN_ADMIN_TOKEN:?}
       - --worker-id
-      - orchestrator-2
+      # #128: opaque wkr_* minted + exported by the multi-orchestrator
+      # smoke (was literal orchestrator-2). See this overlay's header.
+      - ${EDEN_ORCHESTRATOR_2_WORKER_ID:?EDEN_ORCHESTRATOR_2_WORKER_ID must be set (multi-orchestrator smoke mints it)}
       - --repo-path
       - /var/lib/eden/repo
       - --forgejo-url

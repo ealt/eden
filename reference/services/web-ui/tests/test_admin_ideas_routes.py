@@ -133,7 +133,7 @@ class TestIdeasIndex:
 
         idea_id = _seed_idea(store, slug="alpha", state="ready")
         store.create_execution_task("exec-alpha", idea_id)
-        eclaim = store.claim("exec-alpha", "executor-w")
+        eclaim = store.claim("exec-alpha", store._test_worker_ids["executor-w"])
         store.create_variant(
             Variant(
                 variant_id="v-1",
@@ -172,10 +172,10 @@ class TestIdeasIndex:
         self, client: TestClient, store: InMemoryStore
     ) -> None:
         _signed_in(client)
-        _seed_idea(store, slug="alpha", created_by="ideator-w")
+        _seed_idea(store, slug="alpha", created_by=store._test_worker_ids["ideator-w"])
         resp = client.get("/admin/ideas/")
         assert resp.status_code == 200
-        assert '/admin/workers/ideator-w/' in resp.text
+        assert f'/admin/workers/{store._test_worker_ids["ideator-w"]}/' in resp.text
 
     def test_variant_count_column(
         self, client: TestClient, store: InMemoryStore
@@ -220,7 +220,7 @@ class TestIdeaDetail:
         self, client: TestClient, store: InMemoryStore
     ) -> None:
         _signed_in(client)
-        idea_id = _seed_idea(store, slug="alpha", created_by="ideator-w")
+        idea_id = _seed_idea(store, slug="alpha", created_by=store._test_worker_ids["ideator-w"])
         resp = client.get(f"/admin/ideas/{idea_id}/")
         assert resp.status_code == 200
         assert "idea-alpha" in resp.text

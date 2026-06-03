@@ -347,7 +347,11 @@ services:
       - --admin-token
       - ${EDEN_ADMIN_TOKEN:?}
       - --worker-id
-      - ${EDEN_ORCHESTRATOR_WORKER_ID:-orchestrator}
+      # #128: opaque wkr_* minted by setup-experiment (was the
+      # literal default `orchestrator`). Always populated by setup;
+      # no :- fallback (an operator-typed default is no longer a valid
+      # opaque id and would fail registration/auth).
+      - ${EDEN_ORCHESTRATOR_WORKER_ID:?EDEN_ORCHESTRATOR_WORKER_ID must be set (run setup-experiment)}
       - --repo-path
       - /var/lib/eden/repo
       - --forgejo-url
@@ -437,7 +441,14 @@ services:
       - --admin-token
       - ${EDEN_ADMIN_TOKEN:?}
       - --worker-id
-      - ideator-1
+      # #128: opaque wkr_* minted by setup-experiment (was literal
+      # ideator-1). The host's bootstrap_worker_credential reuses the
+      # token setup persisted to credentials/ideator/<id>.token. NOT
+      # guarded with :? — under --no-auto-host-workers this is empty in
+      # .env and the operator brings the stack up WITHOUT the host
+      # services; compose validates ALL services' interpolation on every
+      # operation, so a :? here would break that documented flow.
+      - ${EDEN_IDEATOR_HOST_WORKER_ID}
       - --base-commit-sha
       - ${EDEN_BASE_COMMIT_SHA:?EDEN_BASE_COMMIT_SHA must be set (run setup-experiment)}
       - --log-level
@@ -473,7 +484,9 @@ services:
       - --admin-token
       - ${EDEN_ADMIN_TOKEN:?}
       - --worker-id
-      - executor-1
+      # #128: opaque wkr_* minted by setup-experiment (was literal
+      # executor-1). See ideator-host for the no-:? rationale.
+      - ${EDEN_EXECUTOR_HOST_WORKER_ID}
       - --repo-path
       - /var/lib/eden/repo
       - --forgejo-url
@@ -515,7 +528,9 @@ services:
       - --admin-token
       - ${EDEN_ADMIN_TOKEN:?}
       - --worker-id
-      - evaluator-1
+      # #128: opaque wkr_* minted by setup-experiment (was literal
+      # evaluator-1). See ideator-host for the no-:? rationale.
+      - ${EDEN_EVALUATOR_HOST_WORKER_ID}
       - --experiment-config
       - /etc/eden/experiment-config.yaml
       - --log-level
@@ -593,7 +608,9 @@ services:
       - --base-commit-sha
       - ${EDEN_BASE_COMMIT_SHA:?EDEN_BASE_COMMIT_SHA must be set (run setup-experiment)}
       - --worker-id
-      - ${EDEN_WEB_UI_WORKER_ID:-web-ui-1}
+      # #128: opaque wkr_* minted by setup-experiment (was the literal
+      # default `web-ui-1`). Always populated by setup; no :- fallback.
+      - ${EDEN_WEB_UI_WORKER_ID:?EDEN_WEB_UI_WORKER_ID must be set (run setup-experiment)}
       - --host
       - 0.0.0.0
       - --port

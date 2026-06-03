@@ -23,8 +23,8 @@ from eden_storage import InMemoryStore
 from eden_web_ui import make_app as make_web_ui_app
 from fastapi.testclient import TestClient
 
-EXPERIMENT_ID = "exp-1"
-WORKER_ID = "auto-orchestrator-1"
+EXPERIMENT_ID = "exp_0123456789abcdefghjkmnpqrs"
+WORKER_NAME = "auto-orchestrator-1"
 SESSION_SECRET = "test-session-secret-padding-padding-padding"
 
 _FIXTURE_CONFIG = (
@@ -54,16 +54,16 @@ class _StoreBackedClient:
 
     # --- workers ---------------------------------------------------
 
-    def list_workers(self):  # noqa: ANN201
-        return self._store.list_workers()
+    def list_workers(self, *, name: str | None = None):  # noqa: ANN201
+        return self._store.list_workers(name=name)
 
     def read_worker(self, worker_id: str):  # noqa: ANN201
         return self._store.read_worker(worker_id)
 
     def register_worker(
-        self, worker_id: str, *, labels: dict[str, str] | None = None
+        self, name: str | None = None, *, labels: dict[str, str] | None = None
     ) -> dict[str, Any]:
-        worker, token = self._store.register_worker(worker_id, labels=labels)
+        worker, token = self._store.register_worker(name, labels=labels)
         out: dict[str, Any] = worker.model_dump(mode="json", exclude_none=True)
         if token is not None:
             out["registration_token"] = token
@@ -78,14 +78,14 @@ class _StoreBackedClient:
 
     # --- groups ----------------------------------------------------
 
-    def list_groups(self):  # noqa: ANN201
-        return self._store.list_groups()
+    def list_groups(self, *, name: str | None = None):  # noqa: ANN201
+        return self._store.list_groups(name=name)
 
     def read_group(self, group_id: str):  # noqa: ANN201
         return self._store.read_group(group_id)
 
-    def register_group(self, group_id: str, *, members=None):  # noqa: ANN201, ANN001
-        return self._store.register_group(group_id, members=members)
+    def register_group(self, name=None, *, members=None):  # noqa: ANN201, ANN001
+        return self._store.register_group(name, members=members)
 
     def add_to_group(self, group_id: str, member_id: str):  # noqa: ANN201
         return self._store.add_to_group(group_id, member_id)
@@ -111,11 +111,16 @@ def cp_client(cp_store: InMemoryControlPlaneStore) -> ControlPlaneClient:
 def store() -> InMemoryStore:
     s = InMemoryStore(experiment_id=EXPERIMENT_ID)
     # Issue #144: the /admin/* middleware gates on admins-group
-    # membership; signed_in_client posts /signin as WORKER_ID so
-    # WORKER_ID must be a member of the `admins` group.
-    s.register_worker(WORKER_ID)
-    s.register_group("admins", members=[WORKER_ID])
+    # membership; signed_in_client posts /signin as the minted session
+    # worker id, which must be a member of the `admins` group (#128).
+    worker, _ = s.register_worker(WORKER_NAME)
+    s.register_group("admins", members=[worker.worker_id], allow_reserved=True)
+    s._session_worker_id = worker.worker_id  # type: ignore[attr-defined]
     return s
+
+
+def _session_worker_id(store: InMemoryStore) -> str:
+    return store._session_worker_id  # type: ignore[attr-defined]
 
 
 @pytest.fixture
@@ -135,7 +140,7 @@ def signed_in_client(
         store_factory=_one_experiment_factory(store, admin_store=store),
         experiment_id=EXPERIMENT_ID,
         experiment_config=_config(),
-        worker_id=WORKER_ID,
+        worker_id=_session_worker_id(store),
         session_secret=SESSION_SECRET,
         claim_ttl_seconds=3600,
         artifacts_dir=artifacts_dir,
@@ -171,7 +176,7 @@ def test_list_redirects_unauthenticated(
         store_factory=_one_experiment_factory(store),
         experiment_id=EXPERIMENT_ID,
         experiment_config=_config(),
-        worker_id=WORKER_ID,
+        worker_id=_session_worker_id(store),
         session_secret=SESSION_SECRET,
         claim_ttl_seconds=3600,
         artifacts_dir=artifacts_dir,
@@ -192,7 +197,7 @@ def test_detail_redirects_unauthenticated(
         store_factory=_one_experiment_factory(store),
         experiment_id=EXPERIMENT_ID,
         experiment_config=_config(),
-        worker_id=WORKER_ID,
+        worker_id=_session_worker_id(store),
         session_secret=SESSION_SECRET,
         claim_ttl_seconds=3600,
         artifacts_dir=artifacts_dir,
@@ -212,7 +217,7 @@ def test_register_unauthenticated_redirects_before_csrf(
         store_factory=_one_experiment_factory(store),
         experiment_id=EXPERIMENT_ID,
         experiment_config=_config(),
-        worker_id=WORKER_ID,
+        worker_id=_session_worker_id(store),
         session_secret=SESSION_SECRET,
         claim_ttl_seconds=3600,
         artifacts_dir=artifacts_dir,
@@ -266,12 +271,14 @@ def test_list_filter_substring(
 def test_list_shows_group_membership(
     signed_in_client: TestClient, cp_store: InMemoryControlPlaneStore
 ) -> None:
-    cp_store.register_worker("alice")
-    cp_store.register_group("admins", members=["alice"])
+    worker, _ = cp_store.register_worker("alice")
+    group = cp_store.register_group(
+        "team-cp", members=[worker.worker_id]
+    )
     r = signed_in_client.get("/admin/control/workers/")
     assert r.status_code == 200
     # The detail-page link for the membership group is present.
-    assert "/admin/control/groups/admins/" in r.text
+    assert f"/admin/control/groups/{group.group_id}/" in r.text
 
 
 # ---------------------------------------------------------------------
@@ -287,7 +294,7 @@ def test_register_round_trips_and_shows_token(
         "/admin/control/workers/",
         data={
             "csrf_token": csrf,
-            "worker_id": "alice",
+            "name": "alice",
             "labels": "role=ideator",
         },
         follow_redirects=False,
@@ -295,16 +302,17 @@ def test_register_round_trips_and_shows_token(
     assert r.status_code == 200
     assert "registration token" in r.text
     assert "alice" in r.text
-    # Worker is now in the registry.
-    assert "alice" in [w.worker_id for w in cp_store.list_workers()]
-    # Idempotent re-register yields the "no new token" banner.
+    # Worker is now in the registry (matched by name, minted id).
+    assert len(cp_store.list_workers(name="alice")) == 1
+    # Every register mints a fresh worker (no id-based idempotency).
     r2 = signed_in_client.post(
         "/admin/control/workers/",
-        data={"csrf_token": csrf, "worker_id": "alice", "labels": ""},
+        data={"csrf_token": csrf, "name": "alice", "labels": ""},
         follow_redirects=False,
     )
     assert r2.status_code == 200
-    assert "no new token was issued" in r2.text
+    assert '<code class="token">' in r2.text
+    assert len(cp_store.list_workers(name="alice")) == 2
 
 
 def test_register_csrf_failure_returns_403(
@@ -312,36 +320,36 @@ def test_register_csrf_failure_returns_403(
 ) -> None:
     r = signed_in_client.post(
         "/admin/control/workers/",
-        data={"csrf_token": "bogus", "worker_id": "alice"},
+        data={"csrf_token": "bogus", "name": "alice"},
         follow_redirects=False,
     )
     assert r.status_code == 403
 
 
-def test_register_reserved_identifier_rejected(
+def test_register_reserved_name_rejected(
     signed_in_client: TestClient,
 ) -> None:
     csrf = _csrf_token(signed_in_client)
     r = signed_in_client.post(
         "/admin/control/workers/",
-        data={"csrf_token": csrf, "worker_id": "admin", "labels": ""},
+        data={"csrf_token": csrf, "name": "admin", "labels": ""},
         follow_redirects=False,
     )
     assert r.status_code == 303
-    assert "reserved-identifier" in r.headers["location"]
+    assert "reserved-name" in r.headers["location"]
 
 
-def test_register_invalid_worker_id_rejected(
+def test_register_invalid_name_rejected(
     signed_in_client: TestClient,
 ) -> None:
     csrf = _csrf_token(signed_in_client)
     r = signed_in_client.post(
         "/admin/control/workers/",
-        data={"csrf_token": csrf, "worker_id": "Alice", "labels": ""},
+        data={"csrf_token": csrf, "name": " leading-space", "labels": ""},
         follow_redirects=False,
     )
     assert r.status_code == 303
-    assert "invalid-worker-id" in r.headers["location"]
+    assert "invalid-name" in r.headers["location"]
 
 
 def test_register_invalid_labels_surface_line_number(
@@ -352,7 +360,7 @@ def test_register_invalid_labels_surface_line_number(
         "/admin/control/workers/",
         data={
             "csrf_token": csrf,
-            "worker_id": "alice",
+            "name": "alice",
             "labels": "role=ideator\nbogus-no-equals",
         },
         follow_redirects=False,
@@ -360,20 +368,6 @@ def test_register_invalid_labels_surface_line_number(
     assert r.status_code == 303
     assert "invalid-labels-line" in r.headers["location"]
     assert "line=2" in r.headers["location"]
-
-
-def test_register_id_collides_with_group(
-    signed_in_client: TestClient, cp_store: InMemoryControlPlaneStore
-) -> None:
-    cp_store.register_group("admins")
-    csrf = _csrf_token(signed_in_client)
-    r = signed_in_client.post(
-        "/admin/control/workers/",
-        data={"csrf_token": csrf, "worker_id": "admins", "labels": ""},
-        follow_redirects=False,
-    )
-    assert r.status_code == 303
-    assert "id-collides-with-group" in r.headers["location"]
 
 
 # ---------------------------------------------------------------------
@@ -384,8 +378,8 @@ def test_register_id_collides_with_group(
 def test_detail_renders_for_existing_worker(
     signed_in_client: TestClient, cp_store: InMemoryControlPlaneStore
 ) -> None:
-    cp_store.register_worker("alice", labels={"role": "ideator"})
-    r = signed_in_client.get("/admin/control/workers/alice/")
+    worker, _ = cp_store.register_worker("alice", labels={"role": "ideator"})
+    r = signed_in_client.get(f"/admin/control/workers/{worker.worker_id}/")
     assert r.status_code == 200
     assert "alice" in r.text
     assert "role=ideator" in r.text
@@ -395,7 +389,9 @@ def test_detail_renders_for_existing_worker(
 def test_detail_404_for_missing_worker(
     signed_in_client: TestClient,
 ) -> None:
-    r = signed_in_client.get("/admin/control/workers/ghost/")
+    r = signed_in_client.get(
+        "/admin/control/workers/wkr_never000000000000000000000/"
+    )
     assert r.status_code == 404
 
 
@@ -407,10 +403,10 @@ def test_detail_404_for_missing_worker(
 def test_reissue_round_trips(
     signed_in_client: TestClient, cp_store: InMemoryControlPlaneStore
 ) -> None:
-    cp_store.register_worker("alice")
+    worker, _ = cp_store.register_worker("alice")
     csrf = _csrf_token(signed_in_client)
     r = signed_in_client.post(
-        "/admin/control/workers/alice/reissue-credential",
+        f"/admin/control/workers/{worker.worker_id}/reissue-credential",
         data={"csrf_token": csrf},
         follow_redirects=False,
     )
@@ -422,9 +418,9 @@ def test_reissue_round_trips(
 def test_reissue_csrf_failure_returns_403(
     signed_in_client: TestClient, cp_store: InMemoryControlPlaneStore
 ) -> None:
-    cp_store.register_worker("alice")
+    worker, _ = cp_store.register_worker("alice")
     r = signed_in_client.post(
-        "/admin/control/workers/alice/reissue-credential",
+        f"/admin/control/workers/{worker.worker_id}/reissue-credential",
         data={"csrf_token": "bogus"},
         follow_redirects=False,
     )
@@ -436,7 +432,7 @@ def test_reissue_not_found_redirects(
 ) -> None:
     csrf = _csrf_token(signed_in_client)
     r = signed_in_client.post(
-        "/admin/control/workers/ghost/reissue-credential",
+        "/admin/control/workers/wkr_never000000000000000000000/reissue-credential",
         data={"csrf_token": csrf},
         follow_redirects=False,
     )
@@ -456,7 +452,7 @@ def test_routes_hidden_when_control_plane_unset(
         store_factory=_one_experiment_factory(store),
         experiment_id=EXPERIMENT_ID,
         experiment_config=_config(),
-        worker_id=WORKER_ID,
+        worker_id=_session_worker_id(store),
         session_secret=SESSION_SECRET,
         claim_ttl_seconds=3600,
         artifacts_dir=artifacts_dir,

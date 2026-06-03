@@ -285,7 +285,7 @@ class TestIneligibleClaimRegression:
             store,
             base_sha=base_sha,
             slug="targeted",
-            target=TaskTarget(kind="worker", id="other-w"),
+            target=TaskTarget(kind="worker", id=store._test_worker_ids["other-w"]),
         )
         csrf = get_csrf(signed_in_impl_client)
         resp = _post_form(

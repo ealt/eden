@@ -25,8 +25,10 @@ from collections.abc import Iterable
 from typing import Any
 
 from eden_contracts import Event, Idea, Task, Variant, Worker
+from eden_contracts._common import WORKER_ID_PATTERN, _check_display_name
+from eden_storage import RESERVED_WORKER_NAMES
 from eden_storage.errors import (
-    AlreadyExists,
+    InvalidName,
     InvalidPrecondition,
     ReservedIdentifier,
 )
@@ -37,14 +39,16 @@ from eden_wire.errors import BadRequest
 from fastapi import APIRouter, Form, Request, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
 
+from ._display import sort_by_name_then_id, worker_name_map
 from ._helpers import csrf_ok, get_session, resolve_active_context
 
 router = APIRouter(prefix="/admin/workers")
 
 
-# Worker / group identifier grammar per spec/v0/02-data-model.md §6.1.
-_WORKER_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
-_RESERVED_IDENTIFIERS = frozenset({"admin", "system", "internal"})
+# Opaque worker-id grammar (``wkr_*``) per spec/v0/02-data-model.md §1.6
+# (identity rename #128). Used to validate the ``?worker=`` attribution
+# filter, which carries an opaque id (not operator-typed free text).
+_WORKER_ID_RE = re.compile(WORKER_ID_PATTERN)
 
 # Per-render cap on the worker-detail attribution view; matches the
 # chunk-9e _TRIAL_DETAIL_EVENT_CAP convention.
@@ -55,18 +59,16 @@ _LABEL_PREVIEW_MAX = 120
 
 # Banner-key allowlist (plan §D.6). Unknown keys render no banner.
 _WORKER_OUTCOMES: dict[str, tuple[str, str]] = {
-    "ok": ("ok", "worker registered — token shown below (only time)"),
-    "idempotent": ("warn", "worker already existed; no new token issued"),
+    "ok": ("ok", "worker registered — id + token shown below (only time)"),
     "reissued": ("ok", "credential reissued — token shown below (only time)"),
-    "reserved-identifier": ("error", "this identifier is reserved"),
-    "id-collides-with-group": (
+    "reserved-name": (
         "error",
-        "a group already has this identifier; worker_ids and "
-        "group_ids share a namespace per spec ch02 §7.1",
+        "this name is reserved (admin / system / internal)",
     ),
-    "invalid-worker-id": (
+    "invalid-name": (
         "error",
-        "worker_id must match [a-z0-9][a-z0-9_-]{0,63}",
+        "name must be 1–128 visible characters (no control chars; "
+        "no leading/trailing whitespace)",
     ),
     "invalid-labels": (
         "error",
@@ -153,12 +155,19 @@ def _parse_labels(raw: str) -> dict[str, str]:
     return labels
 
 
-def _validate_worker_id(value: str) -> str | None:
-    """Return a banner-key name if ``value`` is invalid, else ``None``."""
-    if value in _RESERVED_IDENTIFIERS:
-        return "reserved-identifier"
-    if not _WORKER_ID_RE.match(value):
-        return "invalid-worker-id"
+def _validate_worker_name(value: str) -> str | None:
+    """Return a banner-key for an invalid display ``name``, else ``None``.
+
+    Validates the operator-supplied display name against the reserved
+    worker names + the display-name grammar (#128). The minted opaque
+    ``worker_id`` is no longer operator input; the server generates it.
+    """
+    if value in RESERVED_WORKER_NAMES:
+        return "reserved-name"
+    try:
+        _check_display_name(value)
+    except ValueError:
+        return "invalid-name"
     return None
 
 
@@ -205,7 +214,7 @@ def _filter_workers(
         labels = " ".join(
             f"{k}={v}" for k, v in (w.labels or {}).items()
         )
-        if _filter_match(q, w.worker_id, labels):
+        if _filter_match(q, w.worker_id, w.name or "", labels):
             out.append(w)
     return out
 
@@ -245,10 +254,10 @@ def _groups_containing(
 def coerce_worker_filter(raw: str | None) -> str | None:
     """Return the worker filter value or ``"__invalid__"`` (sentinel) or ``None``.
 
-    Used by the new ``/admin/workers/`` list-filter input AND by the
-    chunk-12a-1b extension to ``/admin/tasks/?worker=…`` /
-    ``/admin/variants/?worker=…`` (plan §D.8). The sentinel is the
-    same shape chunk-9e uses for invalid kind/state values.
+    Backs the ``/admin/tasks/?worker=…`` / ``/admin/variants/?worker=…``
+    attribution filters (plan §D.8): the value is an opaque ``wkr_*``
+    worker id (#128), validated against the §1.6 grammar. The sentinel
+    is the same shape chunk-9e uses for invalid kind/state values.
     """
     if raw is None or raw == "" or raw == "*":
         return None
@@ -278,17 +287,26 @@ async def workers_index(request: Request) -> HTMLResponse | RedirectResponse:
 
     q_raw = request.query_params.get("q") or ""
     q = q_raw[:64].lower() if q_raw else None
+    # Exact display-name filter, mapped to the wire ``?name=`` query
+    # (``list_workers(name=…)``) per the rename contract §6 (#128).
+    name_raw = request.query_params.get("name") or ""
+    name_filter = name_raw[:128] if name_raw else None
 
     try:
-        workers = store.list_workers()
+        workers = (
+            store.list_workers(name=name_filter)
+            if name_filter is not None
+            else store.list_workers()
+        )
         all_groups = store.list_groups()
     except Exception:  # noqa: BLE001 — transport/store-domain
         return _read_failure_response(request, "could not load workers")
 
     filtered = _filter_workers(workers, q)
+    ordered = sort_by_name_then_id(filtered, id_attr="worker_id")
     rows: list[dict[str, Any]] = []
     total_transport_errors = 0
-    for w in filtered:
+    for w in ordered:
         groups, te = _groups_containing(
             store, w.worker_id, all_groups=all_groups
         )
@@ -296,6 +314,7 @@ async def workers_index(request: Request) -> HTMLResponse | RedirectResponse:
         rows.append(
             {
                 "worker_id": w.worker_id,
+                "name": w.name,
                 "registered_at": w.registered_at,
                 "registered_by": w.registered_by,
                 "labels_preview": _labels_preview(w.labels),
@@ -312,6 +331,7 @@ async def workers_index(request: Request) -> HTMLResponse | RedirectResponse:
             "csrf_token": session.csrf,
             "rows": rows,
             "q": q_raw,
+            "name_filter": name_raw,
             "admin_enabled": admin_store is not None,
             "membership_transport_errors": total_transport_errors,
             "outcome": _outcome(request, _WORKER_OUTCOMES),
@@ -323,7 +343,7 @@ async def workers_index(request: Request) -> HTMLResponse | RedirectResponse:
 async def workers_register(
     request: Request,
     csrf_token: str = Form(""),
-    worker_id: str = Form(""),
+    name: str = Form(""),
     labels: str = Form(""),
 ) -> RedirectResponse | HTMLResponse:
     session = get_session(request)
@@ -340,11 +360,18 @@ async def workers_register(
             url="/admin/workers/?error=admin-disabled", status_code=303
         )
 
-    bad = _validate_worker_id(worker_id)
-    if bad is not None:
-        return RedirectResponse(
-            url=f"/admin/workers/?error={bad}", status_code=303
-        )
+    # Registration now mints the opaque worker_id server-side; the
+    # operator supplies only an OPTIONAL display name (#128). An empty
+    # (or whitespace-only) name registers a nameless worker; otherwise
+    # the RAW name is validated against the display-name grammar (so
+    # leading/trailing whitespace is rejected, not silently trimmed).
+    name = name if name.strip() else ""
+    if name:
+        bad = _validate_worker_name(name)
+        if bad is not None:
+            return RedirectResponse(
+                url=f"/admin/workers/?error={bad}", status_code=303
+            )
 
     try:
         parsed_labels = _parse_labels(labels)
@@ -359,24 +386,19 @@ async def workers_register(
 
     try:
         worker, token = admin_store.register_worker(
-            worker_id, labels=parsed_labels or None
+            name or None, labels=parsed_labels or None
         )
     except ReservedIdentifier:
         return RedirectResponse(
-            url="/admin/workers/?error=reserved-identifier", status_code=303
+            url="/admin/workers/?error=reserved-name", status_code=303
         )
-    except AlreadyExists:
-        # Per spec ch02 §7.1 worker_id / group_id share a namespace; the
-        # store raises AlreadyExists when ``worker_id`` is already
-        # registered as a group. (Register on an existing worker is
-        # idempotent — it does NOT raise AlreadyExists per spec §6.3.)
+    except InvalidName:
         return RedirectResponse(
-            url="/admin/workers/?error=id-collides-with-group",
-            status_code=303,
+            url="/admin/workers/?error=invalid-name", status_code=303
         )
     except (BadRequest, InvalidPrecondition):
         return RedirectResponse(
-            url="/admin/workers/?error=invalid-worker-id", status_code=303
+            url="/admin/workers/?error=invalid-name", status_code=303
         )
     except Exception:  # noqa: BLE001 — transport-shaped
         return RedirectResponse(
@@ -412,6 +434,7 @@ async def worker_detail(
 
     try:
         worker = store.read_worker(worker_id)
+        all_workers = store.list_workers()
         all_groups = store.list_groups()
         tasks = store.list_tasks()
         ideas = store.list_ideas()
@@ -425,6 +448,12 @@ async def worker_detail(
     groups_of_worker, membership_transport_errors = _groups_containing(
         store, worker_id, all_groups=all_groups
     )
+
+    # Attribution id → display-name map (#128). The template resolves
+    # each attribution id to ``<name> (<id>)`` via this map (fall back
+    # to bare id). Groups carry names too (for the membership column).
+    worker_names = worker_name_map(all_workers)
+    group_names = {g.group_id: g.name for g in all_groups if g.name}
 
     attributed_tasks = _attribution_tasks(tasks, worker_id)
     attributed_ideas = _attribution_ideas(ideas, worker_id)
@@ -440,6 +469,8 @@ async def worker_detail(
             "worker": worker,
             "labels_preview": _labels_preview(worker.labels),
             "groups": groups_of_worker,
+            "worker_names": worker_names,
+            "group_names": group_names,
             "tasks": attributed_tasks,
             "ideas": attributed_ideas,
             "variants": attributed_variants,

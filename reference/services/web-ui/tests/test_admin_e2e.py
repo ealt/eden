@@ -106,7 +106,8 @@ def test_admin_reclaim_round_trip(tmp_path: Path) -> None:
     db_path = tmp_path / "eden.sqlite"
     artifacts_dir = tmp_path / "artifacts"
     artifacts_dir.mkdir()
-    experiment_id = "exp-admin-e2e"
+    # Identity rename (#128): the experiment id is opaque.
+    experiment_id = "exp_0123456789abcdefghjkmnpqrs"
     logs_dir = tmp_path / "logs"
     logs_dir.mkdir()
 
@@ -132,6 +133,28 @@ def test_admin_reclaim_round_trip(tmp_path: Path) -> None:
     server_port = _read_port(server_log, server, _TASK_STORE_RE)
     task_store_url = f"http://127.0.0.1:{server_port}"
 
+    # Identity rename (#128): the web-ui worker id is minted by the
+    # server. Mint it (+ the admins membership) BEFORE spawning the
+    # web-ui so the gate admits its session principal. The task-store
+    # runs auth-disabled here, so the seed registration needs no bearer.
+    from eden_wire import StoreClient
+
+    seed = StoreClient(
+        base_url=task_store_url,
+        experiment_id=experiment_id,
+    )
+    try:
+        ui_worker, _ = seed.register_worker("ui-admin")
+        ui_worker_id = ui_worker.worker_id
+        # Issue #144: the web-ui /admin/* middleware gates on
+        # admins-group membership. Put the web-ui worker in admins.
+        seed.register_group(
+            "admins", members=[ui_worker_id], allow_reserved=True
+        )
+        seed.create_ideation_task("t-ideation-1")
+    finally:
+        seed.close()
+
     web_ui_log = logs_dir / "web-ui.log"
     web_ui = _spawn(
         [
@@ -145,7 +168,7 @@ def test_admin_reclaim_round_trip(tmp_path: Path) -> None:
             "--session-secret",
             "z" * 32,
             "--worker-id",
-            "ui-admin",
+            ui_worker_id,
             "--artifacts-dir",
             str(artifacts_dir),
             "--host",
@@ -166,32 +189,6 @@ def test_admin_reclaim_round_trip(tmp_path: Path) -> None:
     }
 
     try:
-        from eden_wire import StoreClient
-
-        seed = StoreClient(
-            base_url=task_store_url,
-            experiment_id=experiment_id,
-        )
-        try:
-            # 12a-1 wave 5: Store.claim enforces the §3.5 step-2
-            # registration check, so every worker_id that issues a
-            # claim must exist in the registry. The web-ui process
-            # uses --worker-id ui-admin; pre-register it here (the
-            # task-store-server runs auth-disabled in this e2e, so
-            # the registration call goes through without an admin
-            # bearer).
-            # In auth-disabled mode (post-#148) the wire collapses
-            # every caller onto the ``anonymous`` sentinel, so
-            # register that id alongside ``ui-admin``.
-            seed.register_worker("anonymous")
-            seed.register_worker("ui-admin")
-            # Issue #144: the web-ui /admin/* middleware gates on
-            # admins-group membership. Put ui-admin in admins.
-            seed.register_group("admins", members=["ui-admin"])
-            seed.create_ideation_task("t-ideation-1")
-        finally:
-            seed.close()
-
         with httpx.Client(base_url=web_url, timeout=10.0) as ui:
             resp = ui.post("/signin", follow_redirects=False)
             assert resp.status_code == 303

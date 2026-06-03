@@ -11,10 +11,10 @@ from datetime import UTC, datetime
 from conftest import (
     EXPERIMENT_ID,
     SESSION_SECRET,
-    WORKER_ID,
     _config,
     _one_experiment_factory,
     get_csrf,
+    web_ui_worker_id,
 )
 from eden_dispatch import sweep_expired_claims
 from eden_storage import InMemoryStore
@@ -715,7 +715,7 @@ class TestIllegalTransitionReadback:
         # Reclaim then re-claim under a different worker so the
         # task is in state==claimed with a non-matching token.
         store.reclaim("t-wt2", "operator")
-        store.claim("t-wt2", "another-worker")
+        store.claim("t-wt2", store._test_worker_ids["another-worker"])
 
         def fake_submit(*a, **k):
             raise IllegalTransition("token does not match")
@@ -795,7 +795,7 @@ class TestStrandedClaim:
             store_factory=_one_experiment_factory(store),
             experiment_id=EXPERIMENT_ID,
             experiment_config=_config(),
-            worker_id=WORKER_ID,
+            worker_id=web_ui_worker_id(store),
             session_secret=SESSION_SECRET,
             claim_ttl_seconds=60,  # 1 minute
             artifacts_dir=artifacts_dir,

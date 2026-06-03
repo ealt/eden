@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_macros.html" import name_id %}
 {% block title %}EDEN — admin control groups{% endblock %}
 {% block main %}
 <h1>deployment-scoped groups</h1>
@@ -16,19 +17,22 @@
 
 <section>
     <h2>register a new group</h2>
+    <p class="muted">
+        The group_id is minted by the control plane. Supply an optional
+        display name; the minted id is shown after registration.
+    </p>
     <form method="post" action="/admin/control/groups/">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <p>
-            <label>group_id
-                <input type="text" name="group_id" required maxlength="64"
-                       pattern="[a-z0-9][a-z0-9_-]{0,63}"
-                       title="lowercase alphanumeric, hyphen, underscore; first char non-hyphen; max 64 chars">
+            <label>name <span class="muted">(optional)</span>
+                <input type="text" name="name" maxlength="128"
+                       title="1–128 visible characters; no control chars; no leading/trailing whitespace">
             </label>
         </p>
         <p>
-            <label>initial members (one per line; <code>#</code> comments ok)
+            <label>initial members (one opaque <code>wkr_*</code>/<code>grp_*</code> id per line; <code>#</code> comments ok)
                 <textarea name="members" rows="4" cols="50"
-                          placeholder="alice&#10;bob&#10;# a nested group:&#10;team-a"></textarea>
+                          placeholder="wkr_0123456789abcdefghjkmnpq&#10;# a nested group:&#10;grp_0123456789abcdefghjkmnpq"></textarea>
             </label>
         </p>
         <p>
@@ -38,13 +42,16 @@
 </section>
 
 <section>
-    <h2>registered groups ({{ rows | length }})</h2>
+    <h2>registered groups ({{ (rows | length) + (reserved_rows | length) }})</h2>
     <form method="get" action="/admin/control/groups/" class="filters">
-        <label>filter (group_id substring)
+        <label>filter by name <span class="muted">(exact)</span>
+            <input type="text" name="name" value="{{ name_filter }}" maxlength="128">
+        </label>
+        <label>filter (id / name substring)
             <input type="text" name="q" value="{{ q }}" maxlength="64">
         </label>
         <button type="submit">filter</button>
-        {% if q %}
+        {% if q or name_filter %}
         <a href="/admin/control/groups/">clear filter</a>
         {% endif %}
     </form>
@@ -64,11 +71,11 @@
     </div>
     {% endif %}
 
-    {% if rows %}
+    {% macro group_table(group_rows) %}
     <table>
         <thead>
             <tr>
-                <th>group_id</th>
+                <th>group</th>
                 <th>created_at</th>
                 <th>created_by</th>
                 <th>direct members</th>
@@ -77,9 +84,9 @@
             </tr>
         </thead>
         <tbody>
-        {% for r in rows %}
+        {% for r in group_rows %}
             <tr>
-                <td><a href="/admin/control/groups/{{ r.group_id }}/"><code>{{ r.group_id }}</code></a></td>
+                <td><a href="/admin/control/groups/{{ r.group_id }}/">{{ name_id(r.name, r.group_id) }}</a></td>
                 <td>{{ r.created_at }}</td>
                 <td>{% if r.created_by %}<code>{{ r.created_by }}</code>{% else %}—{% endif %}</td>
                 <td>{{ r.member_count }}</td>
@@ -93,7 +100,21 @@
         {% endfor %}
         </tbody>
     </table>
-    {% else %}
+    {% endmacro %}
+
+    {% if reserved_rows %}
+    <h3>reserved groups</h3>
+    <p class="muted">
+        Reserved-name groups (<code>admins</code> / <code>orchestrators</code>)
+        are seeded by setup-experiment and govern access.
+    </p>
+    {{ group_table(reserved_rows) }}
+    {% endif %}
+
+    {% if rows %}
+    {% if reserved_rows %}<h3>other groups</h3>{% endif %}
+    {{ group_table(rows) }}
+    {% elif not reserved_rows %}
     <p>no groups match these filters.</p>
     {% endif %}
 </section>
