@@ -2,8 +2,9 @@
 
 Covers:
 
-- ``POST /v0/experiments/{E}/terminate`` (§2.9): admin-group-gated
-  lifecycle transition; idempotent on terminated state; reason +
+- ``POST /v0/experiments/{E}/terminate`` (§2.9): group-gated
+  (``admins`` OR ``orchestrators``, #256) lifecycle transition;
+  idempotent on terminated state; reason +
   terminated_by stamping; body rejects ``terminated_by`` field; the
   resulting experiment payload + the ``experiment.terminated`` event.
 - ``GET /v0/experiments/{E}/state`` (§2.9 companion read): default
@@ -182,8 +183,10 @@ class TestTerminateEndpoint:
         assert term_events[0].data["reason"] == "eric won"
         assert term_events[0].data["terminated_by"] == "admin-eric"
 
-    def test_non_admin_rejected_with_forbidden(self, store: InMemoryStore) -> None:
-        """A registered worker outside admins MUST get 403 (§13.3)."""
+    def test_non_admin_non_orchestrator_rejected_with_forbidden(
+        self, store: InMemoryStore
+    ) -> None:
+        """A registered worker outside admins AND orchestrators MUST get 403 (§13.3)."""
         app = make_app(store, admin_token=ADMIN_TOKEN)
         client = TestClient(app)
         random_token = _register_worker(client, "random-worker")
@@ -197,17 +200,31 @@ class TestTerminateEndpoint:
         # State unchanged.
         assert store.read_experiment_state() == "running"
 
-    def test_orchestrators_member_not_sufficient(self, store: InMemoryStore) -> None:
-        """``orchestrators`` group is not the right authority gate for terminate."""
+    def test_orchestrators_member_can_terminate(self, store: InMemoryStore) -> None:
+        """``orchestrators`` is a valid authority gate for terminate (#256).
+
+        The orchestrator commits its policy-driven termination
+        (`03-roles.md` §6.2 decision-type 0) through an
+        ``orchestrators`` bearer; gating on ``admins`` OR
+        ``orchestrators`` lets that path execute over the wire instead
+        of 403-ing.
+        """
         app = make_app(store, admin_token=ADMIN_TOKEN)
         client = TestClient(app)
         orch_token = _bootstrap_orchestrators_member(client, "orch-1")
         resp = client.post(
             f"/v0/experiments/{EXPERIMENT_ID}/terminate",
             headers=_worker_headers("orch-1", orch_token),
-            json={"reason": "x"},
+            json={"reason": "policy fired"},
         )
-        assert resp.status_code == 403
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["state"] == "terminated"
+        assert store.read_experiment_state() == "terminated"
+        term_events = [
+            e for e in store.events() if e.type == "experiment.terminated"
+        ]
+        assert len(term_events) == 1
+        assert term_events[0].data["terminated_by"] == "orch-1"
 
     def test_body_rejects_terminated_by_field(self, store: InMemoryStore) -> None:
         """The body MUST NOT carry ``terminated_by`` (server stamps it)."""

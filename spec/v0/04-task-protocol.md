@@ -260,9 +260,11 @@ There is no `terminated → running` transition in v0. The protocol does not def
 
 ### 8.2 Authority
 
-`terminate_experiment` requires the caller to be in the `admins` group ([`02-data-model.md`](02-data-model.md) §7.5). The wire binding for the operation is [`07-wire-protocol.md`](07-wire-protocol.md) §2.9 (`POST /v0/experiments/{E}/terminate`).
+`terminate_experiment` requires the caller to be in the `admins` OR `orchestrators` group ([`02-data-model.md`](02-data-model.md) §7.5). The caller MUST be a member of one of those two groups; a caller outside both receives 403 `eden://error/forbidden`. The wire binding for the operation is [`07-wire-protocol.md`](07-wire-protocol.md) §2.9 (`POST /v0/experiments/{E}/terminate`).
 
-The op is admin-gated independently of `dispatch_mode.termination` ([`02-data-model.md`](02-data-model.md) §2.4): an operator MAY drive termination even when `dispatch_mode.termination == "auto"`. `dispatch_mode.termination` gates only the orchestrator's policy-driven path ([`03-roles.md`](03-roles.md) §6.2 decision-type 0), not the operator wire op.
+The two groups correspond to the two termination paths: an operator drives termination through an `admins` bearer, while the orchestrator commits its policy-driven termination ([`03-roles.md`](03-roles.md) §6.2 decision-type 0) through an `orchestrators` bearer. Gating on `orchestrators` as well as `admins` is what lets the orchestrator run decision-type 0 over the wire binding without being placed in `admins` (which would over-grant it `reassign_task` / `update_dispatch_mode` authority). This mirrors the `accept` / `reject` gating (§4.3) and the `emit_policy_error` gating ([`07-wire-protocol.md`](07-wire-protocol.md) §2.9), both `orchestrators`-group operations for the same [`03-roles.md`](03-roles.md) §6 rationale.
+
+The op's authority is independent of `dispatch_mode.termination` ([`02-data-model.md`](02-data-model.md) §2.4): an operator (`admins`) MAY drive termination even when `dispatch_mode.termination == "auto"`, and the orchestrator's (`orchestrators`) wire call is accepted regardless of the mode. `dispatch_mode.termination` gates only whether the orchestrator's policy-driven path ([`03-roles.md`](03-roles.md) §6.2 decision-type 0) *runs the decision*, not whether the wire op *accepts the call*.
 
 ### 8.3 Internal `update_experiment_state` primitive
 

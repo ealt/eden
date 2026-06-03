@@ -33,7 +33,13 @@ def _terminate_experiment(deps: RouterDeps):
         body: TerminateRequest,
         x_eden_experiment_id: str | None = Header(None),
     ) -> dict[str, Any]:
-        """§2.9 admin-group-gated lifecycle transition.
+        """§2.9 group-gated lifecycle transition (``admins`` OR ``orchestrators``).
+
+        Gated on either group so both termination paths work over the
+        wire: the operator-driven path (`admins` bearer) and the
+        orchestrator's policy-driven termination ([`03-roles.md`] §6.2
+        decision-type 0, an `orchestrators` bearer). Mirrors the
+        ``accept`` / ``reject`` / ``emit_policy_error`` gating.
 
         Stamps ``terminated_by`` from the authenticated principal; the
         request body MUST NOT carry it (the model's ``extra="forbid"``
@@ -43,7 +49,9 @@ def _terminate_experiment(deps: RouterDeps):
         caller's ``reason`` is the one recorded.
         """
         check_experiment(deps, experiment_id, x_eden_experiment_id)
-        terminated_by = enforce_in_any_group(deps, request, ("admins",))
+        terminated_by = enforce_in_any_group(
+            deps, request, ("admins", "orchestrators")
+        )
         experiment = deps.store.terminate_experiment(
             reason=body.reason, terminated_by=terminated_by
         )
