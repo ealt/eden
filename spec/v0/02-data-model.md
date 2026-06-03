@@ -140,7 +140,7 @@ The experiment runtime object (schema: [`schemas/experiment.schema.json`](schema
 
 | Field | Required | Type | Description |
 |---|---|---|---|
-| `experiment_id` | yes | string (§1.6, `exp_*`) | Opaque, system-minted, immutable. Allocated when the experiment is created (or freshly minted on import without an override — see [`10-checkpoints.md`](10-checkpoints.md) §10). |
+| `experiment_id` | yes | string (§1.6, `exp_*`) | Opaque, system-minted, immutable. Allocated when the experiment is created; on import without an override the receiving experiment carries the receiver's own id (a fresh mint for a multi-experiment receiver, or its single configured id) — never the source manifest's id (see [`10-checkpoints.md`](10-checkpoints.md) §10). |
 | `name` | no | string (§1.7) | OPTIONAL operator-supplied display label. Presentation-only; never resolved as a reference. |
 | `state` | yes | string | The lifecycle value defined below. |
 | `created_at` | yes | timestamp | When the experiment runtime object was created. |
