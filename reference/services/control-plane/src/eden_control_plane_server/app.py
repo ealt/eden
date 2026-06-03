@@ -275,9 +275,13 @@ def make_app(
         return Response(status_code=204)
 
     @app.get(f"{base}/experiments")
-    def list_experiments(request: Request) -> Response:
+    def list_experiments(
+        request: Request, name: str | None = Query(default=None)
+    ) -> Response:
         _get_principal(request)
-        entries = store.list_experiments()
+        # Optional ``?name=<n>`` exact, case-sensitive filter (§2.x):
+        # resolve a registered experiment by display name.
+        entries = store.list_experiments(name=name)
         # §3.4: inject stale-state warnings per entry so the cross-
         # experiment dashboard can render them in the same single
         # round trip. The shape mirrors read_experiment_metadata's

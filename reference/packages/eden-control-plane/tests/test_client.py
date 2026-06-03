@@ -307,8 +307,11 @@ def test_register_worker_idempotent_response_shape() -> None:
             "auto-orchestrator-1", labels={"deployment": "edge"}
         )
 
+    # Identity rename (#128): the caller supplies a display ``name``;
+    # the server mints the opaque ``wkr_*`` id (no client-supplied
+    # ``worker_id`` on the request body).
     assert captured["body"] == {
-        "worker_id": "auto-orchestrator-1",
+        "name": "auto-orchestrator-1",
         "labels": {"deployment": "edge"},
     }
     assert result["registration_token"] == "tok-1"

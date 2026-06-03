@@ -19,6 +19,9 @@ def test_renew_with_wrong_instance_raises_mismatch(
     stored value; mismatch returns lease-instance-mismatch (409).
     """
     control_plane_client.register_experiment("exp-a", "file:///etc/a.yaml")
+    # A lease `holder` MUST be a registered `wkr_*` (§4); register the
+    # worker so the client resolves the handle to its minted id.
+    control_plane_client.register_worker("auto-orchestrator-1")
     lease = control_plane_client.acquire_lease(
         "exp-a", "auto-orchestrator-1", "uuid-original"
     ).json()
@@ -36,6 +39,7 @@ def test_release_with_wrong_instance_raises_mismatch(
     `holder_instance` MUST return lease-instance-mismatch.
     """
     control_plane_client.register_experiment("exp-a", "file:///etc/a.yaml")
+    control_plane_client.register_worker("auto-orchestrator-1")
     lease = control_plane_client.acquire_lease(
         "exp-a", "auto-orchestrator-1", "uuid-original"
     ).json()
@@ -54,20 +58,24 @@ def test_list_active_leases_filters_by_holder(
     """
     control_plane_client.register_experiment("exp-a", "file:///etc/a.yaml")
     control_plane_client.register_experiment("exp-b", "file:///etc/b.yaml")
+    control_plane_client.register_worker("auto-orchestrator-1")
+    control_plane_client.register_worker("auto-orchestrator-2")
     control_plane_client.acquire_lease(
         "exp-a", "auto-orchestrator-1", "uuid-1"
     )
     control_plane_client.acquire_lease(
         "exp-b", "auto-orchestrator-2", "uuid-2"
     )
+    # The wire returns the MINTED opaque experiment ids; resolve the
+    # stable handles to compare.
     r_one = control_plane_client.list_active_leases("auto-orchestrator-1")
     assert r_one.status_code == 200
     assert [
         lease["experiment_id"] for lease in r_one.json()["leases"]
-    ] == ["exp-a"]
+    ] == [control_plane_client.experiment_id_for("exp-a")]
     r_two = control_plane_client.list_active_leases("auto-orchestrator-2")
     assert [
         lease["experiment_id"] for lease in r_two.json()["leases"]
-    ] == ["exp-b"]
+    ] == [control_plane_client.experiment_id_for("exp-b")]
     r_none = control_plane_client.list_active_leases("never-registered")
     assert r_none.json()["leases"] == []

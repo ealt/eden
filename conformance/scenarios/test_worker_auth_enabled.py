@@ -27,12 +27,12 @@ import subprocess
 import sys
 import threading
 import time
-import uuid
 from collections.abc import Iterator
 from pathlib import Path
 
 import httpx
 import pytest
+from conformance.harness.identity import mint_experiment_id
 
 pytestmark = pytest.mark.conformance
 
@@ -113,7 +113,10 @@ def auth_server(tmp_path: Path) -> Iterator[dict[str, str]]:
 
     Yields a dict with ``base_url``, ``experiment_id``, ``admin_token``.
     """
-    experiment_id = f"auth-{uuid.uuid4().hex[:8]}"
+    # The experiment id must satisfy the opaque ``exp_*`` grammar
+    # (spec/v0/02-data-model.md §1.6) — a kebab id makes every ``Worker``
+    # built against it fail grammar validation → 400. Mint a valid one.
+    experiment_id = mint_experiment_id()
     admin_token = secrets.token_hex(24)
     cfg_copy = tmp_path / "experiment-config.yaml"
     shutil.copyfile(_EXPERIMENT_CONFIG, cfg_copy)
@@ -177,12 +180,21 @@ def _admin_register(
 
 
 def _admin_resolve_group(server: dict[str, str], name: str) -> str:
-    """Resolve a reserved group ``name`` to its minted ``grp_*`` id via the admin bearer.
+    """Ensure a reserved group ``name`` exists and resolve its minted ``grp_*`` id.
 
-    The reserved groups (``admins`` / ``orchestrators``) are minted at
-    experiment setup; resolve by name through the §7.3 ``?name=`` lookup.
+    A reserved group (``admins`` / ``orchestrators``) is normally minted
+    at experiment setup; this raw-spawned auth server has no setup step,
+    so the admin creates it on demand. Reserved names are admin-gated
+    (``02-data-model.md`` §7.5): the admin bearer is allowed to mint
+    them; a 409 means a prior test already did. After ensuring it
+    exists, resolve via the §7.3 ``?name=`` lookup to get the minted id.
     """
     with _client(server, bearer=f"admin:{server['admin_token']}") as c:
+        create = c.post(
+            f"/v0/experiments/{server['experiment_id']}/groups",
+            json={"name": name},
+        )
+        assert create.status_code in (200, 409), create.text
         resp = c.get(
             f"/v0/experiments/{server['experiment_id']}/groups",
             params={"name": name},
@@ -264,12 +276,13 @@ def test_whoami_returns_authenticated_worker_id(
     auth_server: dict[str, str],
 ) -> None:
     """spec/v0/07-wire-protocol.md §6.4 — /whoami returns the bearer's worker_id."""
-    wid = "eric"
-    token = _admin_register(auth_server, wid)
+    # The server mints the opaque ``wkr_*`` id; the bearer principal is
+    # that minted id, not the display name. ``/whoami`` echoes it back.
+    wid, token = _admin_register(auth_server, name="eric")
     with _client(auth_server, bearer=f"{wid}:{token}") as c:
         resp = c.get(f"/v0/experiments/{auth_server['experiment_id']}/whoami")
     assert resp.status_code == 200, resp.text
-    assert resp.json() == {"worker_id": wid}
+    assert resp.json().get("worker_id") == wid
 
 
 def test_reissue_credential_invalidates_prior(
@@ -279,8 +292,7 @@ def test_reissue_credential_invalidates_prior(
 
     Stale bearer → 401; fresh bearer → 200 on the same probe.
     """
-    wid = "rotated"
-    stale_token = _admin_register(auth_server, wid)
+    wid, stale_token = _admin_register(auth_server, name="rotated")
 
     # Reissue via admin bearer; capture the new token.
     with _client(auth_server, bearer=f"admin:{auth_server['admin_token']}") as c:
@@ -301,7 +313,7 @@ def test_reissue_credential_invalidates_prior(
     with _client(auth_server, bearer=f"{wid}:{fresh_token}") as c:
         fresh = c.get(f"/v0/experiments/{auth_server['experiment_id']}/whoami")
     assert fresh.status_code == 200, fresh.text
-    assert fresh.json() == {"worker_id": wid}
+    assert fresh.json().get("worker_id") == wid
 
 
 def test_create_task_stamps_created_by_from_principal(
@@ -315,8 +327,7 @@ def test_create_task_stamps_created_by_from_principal(
     omitting the field or supplying the matching id are both
     accepted; supplying a disagreeing id raises 400 bad-request.
     """
-    wid = "eric"
-    token = _admin_register(auth_server, wid)
+    wid, token = _admin_register(auth_server, name="eric")
     # Wave-3 §3.7 gates POST /tasks (kind=ideation) on `admins` OR
     # `orchestrators` group membership; the bearer-class check alone
     # is no longer sufficient.
@@ -341,8 +352,7 @@ def test_create_task_rejects_spoofed_created_by(
     auth_server: dict[str, str],
 ) -> None:
     """spec/v0/02-data-model.md §3.1 — disagreeing created_by → 400 bad-request."""
-    wid = "eric"
-    token = _admin_register(auth_server, wid)
+    wid, token = _admin_register(auth_server, name="eric")
     _admin_put_in_group(auth_server, wid, "admins")  # §3.7 gate
     body = {
         "task_id": "t-spoof",
@@ -365,8 +375,7 @@ def test_create_idea_stamps_created_by_from_principal(
     auth_server: dict[str, str],
 ) -> None:
     """spec/v0/02-data-model.md §5.1 — Idea.created_by stamped from the auth principal."""
-    wid = "ideator"
-    token = _admin_register(auth_server, wid)
+    wid, token = _admin_register(auth_server, name="ideator")
     body = {
         "idea_id": "p-stamp",
         "experiment_id": auth_server["experiment_id"],

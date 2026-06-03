@@ -7,10 +7,7 @@
   "properties": {
     "name": {
       "type": "string",
-      "format": "display-name",
-      "minLength": 1,
-      "maxLength": 128,
-      "description": "OPTIONAL operator-supplied display label (spec/v0/02-data-model.md §1.7). The server mints the opaque group_id; the caller never supplies it. Reserved group names (`admins`, `orchestrators`) are rejected."
+      "description": "OPTIONAL operator-supplied display label (spec/v0/02-data-model.md §1.7). The server mints the opaque group_id; the caller never supplies it. Display-name well-formedness (length, charset) and reserved-name rejection (`admins`, `orchestrators`) are enforced server-side → 422 eden://error/invalid-name; an ill-formed name is NOT a request-validation (400) failure."
     },
     "members": {
       "type": "array",

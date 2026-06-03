@@ -110,6 +110,23 @@ def test_register_group_reserved_name_allowed_with_flag(
         assert _GROUP_ID_RE.fullmatch(group.group_id)
 
 
+def test_register_group_reserved_name_second_create_rejected_even_with_flag(
+    make_store: Callable[..., Store],
+) -> None:
+    """spec/v0/02-data-model.md §7.5 — once a reserved group exists, a
+    SECOND create of that reserved name MUST be rejected with
+    ``ReservedIdentifier`` ("the name is taken") even under the
+    privileged ``allow_reserved=True`` path. The bypass covers the
+    first (setup) mint only; this is the only path through which the
+    reserved-identifier outcome is wire-observable, since POST /groups
+    is admin-gated."""
+    store = make_store(seed_workers=False)
+    first = store.register_group(name="admins", allow_reserved=True)
+    assert first.name == "admins"
+    with pytest.raises(ReservedIdentifier):
+        store.register_group(name="admins", allow_reserved=True)
+
+
 def test_register_group_member_grammar_rejected(
     make_store: Callable[..., Store],
 ) -> None:

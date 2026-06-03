@@ -327,13 +327,24 @@ class PostgresControlPlaneStore:
             )
             # The FK cascade drops any expired lease row alongside.
 
-    def list_experiments(self) -> list[RegisteredExperiment]:
+    def list_experiments(
+        self, *, name: str | None = None
+    ) -> list[RegisteredExperiment]:
         with self._atomic(), self._conn.cursor() as cur:
-            cur.execute(
-                "SELECT experiment_id, name, config_uri, created_at, "
-                "last_known_state "
-                "FROM control_plane_experiments ORDER BY experiment_id"
-            )
+            if name is None:
+                cur.execute(
+                    "SELECT experiment_id, name, config_uri, created_at, "
+                    "last_known_state "
+                    "FROM control_plane_experiments ORDER BY experiment_id"
+                )
+            else:
+                cur.execute(
+                    "SELECT experiment_id, name, config_uri, created_at, "
+                    "last_known_state "
+                    "FROM control_plane_experiments WHERE name = %s "
+                    "ORDER BY experiment_id",
+                    (name,),
+                )
             rows = cur.fetchall()
             out: list[RegisteredExperiment] = []
             for row in rows:

@@ -126,9 +126,16 @@ class RegisterWorkerRequest(_WireBase):
     an OPTIONAL display ``name`` and deployment ``labels``. Reserved
     worker names (``admin`` / ``system`` / ``internal``) are rejected by
     the Store.
+
+    The ``name`` field is a plain string here (NOT ``DisplayName``) so an
+    ill-formed name parses the request body and reaches the Store's
+    ``_validate_display_name``, which raises ``InvalidName`` → 422
+    ``eden://error/invalid-name`` (``07-wire-protocol.md`` §6.1,
+    ``02-data-model.md`` §1.7). Typing it ``DisplayName`` here would fail
+    Pydantic request validation → 400 ``bad-request``, the wrong status.
     """
 
-    name: Annotated[DisplayName | None, NotNone] = None
+    name: Annotated[str | None, NotNone] = None
     labels: dict[str, str] | None = None
 
 
@@ -170,9 +177,16 @@ class RegisterGroupRequest(_WireBase):
     (``admins`` / ``orchestrators``) are rejected by the Store unless
     the caller is the deployment admin (the setup-experiment bootstrap
     path).
+
+    The ``name`` field is a plain string here (NOT ``DisplayName``) so an
+    ill-formed name parses the request body and reaches the Store's
+    ``_validate_display_name``, which raises ``InvalidName`` → 422
+    ``eden://error/invalid-name`` (``07-wire-protocol.md`` §6.1,
+    ``02-data-model.md`` §1.7). Typing it ``DisplayName`` here would fail
+    Pydantic request validation → 400 ``bad-request``, the wrong status.
     """
 
-    name: Annotated[DisplayName | None, NotNone] = None
+    name: Annotated[str | None, NotNone] = None
     members: list[MemberId] | None = None
 
 

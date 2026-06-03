@@ -173,9 +173,16 @@ class TestRegisterWorkerRequestParity:
         with pytest.raises(ValidationError):
             RegisterWorkerRequest.model_validate({"worker_id": WKR})
 
-    def test_reject_ill_formed_name(self) -> None:
-        with pytest.raises(ValidationError):
-            RegisterWorkerRequest(name=" leading-space")
+    def test_accept_ill_formed_name(self) -> None:
+        """An ill-formed name parses the request body; the Store enforces
+        well-formedness server-side → 422 eden://error/invalid-name (not a
+        400 request-validation failure). The request model's ``name`` is a
+        plain string, so both the model and the request schema accept it."""
+        model = RegisterWorkerRequest(name=" leading-space")
+        _validate_against(
+            "register-worker-request.schema.json",
+            model.model_dump(mode="json", exclude_none=True),
+        )
 
 
 class TestWorkerRegistrationParity:

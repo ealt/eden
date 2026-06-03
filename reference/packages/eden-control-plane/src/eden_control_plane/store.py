@@ -109,8 +109,15 @@ class ControlPlaneStore(Protocol):
         """
         ...
 
-    def list_experiments(self) -> list[RegisteredExperiment]:
-        """Return every registered experiment, sorted by `experiment_id`."""
+    def list_experiments(
+        self, *, name: str | None = None
+    ) -> list[RegisteredExperiment]:
+        """Return every registered experiment, sorted by `experiment_id`.
+
+        When `name` is supplied, filter to entries whose display `name`
+        matches it exactly (case-sensitive). Mirrors the `name=` filter
+        on `list_workers` / `list_groups`.
+        """
         ...
 
     def read_experiment_metadata(self, experiment_id: str) -> RegisteredExperiment:

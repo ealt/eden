@@ -83,17 +83,23 @@ def test_experiment_with_workers_round_trips(
     )
     assert resp.status_code == 201, resp.text
 
-    # The receiver-side worker / group registries match the sender's.
+    # The minted opaque ids are preserved verbatim across the round-trip
+    # (§9): the source-side ``wkr_*`` / ``grp_*`` land unchanged in the
+    # receiver's registries (only the experiment_id is rewritten on the
+    # ``as_experiment_id`` override). Resolve the sender's handles to the
+    # ids it minted and assert THOSE appear receiver-side.
+    minted_worker = sender_wire_client.worker_id_for("checkpoint-worker")
+    minted_group = sender_wire_client.group_id_for("checkpoint-group")
     workers = receiver_wire_client.get(
         f"{receiver_wire_client.base_path}/workers"
     ).json()
     worker_ids = {w["worker_id"] for w in workers["workers"]}
-    assert "checkpoint-worker" in worker_ids
+    assert minted_worker in worker_ids
     groups = receiver_wire_client.get(
         f"{receiver_wire_client.base_path}/groups"
     ).json()
     group_ids = {g["group_id"] for g in groups["groups"]}
-    assert "checkpoint-group" in group_ids
+    assert minted_group in group_ids
 
 
 def test_experiment_with_idea_round_trips(

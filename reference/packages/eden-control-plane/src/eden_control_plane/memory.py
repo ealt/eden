@@ -178,12 +178,15 @@ class InMemoryControlPlaneStore:
                 self._leases_by_lease_id.pop(stale_lease["lease_id"], None)
             del self._experiments[experiment_id]
 
-    def list_experiments(self) -> list[RegisteredExperiment]:
+    def list_experiments(
+        self, *, name: str | None = None
+    ) -> list[RegisteredExperiment]:
         with self._lock:
-            return [
+            entries = [
                 self._build_entry(row)
                 for _, row in sorted(self._experiments.items())
             ]
+        return [e for e in entries if name is None or e.name == name]
 
     def read_experiment_metadata(
         self, experiment_id: str

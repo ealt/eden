@@ -50,20 +50,27 @@ def test_explicit_register_after_partial_import(
     can be registered after-the-fact and becomes visible to
     `list_experiments`.
     """
-    # Simulate the partial-success state: experiment exists in the
-    # task-store-server (out-of-band; not modeled here) but NOT in
-    # the control plane. The operator's recovery call uses the opaque
-    # ``exp_*`` id (02-data-model.md §1.6) the import minted.
-    imported_id = mint_experiment_id()
-    assert re.fullmatch(r"exp_[0-9a-hjkmnp-tv-z]{26}", imported_id)
+    # Simulate the partial-success state: the experiment exists in the
+    # task-store-server (out-of-band; not modeled here) but NOT in the
+    # control plane. Post-rename the control plane MINTS its own opaque
+    # ``exp_*`` on register (chapter 11 §2 / 02-data-model.md §1.6): the
+    # operator does NOT (and cannot) supply the source id; the import-
+    # side store keys the experiment under its OWN minted id, and the
+    # source id rides along as ``imported_from.source_experiment_id``.
+    # So the registry id must be a freshly-minted ``exp_*`` distinct
+    # from the source id, consistent with the round-trip scenarios.
+    source_id = mint_experiment_id()
     r = control_plane_client.register_experiment(
-        imported_id, "file:///etc/imported.yaml"
+        "imported-experiment", "file:///etc/imported.yaml"
     )
     assert r.status_code == 201
-    assert r.json()["experiment_id"] == imported_id
-    # And the post-recovery state is visible to list_experiments.
+    registry_id = r.json()["experiment_id"]
+    assert re.fullmatch(r"exp_[0-9a-hjkmnp-tv-z]{26}", registry_id)
+    assert registry_id != source_id
+    # And the post-recovery state is visible to list_experiments under
+    # the minted registry id.
     listed = control_plane_client.list_experiments().json()["experiments"]
-    assert imported_id in [e["experiment_id"] for e in listed]
+    assert registry_id in [e["experiment_id"] for e in listed]
 
 
 @pytest.mark.skip(

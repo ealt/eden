@@ -170,13 +170,15 @@ def test_register_worker_ill_formed_name_422(
             "X-Eden-Experiment-Id": EXPERIMENT_ID,
             "Authorization": f"Bearer admin:{ADMIN_TOKEN}",
         },
-        # Leading whitespace violates the display-name grammar; the
-        # Pydantic ``DisplayName`` validator rejects it pre-store as a
-        # 400 bad-request (the request body never validates).
+        # Leading whitespace violates the display-name grammar. The
+        # request model's ``name`` is a plain string (#128), so the body
+        # parses and the Store's ``_validate_display_name`` raises
+        # ``InvalidName`` → 422 ``eden://error/invalid-name`` (07-wire
+        # §6.1 / 02-data-model §1.7), NOT a 400 request-validation error.
         json={"name": " leading-space"},
     )
-    assert resp.status_code == 400
-    assert resp.json()["type"] == "eden://error/bad-request"
+    assert resp.status_code == 422
+    assert resp.json()["type"] == "eden://error/invalid-name"
 
 
 def test_register_worker_legacy_worker_id_field_rejected(

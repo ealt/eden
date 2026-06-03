@@ -47,14 +47,27 @@ class _GroupOpsMixin(_StoreCore):
         auto-created ``admins`` / ``orchestrators`` groups whose name is
         the reserved literal. A later operator ``register_group`` with
         that name (default ``allow_reserved=False``) is rejected.
+
+        The ``allow_reserved`` bypass covers the FIRST (setup) create of
+        a reserved-named group only. Per
+        [`spec/v0/02-data-model.md`](../../../../spec/v0/02-data-model.md)
+        §7.5 — "once a reserved group exists, an ordinary
+        ``register_group(name="admins")`` MUST be rejected with
+        ``ReservedIdentifier`` (the name is taken)" — a SECOND create of
+        an already-existing reserved name raises ``ReservedIdentifier``
+        even under ``allow_reserved=True``. (With the wire's admin-gating
+        on POST /groups, this is the only path through which the
+        reserved-identifier outcome is observable.)
         """
+        from .._base import RESERVED_GROUP_NAMES
+
         if name is not None:
             if allow_reserved:
                 # Privileged seed path: skip the reserved-name guard but
                 # still enforce the display-name grammar.
                 from eden_contracts._common import _check_display_name
 
-                from ..errors import InvalidName
+                from ..errors import InvalidName, ReservedIdentifier
 
                 try:
                     _check_display_name(name)
@@ -63,6 +76,15 @@ class _GroupOpsMixin(_StoreCore):
                         f"group name {name!r} is not a well-formed "
                         f"display name: {exc}"
                     ) from exc
+                # §7.5: the reserved name is taken once the setup create
+                # has minted it — a second create is rejected even for the
+                # privileged caller.
+                if name in RESERVED_GROUP_NAMES and any(
+                    g.name == name for g in self.list_groups(name=name)
+                ):
+                    raise ReservedIdentifier(
+                        f"group name {name!r} is reserved and already exists"
+                    )
             else:
                 self._validate_display_name(name, kind="group")
         group_id = mint_opaque_id("grp")

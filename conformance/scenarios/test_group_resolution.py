@@ -116,15 +116,19 @@ def test_register_group_rejects_reserved_identifier(wire_client: WireClient) -> 
     Since the identity rename (#128) the reserved values live in the
     NAME space: group ids are system-minted (§1.6), so the reservation
     is on the display ``name``. ``admins`` is created at experiment
-    setup through the privileged path; once it exists, an ordinary
-    ``register_group(name="admins")`` from a non-privileged bearer MUST
-    be rejected with ``reserved-identifier`` (the reserved name is
-    taken).
+    setup through the privileged path; once it exists, a second
+    ``register_group(name="admins")`` MUST be rejected with
+    ``reserved-identifier`` (the reserved name is taken).
+
+    ``POST /groups`` is admin-gated (§7.1), so this drives the request
+    through the default admin bearer (NOT ``as_worker``); a non-admin
+    bearer would surface 403 forbidden before the name-reservation
+    check runs. The harness seeds ``admins`` at session start, so this
+    second admin create hits the reservation guard.
     """
     r = wire_client.post(
         f"{wire_client.base_path}/groups",
         json={"name": "admins", "members": []},
-        as_worker="test-worker",
     )
     assert r.status_code == 409, r.text
     assert r.json().get("type") == "eden://error/reserved-identifier"
