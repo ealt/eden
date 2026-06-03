@@ -498,7 +498,7 @@ If the manifest carries `requires_credential_reissue: true` ([`10-checkpoints.md
   "state": "running" | "terminated",
   "created_at": "<RFC 3339 timestamp>",
   "base_commit_sha": "<commit SHA>",
-  "imported_from": null | {"checkpoint_exported_at": "<timestamp>", "checkpoint_format_version": "<string>", "source_experiment_id": "<exp_*>" | null}
+  "imported_from": null | {"checkpoint_exported_at": "<timestamp>", "checkpoint_format_version": "<string>", "source_experiment_id": "<exp_*>"}
 }
 ```
 
