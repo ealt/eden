@@ -548,6 +548,28 @@ jobs:
   # for ~2 weeks.
   compose-smoke-multi-experiment:
     name: compose-smoke-multi-experiment
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: changes
+    if: >-
+      !cancelled() && (
+      needs.changes.result != 'success' ||
+      needs.changes.outputs.run_all == 'true' ||
+      needs.changes.outputs.compose == 'true' ||
+      needs.changes.outputs.python == 'true' )
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify docker compose + jq + python3 are available
+        run: |
+          docker compose version
+          jq --version
+          python3 --version
+
+      - name: Run compose smoke (control-plane + lease-handoff drill)
+        working-directory: reference/compose
+        run: bash healthcheck/smoke-multi-experiment.sh
+
   # Issue #110: exercises the opt-in Loki + Alloy + Grafana log-search
   # overlay (compose.logging.yaml) end-to-end — brings up base +
   # subprocess + logging, asserts Loki ingests EDEN lines, Grafana is
@@ -577,9 +599,6 @@ jobs:
           jq --version
           python3 --version
 
-      - name: Run compose smoke (control-plane + lease-handoff drill)
-        working-directory: reference/compose
-        run: bash healthcheck/smoke-multi-experiment.sh
       - name: Run compose smoke (log-search overlay)
         working-directory: reference/compose
         run: bash healthcheck/smoke-logging.sh
