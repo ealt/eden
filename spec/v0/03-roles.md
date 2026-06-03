@@ -133,10 +133,10 @@ An evaluator receives:
 
 The evaluator MUST:
 
-1. Produce a `metrics` object whose keys are a subset of the declared `evaluation_schema` keys and whose values satisfy the per-metric type rules ([`02-data-model.md`](02-data-model.md) §1.3, §9.2).
+1. Produce an `evaluation` object whose keys are a subset of the declared `evaluation_schema` keys and whose values satisfy the per-metric type rules ([`02-data-model.md`](02-data-model.md) §1.3, §9.2).
 2. Optionally upload supporting artifacts (logs, captured outputs, diagnostic files).
 
-The evaluator MUST NOT modify the worker branch or any protocol-owned mutable state other than the variant fields the submission writes (§4.4) and the task it holds a claim on. In particular, the evaluator MUST NOT write to the variant's `completed_at`, `metrics`, `artifacts_uri`, `description`, or `status` directly; those writes are performed by the orchestrator when the submitted task reaches its terminal state (§4.4, [`04-task-protocol.md`](04-task-protocol.md) §4.3).
+The evaluator MUST NOT modify the worker branch or any protocol-owned mutable state other than the variant fields the submission writes (§4.4) and the task it holds a claim on. In particular, the evaluator MUST NOT write to the variant's `completed_at`, `evaluation`, `artifacts_uri`, `description`, or `status` directly; those writes are performed by the orchestrator when the submitted task reaches its terminal state (§4.4, [`04-task-protocol.md`](04-task-protocol.md) §4.3).
 
 ### 4.3 Non-interference
 
@@ -151,19 +151,19 @@ The evaluator submits with:
   - `"success"` — the variant ran and produced metrics.
   - `"error"` — the variant could not be evaluated for reasons attributable to the variant's own code (build failure, test failure, etc.). The evaluator MAY still include partial metrics.
   - `"evaluation_error"` — the evaluator itself failed for reasons unrelated to the variant's code (infrastructure fault, evaluator bug). While a fresh evaluation task MAY still be created for this variant, the variant's status MUST remain `"starting"`. If the orchestrator's retry policy is exhausted (or the operator abandons evaluation), the orchestrator MUST transition the variant's status to `"evaluation_error"`, making that status terminal for the variant ([`04-task-protocol.md`](04-task-protocol.md) §4.3).
-- `metrics` — the evaluation object described in §4.2. MAY be absent when `status == "evaluation_error"`.
+- `evaluation` — the evaluation object described in §4.2. MAY be absent when `status == "evaluation_error"`.
 - `artifacts_uri` — OPTIONAL. A URI the evaluator uploaded supporting artifacts to.
 
 On a `submitted → completed` or `submitted → failed` transition (per [`04-task-protocol.md`](04-task-protocol.md) §4.3), the orchestrator MUST write the following variant fields atomically with the event:
 
 - `status` — the variant status implied by the submission: `"success"` when the submission's `status == "success"`; `"error"` when the submission's `status == "error"`; unchanged from `"starting"` when the submission's `status == "evaluation_error"` (see §4.4 above for the terminal-retry case).
-- `metrics` — set to the submission's `metrics` when `status ∈ {"success", "error"}`. When `status == "evaluation_error"` the orchestrator MUST NOT write `metrics` on the variant; any submission-carried `metrics` is discarded.
+- `evaluation` — set to the submission's `evaluation` when `status ∈ {"success", "error"}`. When `status == "evaluation_error"` the orchestrator MUST NOT write `evaluation` on the variant; any submission-carried `evaluation` is discarded.
 - `artifacts_uri` — set to the submission's `artifacts_uri` when provided and `status ∈ {"success", "error"}`. When `status == "evaluation_error"` the orchestrator MUST NOT write `artifacts_uri` on the variant; any submission-carried `artifacts_uri` is discarded. (An evaluator that wishes to retain diagnostic artifacts from a failed attempt MAY reference them in the `task.failed` event for that evaluation task; that channel is defined in [`05-event-protocol.md`](05-event-protocol.md).)
 - `completed_at` — set to the time of the terminal variant transition, i.e. written exactly once, when the variant's status leaves `"starting"` (either on a `"success"`/`"error"` submission, or on the retry-exhausted `"evaluation_error"` transition). Intermediate `evaluation_error` submissions MUST NOT advance `completed_at`.
 
-On the retry-exhausted `"evaluation_error"` terminal transition itself, the orchestrator MUST NOT graft metrics or artifacts from any prior `evaluation_error` submission onto the variant; the variant's `metrics` and `artifacts_uri` fields remain unset. This keeps the variant object canonical: a variant either carries the outputs of a successful or code-level-failed evaluation, or it carries nothing.
+On the retry-exhausted `"evaluation_error"` terminal transition itself, the orchestrator MUST NOT graft the evaluation payload or artifacts from any prior `evaluation_error` submission onto the variant; the variant's `evaluation` and `artifacts_uri` fields remain unset. This keeps the variant object canonical: a variant either carries the outputs of a successful or code-level-failed evaluation, or it carries nothing.
 
-Resubmission is idempotent under the same rules as §3.4 and [`04-task-protocol.md`](04-task-protocol.md) §4.2: identical normative fields (`variant_id`, `status`, `metrics`) MUST be accepted; inconsistent resubmission MUST be rejected. `artifacts_uri` is NOT part of equivalence — the first submission's `artifacts_uri` is the committed one. (Earlier drafts of this section listed `artifacts_uri` as part of the equivalence formula; the §4.2 statement is canonical and this section now defers to it.)
+Resubmission is idempotent under the same rules as §3.4 and [`04-task-protocol.md`](04-task-protocol.md) §4.2: identical normative fields (`variant_id`, `status`, `evaluation`) MUST be accepted; inconsistent resubmission MUST be rejected. `artifacts_uri` is NOT part of equivalence — the first submission's `artifacts_uri` is the committed one. (Earlier drafts of this section listed `artifacts_uri` as part of the equivalence formula; the §4.2 statement is canonical and this section now defers to it.)
 
 ## 5. Integrator
 

@@ -48,7 +48,7 @@ A conforming integrator MUST NOT integrate variants in any other status. In part
 
 A conforming integrator MUST NOT integrate a `kind == "baseline"` variant ([`02-data-model.md`](02-data-model.md) §9.4), regardless of its `status`. A baseline has no `work/*` branch to squash and already points at the seed on `main`, so it receives no `variant/*` commit, no `variant_commit_sha`, and no `variant.integrated` event. This carve is paired with the `integration` decision predicate and the termination-drain rule ([`02-data-model.md`](02-data-model.md) §2.4, §2.5), both of which exclude baselines so a successful baseline does not block termination. A binding MAY additionally reject a manual/operator `integrate_variant` call against a baseline with `eden://error/invalid-precondition` ([`07-wire-protocol.md`](07-wire-protocol.md) §5) as defense in depth.
 
-The integrator MUST NOT integrate a variant whose `metrics` do not validate against the experiment's `evaluation_schema` ([`02-data-model.md`](02-data-model.md) §9.2, [`08-storage.md`](08-storage.md) §4). The orchestrator's acceptance of a `success` submission is the primary guard for this; the integrator MAY additionally re-validate as defense in depth but MUST NOT silently drop or coerce invalid metrics.
+The integrator MUST NOT integrate a variant whose `evaluation` does not validate against the experiment's `evaluation_schema` ([`02-data-model.md`](02-data-model.md) §9.2, [`08-storage.md`](08-storage.md) §4). The orchestrator's acceptance of a `success` submission is the primary guard for this; the integrator MAY additionally re-validate as defense in depth but MUST NOT silently drop or coerce an invalid evaluation payload.
 
 ## 3. Integration output
 
@@ -127,7 +127,7 @@ The manifest is a JSON object with the following required fields. Each required 
 | `idea_id` | string | The variant's `idea_id` ([`02-data-model.md`](02-data-model.md) §9.1). |
 | `commit_sha` | string | The worker-branch tip the evaluator measured ([`02-data-model.md`](02-data-model.md) §9.1). |
 | `parent_commits` | array of string | The variant's `parent_commits`, in order ([`02-data-model.md`](02-data-model.md) §9.1). |
-| `metrics` | object | The evaluator's evaluation payload ([`03-roles.md`](03-roles.md) §4.4), conforming to the experiment's `evaluation_schema`. |
+| `evaluation` | object | The evaluator's evaluation payload ([`03-roles.md`](03-roles.md) §4.4), conforming to the experiment's `evaluation_schema`. |
 | `completed_at` | timestamp | The variant's `completed_at` ([`02-data-model.md`](02-data-model.md) §9.1). UTC, RFC 3339 profile as elsewhere in the data model. |
 
 Optional fields:

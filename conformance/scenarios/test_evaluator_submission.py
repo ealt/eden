@@ -24,7 +24,7 @@ def test_submit_with_mismatched_variant_id_rejected(wire_client: WireClient) -> 
 
     "An evaluator submits with: variant_id — the variant it evaluated."
     The task store enforces this so an evaluator cannot misroute a
-    metrics result onto an unrelated variant.
+    evaluation result onto an unrelated variant.
     """
     eval_tid, _variant_id = _drive_to_starting_variant(wire_client)
     c = _seed.claim(wire_client, eval_tid)
@@ -44,9 +44,9 @@ def test_success_evaluation_outside_schema_must_not_complete_variant(
 ) -> None:
     """spec/v0/03-roles.md §4.2 — evaluation keys MUST be a subset of evaluation_schema.
 
-    "Produce a `metrics` object whose keys are a subset of the
+    "Produce an `evaluation` object whose keys are a subset of the
     declared `evaluation_schema` keys." A conforming IUT MUST reject a
-    success submission whose metrics include a key the schema does
+    success submission whose evaluation includes a key the schema does
     not declare; the variant MUST NOT terminalize as success. Where in
     the pipeline the rejection surfaces is implementation-defined,
     so the assertion checks the observable end-state.
@@ -130,7 +130,7 @@ def test_success_writes_variant_fields_post_accept(
     """spec/v0/03-roles.md §4.4 — accepted success writes evaluation + uri.
 
     Asserts the §4.4 variant-side write rule: after /accept on a success
-    submission, the variant's `status == "success"`, `metrics`,
+    submission, the variant's `status == "success"`, `evaluation`,
     `artifacts_uri`, and `completed_at` carry the submitted values,
     and `variant.succeeded` is in the event log. The §4.4 atomicity
     claim ("written atomically with the event") is asserted in
@@ -168,12 +168,12 @@ def test_success_writes_variant_fields_post_accept(
 def test_status_error_writes_variant_evaluation_and_artifacts(
     wire_client: WireClient,
 ) -> None:
-    """spec/v0/03-roles.md §4.4 — status=error MUST write variant metrics + artifacts_uri.
+    """spec/v0/03-roles.md §4.4 — status=error MUST write variant evaluation + artifacts_uri.
 
-    "metrics — set to the submission's `metrics` when status ∈
+    "evaluation — set to the submission's `evaluation` when status ∈
     {'success', 'error'}." Distinct from the evaluation_error case (which
-    discards metrics): the §4.4 variant-side write rule is per-status,
-    and the error path keeps the metrics around because the variant
+    discards the evaluation): the §4.4 variant-side write rule is per-status,
+    and the error path keeps the evaluation around because the variant
     DID run; only the run failed. The reject reason is
     `worker_error` — `validation_error` would discard the payload
     instead.
@@ -204,13 +204,13 @@ def test_status_error_writes_variant_evaluation_and_artifacts(
 def test_eval_error_keeps_variant_starting_and_does_not_graft_evaluation(
     wire_client: WireClient,
 ) -> None:
-    """spec/v0/03-roles.md §4.4 — evaluation_error MUST keep variant in starting; metrics discarded.
+    """spec/v0/03-roles.md §4.4 — evaluation_error keeps variant starting; evaluation discarded.
 
     "When status == evaluation_error, the orchestrator MUST NOT write
-    metrics on the variant; any submission-carried metrics is
-    discarded." Observed: after submitting evaluation_error with metrics
+    evaluation on the variant; any submission-carried evaluation is
+    discarded." Observed: after submitting evaluation_error with an evaluation
     and rejecting the task, the variant stays in `starting` and its
-    `metrics` field is unset.
+    `evaluation` field is unset.
     """
     eval_tid, variant_id = _drive_to_starting_variant(wire_client)
     c = _seed.claim(wire_client, eval_tid)
@@ -227,18 +227,18 @@ def test_eval_error_keeps_variant_starting_and_does_not_graft_evaluation(
     assert 200 <= rejected.status_code < 300, rejected.text
     variant = _seed.read_variant(wire_client, variant_id)
     assert variant["status"] == "starting"
-    assert variant.get("metrics") is None, variant
+    assert variant.get("evaluation") is None, variant
     assert variant.get("artifacts_uri") is None, variant
 
 
 def test_retry_exhausted_eval_error_does_not_graft_prior_evaluation(
     wire_client: WireClient,
 ) -> None:
-    """spec/v0/03-roles.md §4.4 — retry-exhausted evaluation_error MUST NOT graft prior metrics.
+    """spec/v0/03-roles.md §4.4 — retry-exhausted evaluation_error MUST NOT graft prior evaluation.
 
     "On the retry-exhausted evaluation_error terminal transition itself,
-    the orchestrator MUST NOT graft metrics or artifacts from any
-    prior evaluation_error submission onto the variant; the variant's metrics
+    the orchestrator MUST NOT graft the evaluation payload or artifacts from any
+    prior evaluation_error submission onto the variant; the variant's evaluation
     and artifacts_uri fields remain unset."
     """
     eval_tid, variant_id = _drive_to_starting_variant(wire_client)
@@ -259,7 +259,7 @@ def test_retry_exhausted_eval_error_does_not_graft_prior_evaluation(
     assert 200 <= decl.status_code < 300, decl.text
     variant = _seed.read_variant(wire_client, variant_id)
     assert variant["status"] == "evaluation_error"
-    assert variant.get("metrics") is None, variant
+    assert variant.get("evaluation") is None, variant
     assert variant.get("artifacts_uri") is None, variant
 
 
@@ -269,8 +269,8 @@ def test_resubmit_idempotent_under_role_rules(
     """spec/v0/03-roles.md §4.4 — identical resubmission MUST be accepted; only one task.submitted.
 
     Per the §4.4 amendment in this chunk: "identical normative
-    fields (`variant_id`, `status`, `metrics`) MUST be accepted." The
-    test holds all four fields (`variant_id`, `status`, `metrics`,
+    fields (`variant_id`, `status`, `evaluation`) MUST be accepted." The
+    test holds all four fields (`variant_id`, `status`, `evaluation`,
     `artifacts_uri`) identical between the two submits as the
     baseline-equivalence check; the artifacts_uri-non-equivalence
     test below pins the half of the amendment that says
@@ -314,7 +314,7 @@ def test_resubmit_with_different_artifacts_uri_is_idempotent(
     Per the §4.4 amendment in this chunk: "`artifacts_uri` is NOT
     part of equivalence — the first submission's `artifacts_uri` is
     the committed one." Two submits with identical
-    `variant_id`+`status`+`metrics` but DIFFERENT `artifacts_uri`
+    `variant_id`+`status`+`evaluation` but DIFFERENT `artifacts_uri`
     MUST both return 200, MUST emit only one `task.submitted`, and
     after `/accept` the variant's `artifacts_uri` MUST equal the
     *first* submission's value.

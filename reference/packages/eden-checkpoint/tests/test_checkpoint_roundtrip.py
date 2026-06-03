@@ -74,7 +74,7 @@ def _build_payload() -> dict[str, list[dict[str, object]]]:
                 "variant_commit_sha": "c" * 40,
                 "artifacts_uri": "checkpoint:sha256:" + sha256_hex(b"var-1 artifacts"),
                 "description": "first variant",
-                "metrics": {"accuracy": 0.95},
+                "evaluation": {"accuracy": 0.95},
                 "started_at": "2026-05-06T15:03:00Z",
                 "completed_at": "2026-05-06T15:05:00Z",
                 "executed_by": "executor-2",

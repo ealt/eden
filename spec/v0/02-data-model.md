@@ -381,15 +381,15 @@ A variant is one completed attempt.
 | `artifacts_uri` | no | string (URI) | Where the variant's evaluator-produced artifacts live. Written by the orchestrator at evaluation-task terminal time from the evaluator's submission ([`03-roles.md`](03-roles.md) §4.4). |
 | `executor_artifacts_uri` | no | string (URI) | Where the variant's executor-produced artifacts live (build logs, coverage reports, generated screenshots — output not appropriate to commit to the worker branch). Written by the orchestrator at execution-task terminal time from the executor's submission ([`03-roles.md`](03-roles.md) §3.4). Disjoint from `artifacts_uri`: the executor writes one, the evaluator writes the other, and the orchestrator preserves both. |
 | `description` | no | string | Human-readable summary. |
-| `metrics` | no | object | Evaluation payload; shape dictated by the experiment's evaluation schema. |
+| `evaluation` | no | object | Evaluation payload; shape dictated by the experiment's evaluation schema. |
 | `started_at` | yes | timestamp | When the executor began. |
 | `completed_at` | no | timestamp | Set when the variant reaches a terminal status. Written exactly once by the orchestrator, atomically with the transition from `"starting"` to `"success"`, `"error"`, or `"evaluation_error"` (see [`04-task-protocol.md`](04-task-protocol.md) §4.3 and [`03-roles.md`](03-roles.md) §4.4). |
 | `executed_by` | no | string (worker_id) | The executor's `worker_id`; written at execution-task submit time (atomically with the variant's status transition out of `"starting"`). |
-| `evaluated_by` | no | string (worker_id) | The evaluator's `worker_id` whose metrics were committed; written at evaluation-task submit time. |
+| `evaluated_by` | no | string (worker_id) | The evaluator's `worker_id` whose evaluation was committed; written at evaluation-task submit time. |
 
 ### 9.2 Evaluation payload
 
-If present, `metrics` MUST be an object whose keys are a subset of the declared evaluation-schema keys and whose values match the declared types (§1.3) or are `null`. Because the evaluation-schema is per-experiment, [`schemas/variant.schema.json`](schemas/variant.schema.json) cannot express this constraint generically and leaves `metrics` as an open object; the per-metric type check is a runtime responsibility of the orchestrator. A conforming orchestrator MUST reject a evaluation payload that violates the experiment's evaluation-schema, and MUST NOT record the variant as `"success"` in that case.
+If present, `evaluation` MUST be an object whose keys are a subset of the declared evaluation-schema keys and whose values match the declared types (§1.3) or are `null`. Because the evaluation-schema is per-experiment, [`schemas/variant.schema.json`](schemas/variant.schema.json) cannot express this constraint generically and leaves `evaluation` as an open object; the per-metric type check is a runtime responsibility of the orchestrator. A conforming orchestrator MUST reject a evaluation payload that violates the experiment's evaluation-schema, and MUST NOT record the variant as `"success"` in that case.
 
 ### 9.3 Status transitions
 

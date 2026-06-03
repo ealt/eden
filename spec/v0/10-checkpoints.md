@@ -184,7 +184,7 @@ The contract per object kind:
 
 **Tasks.** Every `task_id` in the source is present in the import. `kind`, `payload`, `target`, `created_by`, `submitted_by`, `created_at`, `updated_at` round-trip verbatim. `state` round-trips verbatim EXCEPT `claimed` becomes `pending` per (c) above. The `claim` field is empty on every imported task.
 
-**Ideas, variants, submissions.** Round-trip identical to their schema-validated forms, except `artifacts_uri` per (a). Variant `metrics`, `commit_sha`, `variant_commit_sha`, `branch`, `parent_commits`, `description`, `executed_by`, `evaluated_by`, `completed_at`, `status` all round-trip verbatim.
+**Ideas, variants, submissions.** Round-trip identical to their schema-validated forms, except `artifacts_uri` per (a). Variant `evaluation`, `commit_sha`, `variant_commit_sha`, `branch`, `parent_commits`, `description`, `executed_by`, `evaluated_by`, `completed_at`, `status` all round-trip verbatim.
 
 **Events.** Replay in the same order with the same per-event `type` / `occurred_at` / `experiment_id` / `data` payload. The `event_id` MAY differ per (b).
 
