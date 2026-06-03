@@ -335,7 +335,7 @@ The `type` URI is the authoritative machine-readable error code. Clients MUST ke
 | `eden://error/invalid-name` | 422 | `register_worker` / `register_group` was given a `name` violating the display-name grammar ([`02-data-model.md`](02-data-model.md) §1.7) |
 | `eden://error/cycle-detected` | 409 | a group mutation would introduce a cycle ([`02-data-model.md`](02-data-model.md) §7.3) |
 | `eden://error/checkpoint-invalid` | 400 | uploaded checkpoint archive is malformed; fails JSONL ↔ bundle cross-reference validation per [`10-checkpoints.md`](10-checkpoints.md) §12, or carries a missing `artifacts/sha256/<hex>` referenced by JSONL data per [`10-checkpoints.md`](10-checkpoints.md) §7 |
-| `eden://error/experiment-id-conflict` | 409 | portable-checkpoint import's `as_experiment_id` override collides with an existing `experiment_id` (without an override the receiver mints a fresh `exp_*`, so identity collision is impossible; §14.2, [`10-checkpoints.md`](10-checkpoints.md) §11) |
+| `eden://error/experiment-id-conflict` | 409 | portable-checkpoint import's `as_experiment_id` override collides with an existing `experiment_id` (without an override the receiver imports under its own id — never the source's — so identity collision is impossible; §14.2, [`10-checkpoints.md`](10-checkpoints.md) §11) |
 | `eden://error/spec-version-mismatch` | 409 | the checkpoint manifest's `spec_version` does not match the importer's spec version ([`10-checkpoints.md`](10-checkpoints.md) §13) |
 | `eden://error/unsupported-checkpoint-version` | 409 | the checkpoint manifest's `checkpoint_format_version` is not recognized by the importer ([`10-checkpoints.md`](10-checkpoints.md) §13) |
 | `eden://error/checkpoint-in-progress` | 409 | OPTIONAL — an exporter that rejects concurrent state-mutating operations during a live export ([`10-checkpoints.md`](10-checkpoints.md) §6) MAY use this code; servers that serialize instead MUST NOT emit it |
@@ -483,7 +483,7 @@ The import is a single composite commit per [`08-storage.md`](08-storage.md) §6
 
 If the manifest carries `requires_credential_reissue: true` ([`10-checkpoints.md`](10-checkpoints.md) §5), the importer MUST mint fresh credentials for every imported worker as part of the same composite commit. The new credentials are surfaced to the operator via the `warnings` array; the side-channel format is implementation-defined.
 
-**Header carve-out (§1.3).** The `X-Eden-Experiment-Id` header is OPTIONAL on this endpoint. When present, its value MUST equal the imported experiment's resulting id (the manifest's `experiment_id` after any `as_experiment_id` rewrite). A mismatch returns 400 `eden://error/experiment-id-mismatch`. When absent the server proceeds without that check.
+**Header carve-out (§1.3).** The `X-Eden-Experiment-Id` header is OPTIONAL on this endpoint. When present, its value MUST equal the imported experiment's **resulting** id (the receiver's own id described above — the `as_experiment_id` override if supplied, else the receiver's allocated/configured id — NOT the source manifest id). A mismatch returns 400 `eden://error/experiment-id-mismatch`. When absent the server proceeds without that check.
 
 **Authority:** caller MUST present the deployment-admin bearer (literal `admin` principal per §13.1). A worker bearer receives 403 `eden://error/forbidden`. See the §14 introduction for the bootstrap-class rationale (the receiving deployment is typically empty when the import lands; an `admins`-group gate would be uncallable).
 
