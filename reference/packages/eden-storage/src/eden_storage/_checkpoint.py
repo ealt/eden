@@ -424,8 +424,11 @@ def import_checkpoint(
 
     - The manifest's ``spec_version`` MUST match the binding's
       :data:`CHECKPOINT_SPEC_VERSION`.
-    - ``store.experiment_id`` MUST equal the manifest's ``experiment_id``
-      (or ``as_experiment_id`` if supplied); otherwise raises
+    - The imported experiment lands under ``store.experiment_id`` (the
+      receiver's own opaque, system-minted id); the manifest's source
+      id is preserved as ``imported_from.source_experiment_id`` for
+      provenance (#128, chapter 10 §10). A supplied ``as_experiment_id``
+      MUST equal ``store.experiment_id`` or raises
       :class:`ExperimentIdMismatch`.
     - ``store`` MUST be empty (no tasks, no ideas, no variants, …, no
       events, no workers, no groups, dispatch_mode at default, state
@@ -436,8 +439,8 @@ def import_checkpoint(
 
     - Inserts every Store-managed entity.
     - Sets the experiment row's ``imported_from`` to
-      ``{checkpoint_exported_at, checkpoint_format_version}`` per
-      ``10-checkpoints.md`` §10.
+      ``{checkpoint_exported_at, checkpoint_format_version,
+      source_experiment_id}`` per ``10-checkpoints.md`` §10.
     - Applies any non-default ``dispatch_mode`` carried on the
       experiment row.
     - Applies any non-default ``state`` (terminated experiments import
@@ -642,6 +645,7 @@ def _apply_archive_commit(
             ImportProvenance(
                 checkpoint_exported_at=manifest.exported_at,
                 checkpoint_format_version=manifest.checkpoint_format_version,
+                source_experiment_id=manifest.experiment_id,
             ),
         )
         store._apply_commit(tx)
@@ -669,13 +673,19 @@ def _commit_import(
             f"manifest spec_version={manifest.spec_version!r}, "
             f"this binding expects {CHECKPOINT_SPEC_VERSION!r}"
         )
-    target_id = as_experiment_id or manifest.experiment_id
-    if target_id != store.experiment_id:
+    # Since the identity rename (#128) experiment ids are opaque,
+    # system-minted (chapter 02 §1.6). The receiving single-experiment
+    # store already owns a freshly-minted ``exp_*`` id; the import lands
+    # under THAT id, and the manifest's source id is preserved as
+    # ``imported_from.source_experiment_id`` for provenance rather than
+    # reused as the primary key (10-checkpoints.md §10, 07 §14.2). An
+    # ``as_experiment_id`` override, when supplied, MUST name the
+    # receiver's own id (the only experiment this store serves).
+    target_id = store.experiment_id
+    if as_experiment_id is not None and as_experiment_id != store.experiment_id:
         raise ExperimentIdMismatch(
-            f"store.experiment_id={store.experiment_id!r} but checkpoint "
-            f"resolves to {target_id!r} "
-            f"(manifest={manifest.experiment_id!r}, "
-            f"as_experiment_id={as_experiment_id!r})"
+            f"store.experiment_id={store.experiment_id!r} but "
+            f"as_experiment_id={as_experiment_id!r} names a different experiment"
         )
 
     parsed = _parse_archive(

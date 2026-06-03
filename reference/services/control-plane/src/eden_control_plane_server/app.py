@@ -30,6 +30,7 @@ from eden_control_plane import (
 from eden_storage.errors import (
     AlreadyExists,
     CycleDetected,
+    InvalidName,
     InvalidPrecondition,
     NotFound,
     ReservedIdentifier,
@@ -125,6 +126,7 @@ _PROBLEM_JSON_EXCEPTION_TYPES: tuple[type[Exception], ...] = (
     AlreadyExists,
     InvalidPrecondition,
     ReservedIdentifier,
+    InvalidName,
     CycleDetected,
     LeaseError,
     BadRequest,

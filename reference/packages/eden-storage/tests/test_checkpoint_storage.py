@@ -367,10 +367,34 @@ def test_double_import_raises_conflict(
         target.import_checkpoint(archive, extract_dir=second_dir)
 
 
-def test_experiment_id_mismatch_without_override(
+def test_import_without_override_stamps_source_provenance(
     make_store: Callable[..., Store], tmp_path: Path
 ) -> None:
-    """Manifest id ≠ store id with no override → ``ExperimentIdMismatch``."""
+    """Import without override lands under the receiver's own id and records
+    the source manifest id as ``imported_from.source_experiment_id`` (#128).
+
+    Post-rename experiment ids are opaque, system-minted: the source id is
+    NOT reused as the target's primary key; it is preserved for provenance.
+    """
+    source_id = _eid("exp-source")
+    source = make_store(source_id, seed_workers=False)
+    archive = io.BytesIO()
+    source.export_checkpoint(archive, experiment_config="x")
+
+    target_id = _eid("exp-target")
+    target = make_store(target_id, seed_workers=False)
+    archive.seek(0)
+    result = target.import_checkpoint(archive, extract_dir=tmp_path)
+    assert result.experiment_id == target_id
+    exp = target.read_experiment()
+    assert exp.imported_from is not None
+    assert exp.imported_from.source_experiment_id == source_id
+
+
+def test_as_experiment_id_override_mismatch_raises(
+    make_store: Callable[..., Store], tmp_path: Path
+) -> None:
+    """An ``as_experiment_id`` override naming a non-receiver id → mismatch."""
     source = make_store(_eid("exp-source"), seed_workers=False)
     archive = io.BytesIO()
     source.export_checkpoint(archive, experiment_config="x")
@@ -378,7 +402,9 @@ def test_experiment_id_mismatch_without_override(
     target = make_store(_eid("exp-target"), seed_workers=False)
     archive.seek(0)
     with pytest.raises(ExperimentIdMismatch):
-        target.import_checkpoint(archive, extract_dir=tmp_path)
+        target.import_checkpoint(
+            archive, as_experiment_id=_eid("exp-other"), extract_dir=tmp_path
+        )
 
 
 def test_as_experiment_id_override_succeeds(
