@@ -1,4 +1,5 @@
 """Lineage + attribution rendering tests for admin task detail (phase 12a-1c)."""
+# pyright: reportAttributeAccessIssue=false
 
 from __future__ import annotations
 

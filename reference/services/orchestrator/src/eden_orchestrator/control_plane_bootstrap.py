@@ -168,20 +168,14 @@ def bootstrap_control_plane_worker(
 
     ``name`` is the operator-stable display NAME under which the
     orchestrator self-registers; the opaque ``worker_id`` is MINTED by
-    the control plane (#128) and persisted locally so restarts reuse
-    the same identity. Four branches:
-
-    1. Persisted worker_id + token, token verifies via
-       ``/v0/control/whoami`` → use it.
-    2. Persisted worker_id + stale token → admin reissues, persist new
-       token (the registry row already exists).
-    3. Persisted worker_id but no token (credential lost) → admin
-       reissues for the known id, persist token.
-    4. No persisted worker_id → admin ``register_worker(name=…)``,
-       capture the MINTED id, persist BOTH the id and the token.
-
-    Raises ``RuntimeError`` when a branch needs the admin token but
-    none is available.
+    the control plane (#128) and persisted locally so restarts reuse the
+    same identity. On restart with a persisted worker_id it verifies the
+    token via ``/v0/control/whoami`` and admin-reissues if the token is
+    missing or stale (NEVER re-registering — that would mint a different
+    id and orphan this one); with no persisted id it admin-registers by
+    ``name``, captures the minted id, and persists BOTH the id and the
+    token. Raises ``RuntimeError`` when a branch needs the admin token
+    but none is available. (Per-branch detail in the inline comments.)
     """
     if admin_token is None:
         admin_token = os.environ.get("EDEN_CONTROL_PLANE_ADMIN_TOKEN") or os.environ.get(

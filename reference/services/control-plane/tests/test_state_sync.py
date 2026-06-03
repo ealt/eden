@@ -4,6 +4,7 @@ Drives the poller synchronously via `tick()` + `refresh_one()` so
 the failure-threshold + on-demand-refresh semantics can be exercised
 without spawning the background thread.
 """
+# pyright: reportAttributeAccessIssue=false
 
 from __future__ import annotations
 

@@ -27,6 +27,7 @@ Sub-cases:
 - I-c ``IllegalTransition`` + read-back finds non-equivalent
       submission — orphan conflict.
 """
+# pyright: reportAttributeAccessIssue=false
 
 from __future__ import annotations
 

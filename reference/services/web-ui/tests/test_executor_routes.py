@@ -5,6 +5,7 @@ in-memory store, asserting each route's rendering and validation
 shape in isolation. Cross-request flows live in
 ``test_executor_flow.py``.
 """
+# pyright: reportAttributeAccessIssue=false
 
 from __future__ import annotations
 

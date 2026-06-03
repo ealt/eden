@@ -134,6 +134,30 @@ def _bootstrap_lock(credentials_dir: Path, worker_id: str) -> Iterator[None]:
             fcntl.flock(fp.fileno(), fcntl.LOCK_UN)
 
 
+def _admin_reissue_and_persist(
+    *,
+    base_url: str,
+    experiment_id: str,
+    worker_id: str,
+    admin_token: str,
+    path: Path,
+    timeout: float,
+) -> WorkerCredential:
+    """Admin-reissue ``worker_id``'s credential, persist it, return the bearer.
+
+    Shared by both recovery branches of :func:`bootstrap_worker_credential`
+    (persisted-but-stale, and no-local-token): a setup-minted worker is
+    recovered via the §8.2 admin-gated reissue — never a fresh register,
+    which would mint a different opaque id and sever the persisted identity.
+    """
+    with StoreClient(
+        base_url, experiment_id, bearer=f"admin:{admin_token}", timeout=timeout
+    ) as admin:
+        new_token = admin.reissue_credential(worker_id)
+    _write_token(path, new_token)
+    return WorkerCredential(worker_id=worker_id, token=new_token)
+
+
 def bootstrap_worker_credential(
     *,
     base_url: str,
@@ -146,31 +170,19 @@ def bootstrap_worker_credential(
 ) -> WorkerCredential:
     """Return a usable per-worker credential for the setup-minted ``worker_id``.
 
-    ``labels`` is retained for caller-signature parity (the host CLIs
-    still pass a ``{"role": …}`` map) but is no longer applied here:
-    setup-experiment minted the worker WITH its labels, and this helper
-    only verifies the persisted token or admin-reissues the credential —
-    neither path mutates the registry row's labels.
+    Implements the #128 startup recovery flow. ``worker_id`` is the opaque
+    ``wkr_*`` id setup-experiment minted and baked into ``.env``; this
+    helper NEVER mints a new one (that would diverge from the persisted
+    identity). If a persisted token verifies via ``/whoami``
+    (``WhoamiResult.worker_id == worker_id``) it is used; if it is missing
+    or stale the credential is admin-reissued for the known id (the
+    registry row already exists) — there is NO fresh-register fallback.
+    See the inline comments for the per-branch detail. ``labels`` is
+    retained for caller-signature parity but unused (setup minted the
+    worker with its labels; neither verify nor reissue mutates them).
 
-    Implements the #128 startup recovery flow. ``worker_id`` is the
-    opaque ``wkr_*`` id setup-experiment minted and baked into ``.env``;
-    this helper never mints a new one (that would diverge from the
-    persisted identity):
-
-    1. If a persisted token exists and verifies via ``/whoami``
-       (``WhoamiResult.worker_id == worker_id``), use it.
-    2. If a persisted token exists but is stale (401, or ``/whoami``
-       returns a different id), reissue with ``admin_token`` and
-       persist the new one. The registry row already exists.
-    3. If no persisted token, the local credential was lost (volume
-       wipe, fresh container) but the registry row was minted by setup
-       — recover via admin-gated ``reissue_credential(worker_id)`` and
-       persist the issued token. There is NO fresh-register fallback.
-
-    Raises ``RuntimeError`` if step 2 or 3 needs the admin token but
-    none is available (no ``--admin-token`` flag, no
-    ``EDEN_ADMIN_TOKEN`` env var). The caller surfaces this to
-    operator-readable startup failure.
+    Raises ``RuntimeError`` if a reissue branch needs the admin token but
+    none is available (no ``--admin-token`` flag, no ``EDEN_ADMIN_TOKEN``).
     """
     if admin_token is None:
         admin_token = os.environ.get("EDEN_ADMIN_TOKEN")
@@ -208,15 +220,14 @@ def bootstrap_worker_credential(
                     f"(whoami returned {returned_id!r}); reissue requires the "
                     "admin token (set --admin-token or EDEN_ADMIN_TOKEN)"
                 )
-            with StoreClient(
-                base_url,
-                experiment_id,
-                bearer=f"admin:{admin_token}",
+            return _admin_reissue_and_persist(
+                base_url=base_url,
+                experiment_id=experiment_id,
+                worker_id=worker_id,
+                admin_token=admin_token,
+                path=path,
                 timeout=timeout,
-            ) as admin:
-                new_token = admin.reissue_credential(worker_id)
-            _write_token(path, new_token)
-            return WorkerCredential(worker_id=worker_id, token=new_token)
+            )
 
         # First run under this lock: no persisted token. The worker_id
         # was minted by setup-experiment and already has a registry
@@ -231,14 +242,14 @@ def bootstrap_worker_credential(
                 "the admin token to reissue its credential (set --admin-token "
                 "or EDEN_ADMIN_TOKEN)"
             )
-        with StoreClient(
-            base_url, experiment_id, bearer=f"admin:{admin_token}", timeout=timeout
-        ) as admin:
-            registration_token = admin.reissue_credential(worker_id)
-            _write_token(path, registration_token)
-            return WorkerCredential(
-                worker_id=worker_id, token=registration_token
-            )
+        return _admin_reissue_and_persist(
+            base_url=base_url,
+            experiment_id=experiment_id,
+            worker_id=worker_id,
+            admin_token=admin_token,
+            path=path,
+            timeout=timeout,
+        )
 
 
 def resolve_worker_bearer(

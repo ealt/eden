@@ -1,4 +1,5 @@
 """Per-route validation for the evaluator module."""
+# pyright: reportAttributeAccessIssue=false
 
 from __future__ import annotations
 

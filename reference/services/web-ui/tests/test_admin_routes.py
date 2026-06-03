@@ -1,4 +1,5 @@
 """Per-route unit tests for the admin module (chunk 9e)."""
+# pyright: reportAttributeAccessIssue=false
 
 from __future__ import annotations
 

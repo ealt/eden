@@ -1,4 +1,5 @@
 """Per-route tests for the admin ideas module (phase 12a-1c, wave 4)."""
+# pyright: reportAttributeAccessIssue=false
 
 from __future__ import annotations
 

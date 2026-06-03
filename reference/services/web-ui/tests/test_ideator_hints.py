@@ -9,6 +9,7 @@ The ideator landing AND draft pages must surface:
 Both rendered as click-to-copy chips so the operator has something
 to paste into the ``parent_commits`` field.
 """
+# pyright: reportAttributeAccessIssue=false
 
 from __future__ import annotations
 

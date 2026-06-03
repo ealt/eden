@@ -5,6 +5,7 @@ eligibility / target / group filters, the eligibility-aware claim
 button, the click-to-expand context row, and the two warning banners.
 Supersedes the pre-redesign inline-preview tests.
 """
+# pyright: reportAttributeAccessIssue=false
 
 from __future__ import annotations
 

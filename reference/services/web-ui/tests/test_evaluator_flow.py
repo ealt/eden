@@ -8,6 +8,7 @@ race.
 Failure-recovery and orphan paths live in
 ``test_evaluator_partial_write.py``.
 """
+# pyright: reportAttributeAccessIssue=false
 
 from __future__ import annotations
 

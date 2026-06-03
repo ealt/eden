@@ -3,6 +3,7 @@
 These exercise full happy-path and recovery flows that the
 per-route ``test_app.py`` deliberately does not cover.
 """
+# pyright: reportAttributeAccessIssue=false
 
 from __future__ import annotations
 
