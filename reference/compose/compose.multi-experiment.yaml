@@ -1,0 +1,88 @@
+# #147 overlay — second orchestrator replica in lease-driven mode.
+#
+# Layered on top of compose.yaml for the lease-handoff chaos smoke
+# (smoke-multi-experiment.sh / the compose-smoke-multi-experiment CI
+# job). It adds ONE service: a second orchestrator (`orchestrator-2`,
+# worker_id `orchestrator-2`) so two replicas contend for the single
+# registered experiment's lease.
+#
+# Both replicas run the chapter-11 §5 lease-driven loop only when
+# EDEN_CONTROL_PLANE_URL is non-empty: the orchestrator CLI reads that
+# env var as the fallback for --control-plane-url (issue #147), so the
+# base-compose `orchestrator` AND this `orchestrator-2` both flip into
+# lease mode from the same env var. With it empty this overlay is a
+# plain second single-experiment orchestrator (the multi-orchestrator
+# smoke's shape), but the smoke that layers this overlay always sets
+# the URL.
+#
+# Structurally mirrors compose.multi-orchestrator.yaml's orchestrator-2
+# (own per-replica repo + credentials volumes; no log bind-mount —
+# logs go to stdout / the json-file driver, read via `compose logs`).
+# NOTE: no `logging: *eden-logging` here — YAML anchors do not cross
+# compose files, and the default json-file driver is fine for a smoke.
+
+name: eden-reference
+
+services:
+  orchestrator-2:
+    image: eden-reference:dev
+    build:
+      context: ../..
+      dockerfile: reference/compose/Dockerfile
+    container_name: eden-orchestrator-2
+    restart: "on-failure"
+    depends_on:
+      task-store-server:
+        condition: service_healthy
+      control-plane:
+        condition: service_healthy
+    command:
+      - python
+      - -m
+      - eden_orchestrator
+      - --task-store-url
+      - http://task-store-server:8080
+      # Always passed; only a logging label in lease-driven mode.
+      - --experiment-id
+      - ${EDEN_EXPERIMENT_ID:?}
+      - --admin-token
+      - ${EDEN_ADMIN_TOKEN:?}
+      - --worker-id
+      - orchestrator-2
+      - --repo-path
+      - /var/lib/eden/repo
+      - --forgejo-url
+      - ${FORGEJO_REMOTE_URL:?}
+      - --credential-helper
+      - /etc/eden/credential-helper.sh
+      - --experiment-config
+      - /etc/eden/experiment-config.yaml
+      - --poll-interval
+      - "1.0"
+      - --max-quiescent-iterations
+      - "${EDEN_MAX_QUIESCENT_ITERATIONS:-30}"
+      - --lease-duration-seconds
+      - "${EDEN_LEASE_DURATION_SECONDS:-30}"
+      - --termination-policy
+      - ${EDEN_TERMINATION_POLICY:-eden_dispatch.termination:default_termination_policy}
+      - --log-level
+      - info
+    environment:
+      # The lease-mode toggle (see header). Empty → single-experiment.
+      EDEN_CONTROL_PLANE_URL: ${EDEN_CONTROL_PLANE_URL:-}
+      EDEN_TERMINATION_MAX_VARIANTS: ${EDEN_TERMINATION_MAX_VARIANTS:-}
+    configs:
+      - source: eden-experiment-config
+        target: /etc/eden/experiment-config.yaml
+    volumes:
+      # Per-replica clones so neither orchestrator's git state collides
+      # with the other. Per-replica clones is the design posture; the
+      # wire (+ the control-plane lease) is the only synchronization
+      # point.
+      - eden-orchestrator-2-repo:/var/lib/eden/repo
+      - eden-orchestrator-2-credentials:/var/lib/eden/credentials
+      - ${EDEN_FORGEJO_CREDS_DIR_HOST:?}/credential-helper.sh:/etc/eden/credential-helper.sh:ro
+
+volumes:
+  eden-orchestrator-2-repo:
+  eden-orchestrator-2-credentials:

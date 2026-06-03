@@ -219,7 +219,7 @@ Waves are grouped by **stack configuration** so each wave shares one bring-up (t
 
 ### Wave 3 — Control-plane stack (§4.3)
 
-- **Concrete bring-up** (per [`docs/observability.md`](../observability.md) §3.4): run the control-plane-server as a sibling container on the `eden-reference_default` network, then recreate `web-ui` with the [`compose.control-plane.yaml`](../../reference/compose/compose.control-plane.yaml) overlay so `--control-plane-url` is set and the `/admin/experiments/` + `/admin/control/*` routes register. The control-plane routes do NOT exist on the default stack — this overlay is the gate.
+- **Concrete bring-up** (per [`docs/observability.md`](../observability.md) §3.4): since #147 the control-plane-server is a first-class always-on Compose service; set `EDEN_CONTROL_PLANE_URL=http://control-plane:8081` in `.env` and recreate `web-ui` so `--control-plane-url` is set and the `/admin/experiments/` + `/admin/control/*` routes register. The web-ui routes are 404 on the default stack — that env var is the gate.
 - Walk the `/admin/experiments/` dashboard (register + select + unregister — now reachable), the lease primitive (acquire → renew → release → expiry hand-off + list/filter), the deployment-scoped worker/group registry (wire `/v0/control/*` + `/admin/control/workers/` + `/admin/control/groups/` UI incl. reissue), `GET /v0/control/whoami`, and multi-experiment side-by-side (two experiments registered + leased, port/data-root isolation; cross-ref #147).
 
 **Gate:** every §4.3 surface ticked or `blocked by #__`; comment posted; surprises filed + triaged.

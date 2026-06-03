@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import importlib
+import os
 import re
 
 from eden_contracts import ExperimentConfig
@@ -222,9 +223,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--control-plane-url",
-        default=None,
+        # Env fallback (#147): defaults to $EDEN_CONTROL_PLANE_URL, treating
+        # an empty value as unset. This lets a single Compose service
+        # definition flip between single- and multi-experiment mode purely
+        # via the env var (`${EDEN_CONTROL_PLANE_URL:-}` empty → single,
+        # non-empty → lease-driven) without a conditional command wrapper.
+        default=os.environ.get("EDEN_CONTROL_PLANE_URL") or None,
         help=(
-            "Optional control-plane base URL (e.g. 'http://control-plane:8081'). "
+            "Optional control-plane base URL (e.g. 'http://control-plane:8081'; "
+            "defaults to $EDEN_CONTROL_PLANE_URL, empty treated as unset). "
             "When set, the orchestrator subscribes to the chapter-11 §2 "
             "experiment registry and runs the §5 multi-experiment loop: "
             "acquires/renews a lease per registered experiment, drives "
@@ -861,8 +868,6 @@ def _resolve_control_plane_admin_token(args) -> str | None:  # noqa: ANN001
     credential. Subsequent lease ops authenticate as the worker
     bearer returned by `bootstrap_control_plane_worker`.
     """
-    import os
-
     token = args.control_plane_admin_token or os.environ.get(
         "EDEN_CONTROL_PLANE_ADMIN_TOKEN"
     )

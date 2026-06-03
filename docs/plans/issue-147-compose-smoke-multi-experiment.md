@@ -1,6 +1,6 @@
 # Issue #147 — Compose-smoke-multi-experiment CI job (Phase 12c backfill)
 
-**Status.** Draft (plan).
+**Status.** Re-scoped (impl) — see §0.
 
 **Predecessors.** Phase 12c (control plane) merged ([CHANGELOG](../../CHANGELOG.md) §"Phase 12c"); chapter 11 normative surface + `eden-control-plane` package + `reference/services/control-plane/` reference service + orchestrator `LeaseManager` + web-ui `/admin/experiments/` dashboard are all shipped. Reference impl is `v1+roles+orchestrator-substrate+lifecycle+checkpoints+multi-experiment` conformant: 246/246 conformance scenarios pass at the chapter-7 binding level. What 12c deferred was the **deployment-substrate** integration — `control-plane` is not yet a first-class Compose service, and there is no end-to-end multi-experiment smoke. This plan backfills both.
 
@@ -15,6 +15,33 @@
 - "Multi-experiment" is the canonical noun for the deployment-level posture where one task-store-server + one control-plane + one (or more) orchestrator replicas host more than one registered experiment. No identifier renames; everything threaded through this plan reuses chapter 11's vocabulary (`register_experiment`, `acquire_lease`, `last_known_state`, `holder_instance`, …).
 - "Cross-experiment isolation" is the smoke's load-bearing assertion shape — no task-id / event-stream / variant-id leakage between two registered experiments sharing the deployment substrate. Not a new spec term; observational only.
 - The new smoke script and CI job follow the existing naming convention: `smoke-multi-experiment.sh` (parallel to `smoke.sh` / `smoke-subprocess.sh` / `smoke-multi-orchestrator.sh` / `smoke-checkpoint.sh`) and `compose-smoke-multi-experiment` (parallel to `compose-smoke-multi-orchestrator` / `compose-smoke-checkpoint`).
+
+## 0. Re-scope (2026-05-31, operator-authorized) — THIS GOVERNS
+
+During impl, a read of the focal code paths surfaced a structural blocker the draft plan did not anticipate: **the reference implementation cannot host more than one experiment per deployment substrate.** Three independent sites enforce single-experiment hosting:
+
+1. **Task-store-server is single-experiment-bound.** `build_store(...)` ([`reference/services/task-store-server/src/eden_task_store_server/app.py`](../../reference/services/task-store-server/src/eden_task_store_server/app.py)) constructs the `Store` with one fixed `experiment_id`, and the wire layer rejects any other path id: [`reference/packages/eden-wire/src/eden_wire/_dependencies.py:73`](../../reference/packages/eden-wire/src/eden_wire/_dependencies.py) → `if path_exp != deps.store.experiment_id: raise ExperimentIdMismatch(...)`. No multi-experiment `Store` class exists in `eden-storage`.
+2. **The orchestrator multi-experiment loop targets a single task-store URL for all experiments.** [`reference/services/orchestrator/src/eden_orchestrator/multi_loop.py:255-302`](../../reference/services/orchestrator/src/eden_orchestrator/multi_loop.py) builds `StoreClient(task_store_url, experiment_id)` per experiment against the same CLI-supplied URL — no `experiment_id → endpoint` mapping.
+3. **The orchestrator integrator is one shared bare repo / forgejo remote deployment-wide.** [`reference/services/orchestrator/src/eden_orchestrator/cli.py:633-657`](../../reference/services/orchestrator/src/eden_orchestrator/cli.py) documents the v0 design: "one task-store-server (and one canonical bare repo) deployment-wide."
+
+12c's multi-experiment surface was validated only against fake stores (`test_multi_loop_unit.py`) + the conformance suite's single-IUT chapter-7 binding (the 9 documented skips are precisely the ones that need >1 hosted experiment). The deployed reference stack has never hosted two experiments — and as written, it cannot.
+
+**Decision (operator-authorized 2026-05-31): re-scope #147 to what the reference impl actually supports.** This plan now delivers:
+
+- **The control-plane as a first-class Compose service** (the genuinely-new, genuinely-shippable 12c substrate piece) — §3.1.1–§3.1.4 below are retained.
+- **A lease-handoff chaos smoke** against the deployed stack: ONE registered experiment, TWO orchestrator replicas contending for its single lease (multi-experiment / lease-driven mode), with the chaos drill killing the lease holder and asserting the standby replica picks it up cleanly and the experiment still completes. This exercises the chapter-11 control-plane + lease lifecycle end-to-end on the real Compose substrate.
+
+**Deferred to [#254](https://github.com/ealt/eden/issues/254) (multi-experiment task-store-server hosting — the prereq):** the cross-experiment-isolation smoke (two experiments end-to-end; disjoint task-id / variant-id / idea-id / event streams). The following draft-plan content is **SUPERSEDED** by this re-scope and folded into #254:
+
+- **Decision 4** (two experiments end-to-end) and **Decision 5** (per-experiment worker host trios + per-experiment forgejo repos) — see the rewritten Decisions below.
+- **§3.1.5** (`compose.multi-experiment.yaml` second host trio) — replaced by a second *orchestrator replica* in lease mode, §3.1.5′.
+- **§3.2** (`setup-experiment --register-additional-experiment`) — not needed; a single experiment is registered with the control plane (§3.2′).
+- **§3.4** (per-experiment `_2` env-var namespacing) — not needed.
+- The two-experiment portions of **§3.3** (smoke phases 4/6 cross-experiment isolation) — replaced by the lease-handoff smoke design, §3.3′.
+
+**Impl refinement (no entrypoint wrappers).** The draft plan's §3.1.3 Shape A used a bash entrypoint wrapper to omit `--experiment-id` in multi-experiment mode. That is unnecessary: the orchestrator CLI selects mode **solely** on `--control-plane-url` being set ([`cli.py:359`](../../reference/services/orchestrator/src/eden_orchestrator/cli.py) `if args.control_plane_url is not None`), and `--experiment-id` is merely a logging label in multi mode. So the impl instead adds an **env fallback** for `--control-plane-url` to the orchestrator + web-ui CLIs (mirroring the existing `EDEN_CONTROL_PLANE_ADMIN_TOKEN` fallback): an empty `${EDEN_CONTROL_PLANE_URL:-}` → single-experiment mode (unchanged); a non-empty value → lease-driven mode. No wrapper scripts, no Dockerfile change. `--experiment-id` and `--lease-duration-seconds` stay as always-present flags (harmless in the mode that ignores them). This supersedes §3.1.3 Shape A and the `orchestrator-entrypoint.sh` / `web-ui-entrypoint.sh` / Dockerfile-COPY items in §4.1/§5.
+
+Where the rest of this document (written pre-re-scope) describes "two experiments" / "cross-experiment isolation," read it as historical context superseded by §0 + the primed (′) sections. §0 governs on any conflict.
 
 ## 1. Context
 
@@ -77,17 +104,13 @@ These are the load-bearing design calls; §3 unpacks each.
 
    Together, **the existing 6 smokes need NO change** (they don't set `EDEN_ORCHESTRATOR_MULTI_EXPERIMENT` or `EDEN_CONTROL_PLANE_URL` in their generated `.env`, so the orchestrator runs single-experiment and the web-ui ignores the control-plane). The new multi-experiment smoke sets both. This satisfies the [CHANGELOG](../../CHANGELOG.md) note's "The existing 6 Compose smokes are unchanged in posture" pledge.
 
-4. **The multi-experiment smoke runs TWO experiments end-to-end, not one.** A smoke that registers one experiment via the control plane is not meaningfully different from `smoke.sh` (which exercises a single experiment without a control plane). The substrate-level value of this job is exercising the multi-experiment topology: two registered experiments, two leases held simultaneously, cross-experiment isolation asserted via wire reads. The smoke MUST therefore set up two distinct experiments end-to-end.
+4. **[RE-SCOPED — see §0] The smoke runs ONE registered experiment with TWO orchestrator replicas contending for its lease.** The draft plan ran two experiments end-to-end; that is unbuildable (§0) and deferred to [#254](https://github.com/ealt/eden/issues/254). The substrate-level value retained here is exercising the chapter-11 control-plane + lease lifecycle on the real Compose stack: one experiment registered with the control plane, two orchestrator replicas in lease-driven (multi-experiment) mode contending for its single lease, with a chaos drill that kills the lease holder and asserts clean hand-off. This is meaningfully different from `smoke.sh` (which runs a single orchestrator with no control plane and no lease machinery).
 
-5. **The two experiments share the SAME forgejo + postgres + task-store-server + control-plane + ONE multi-experiment orchestrator, but use DISTINCT per-experiment worker hosts.** Per §1.2: worker hosts are single-experiment-scoped in the v0 reference impl. Two experiments means two forgejo repos (existing setup-experiment shape supports this — each experiment-id maps to `eden/<id>.git`) and two sets of host containers (six total: `ideator-host-A`, `ideator-host-B`, `executor-host-A`, `executor-host-B`, `evaluator-host-A`, `evaluator-host-B`). The orchestrator runs in multi-experiment mode (no `--experiment-id`); it acquires both leases and drives both loops.
+5. **[RE-SCOPED — see §0] One experiment, one forgejo repo, one task-store-server, one control-plane, the existing single worker-host trio, and TWO orchestrator replicas in lease mode.** The per-experiment worker-host trios + per-experiment forgejo repos from the draft plan are deferred to #254. The two orchestrator replicas (`orchestrator`, `orchestrator-2`) both run with `--control-plane-url` set and no `--experiment-id` (lease-driven mode via the §3.1.3 entrypoint wrapper); they self-register deployment-scoped credentials, join the `orchestrators` group, and contend for the single experiment's lease. Exactly one holds it at any instant; the standby idles. Each replica has its own bare-clone + credentials volumes (mirrors `compose.multi-orchestrator.yaml`).
 
-   - **Alternative considered: one set of worker hosts shared across experiments.** Rejected: the worker-host CLIs require `--experiment-id` and have per-experiment forgejo credentials + per-experiment substrate paths. Refactoring host CLIs to multi-experiment is a separate, much bigger lift that arguably belongs in a future phase; it is not required to expose multi-experiment ORCHESTRATION at the smoke level.
+6. **[RE-SCOPED — see §0] No `setup-experiment --register-additional-experiment`.** A single experiment is provisioned by the normal `setup-experiment.sh` flow; the smoke then registers that one experiment with the control plane via an admin-authenticated `POST /v0/control/experiments` (§3.2′). The `_2`-namespaced env convention from the draft plan is not needed.
 
-6. **setup-experiment.sh becomes idempotently re-runnable against the same data root for a different experiment-id.** Today, running setup-experiment a second time against a different `--experiment-id` clobbers the `.env` file with the new experiment's settings. For the multi-experiment smoke, we need either (a) two `.env` files merged, or (b) `setup-experiment` extended to support a "register-additional-experiment" mode.
-   - **Decision: option (b) — add `--register-additional-experiment <id>` flag.** When passed, setup-experiment treats the existing `.env` as the BASELINE (postgres password, admin token, control-plane URL, etc. are reused as-is from the first invocation), provisions only the experiment-specific resources (forgejo repo + creds dir + data subdirs + bare-repo seed for that experiment), and appends per-experiment env vars under a namespaced prefix (`EDEN_EXPERIMENT_ID_2`, `EDEN_BASE_COMMIT_SHA_2`, etc.). The smoke script then renders the per-experiment host containers using those prefixed values via compose's variable substitution.
-   - **Why not option (a) — merged .env files:** compose doesn't naturally support that; either we'd have a custom merge step or move to two compose projects sharing a network. Both add complexity orthogonal to the smoke's intent. Option (b) is bounded — setup-experiment grows one new code path + the env-namespacing convention is restricted to the new multi-experiment-overlay scope.
-
-7. **The multi-experiment overlay is a new compose file: `compose.multi-experiment.yaml`.** It defines the second per-experiment host trio (`ideator-host-2`, `executor-host-2`, `evaluator-host-2`) plus any per-experiment-2 volumes; it does NOT redefine shared services (task-store-server, control-plane, orchestrator, postgres, forgejo, web-ui). Layered as `-f compose.yaml -f compose.multi-experiment.yaml` (mirrors `compose.multi-orchestrator.yaml`'s pattern).
+7. **[RE-SCOPED — see §0] The overlay (`compose.multi-experiment.yaml`) adds a second orchestrator replica in lease mode**, not a second host trio. It does NOT redefine shared services. Layered as `-f compose.yaml -f compose.multi-experiment.yaml` (mirrors `compose.multi-orchestrator.yaml`). See §3.1.5′.
 
 8. **CI job follows the established not-required-then-bump posture.** Same as compose-smoke-multi-orchestrator (12a-2) and compose-smoke-checkpoint (#152): the new `compose-smoke-multi-experiment` job is added unrequired in the implementation PR; bumped to required-status after staying clean on main for ~2 weeks. Documented in the implementation PR description.
 
@@ -257,7 +280,32 @@ Notes:
 - Worker-ids are deterministic (`ideator-host-2`, etc.) so the `_ensure_orchestrators_membership`-style bootstrap works idempotently.
 - The host trio shares the same `task-store-server` healthcheck dependency as the experiment-1 trio; both trios register against the same task-store-server.
 
-### 3.2 setup-experiment changes
+#### 3.1.5′ `compose.multi-experiment.yaml` — RE-SCOPED overlay (second orchestrator replica in lease mode)
+
+Per §0, the overlay adds a SECOND orchestrator replica (`orchestrator-2`) in lease-driven mode, NOT a second host trio. Structurally it mirrors [`compose.multi-orchestrator.yaml`](../../reference/compose/compose.multi-orchestrator.yaml)'s `orchestrator-2` (its own bare-clone + credentials volumes, worker_id `orchestrator-2`), with two additions: it passes `--lease-duration-seconds ${EDEN_LEASE_DURATION_SECONDS:-30}` and sets `EDEN_CONTROL_PLANE_URL: ${EDEN_CONTROL_PLANE_URL:-}` in its `environment:` (the env-fallback that flips it into lease mode — see the §0 impl refinement). The command stays a plain `python -m eden_orchestrator …` list (no wrapper). It `depends_on` `control-plane: service_healthy` in addition to `task-store-server`. The base-compose `orchestrator` flips to lease mode the same way (it carries the same `EDEN_CONTROL_PLANE_URL` env), so both replicas contend for the one experiment's lease when the smoke sets the env var. Per-replica volumes:
+
+```yaml
+volumes:
+  eden-orchestrator-2-repo:
+  eden-orchestrator-2-credentials:
+```
+
+### 3.2′ setup-experiment + control-plane registration (RE-SCOPED — see §0)
+
+No `setup-experiment` change is needed. The normal `setup-experiment.sh <config>` flow provisions the single experiment (forgejo repo, creds, seed, `.env`). The smoke then registers that one experiment with the control plane via an admin-authenticated wire call (issued from inside the control-plane container so no host curl/port-guessing is needed, mirroring setup-experiment's `bootstrap_curl`):
+
+```text
+POST http://control-plane:8081/v0/control/experiments
+  Authorization: Bearer admin:${EDEN_ADMIN_TOKEN}
+  {"experiment_id": "${EDEN_EXPERIMENT_ID}", "config_uri": "file:///etc/eden/experiment-config.yaml"}
+  → accept 201 (first register) or 200 (idempotent replay; chapter 11 §2 / 12c round-6).
+```
+
+Both orchestrator replicas' multi-experiment loops then observe the registered experiment via `manager.refresh()` and contend for its lease. `config_uri` is informational here — the orchestrator reads ideation/termination policy from its `--experiment-config` CLI flag, and the control-plane state-sync poller reads `experiment.state` from `--task-store-url`, not from `config_uri`.
+
+The numbered `--register-additional-experiment` steps below are SUPERSEDED by §0 and folded into [#254](https://github.com/ealt/eden/issues/254); retained as historical context only.
+
+### 3.2 setup-experiment changes [SUPERSEDED — see §3.2′ + §0]
 
 Add a new `--register-additional-experiment <id>` flag to [`reference/scripts/setup-experiment/setup-experiment.sh`](../../reference/scripts/setup-experiment/setup-experiment.sh). When passed:
 
@@ -273,85 +321,75 @@ Add a new `--register-additional-experiment <id>` flag to [`reference/scripts/se
 
 The `--register-additional-experiment` flag is intentionally suffixed `_2` rather than building a fully-generic N-experiment registry. For the smoke's needs, two experiments is enough; a future generalization to N can follow the same pattern with `_<N>` suffixes if needed.
 
-### 3.3 The smoke script — `reference/compose/healthcheck/smoke-multi-experiment.sh`
+### 3.3′ The smoke script — `reference/compose/healthcheck/smoke-multi-experiment.sh` (RE-SCOPED, lease-handoff — see §0)
 
-Structure (mirrors smoke-checkpoint.sh / smoke-multi-orchestrator.sh patterns):
+ONE registered experiment + TWO orchestrator replicas contending for its lease. Structure mirrors `smoke-checkpoint.sh` / `smoke-multi-orchestrator.sh`:
 
 ```text
-Phase 0 — Preflight (docker / jq / curl / python3 available; docker compose v2)
+Phase 0 — Preflight (docker / jq / curl / python3 available; docker compose v2).
+          Volume cleanup before run (AGENTS.md: rotate-password trap).
 
-Phase 1 — Provision both experiments
-  setup-experiment.sh <config> --experiment-id exp-A --env-file $ENV --data-root $ROOT
-  setup-experiment.sh <config> --register-additional-experiment exp-B \
-      --env-file $ENV --data-root $ROOT
-
-  # The smoke pins:
-  #   EDEN_ORCHESTRATOR_MULTI_EXPERIMENT=1
-  #   EDEN_CONTROL_PLANE_URL=http://control-plane:8081
-  #   EDEN_IDEATION_POLICY_MAX_TOTAL=2 for both experiments
-  #   EDEN_LEASE_DURATION_SECONDS=10 (faster for the chaos drill)
+Phase 1 — Provision the single experiment + pin lease-mode env.
+  setup-experiment.sh <config> --experiment-id <id> --env-file $ENV \
+      --data-root $(mktemp -d)   # per-run data root → no rotate-password trap
+  # The smoke rewrites EDEN_CONTROL_PLANE_URL (setup wrote it empty) and
+  # appends the lease knobs to $ENV (it does NOT hand-edit baseline secrets):
+  #   EDEN_CONTROL_PLANE_URL=http://control-plane:8081   (flips lease mode on)
+  #   EDEN_LEASE_DURATION_SECONDS=10                      (fast hand-off drill)
   #   EDEN_STATE_SYNC_INTERVAL_SECONDS=5
+  # Cap ideation in the experiment-config YAML (ideation_policy fixed_total:3)
+  # so the run is bounded. Termination is OPERATOR-DRIVEN (Phase 5), NOT
+  # dispatch_mode.termination=auto — the orchestrator's auto-termination
+  # decision 403s under wire auth (terminate is admins-gated; #256).
 
-Phase 2 — Bring up the stack with multi-experiment overlay
+Phase 2 — Bring up the stack with the lease overlay.
   docker compose -f compose.yaml -f compose.multi-experiment.yaml \
       --env-file $ENV up -d --wait --wait-timeout 300
+  # control-plane comes up healthy (depends_on postgres + task-store-server).
 
-  # Assertions:
-  #   - control-plane /healthz returns 200
-  #   - control-plane /v0/control/experiments contains both ids
-  #   - control-plane /v0/control/leases lists 2 active leases (one per
-  #     experiment) held by the orchestrator worker_id within ~30s
+  Assertions:
+    - control-plane /healthz returns 200.
+    - Register the experiment: POST /v0/control/experiments (admin bearer,
+      from inside the control-plane container) → 201 or 200 (§3.2′).
+    - control-plane /v0/control/experiments lists the experiment.
+    - Seed the task-store `orchestrators` group with both replica worker_ids
+      (the lease-driven path joins only the CONTROL-PLANE orchestrators group,
+      not the task-store one — without this the lease holder's §3.7-gated
+      dispatch/integrate calls 403; folded into #254).
+    - Within a 60s deadline: exactly ONE active lease exists for the
+      experiment, held by one of {orchestrator, orchestrator-2}. Record the
+      holder worker_id as $HOLDER. (lease-singleton invariant — chapter 11 §4.)
 
-Phase 3 — Drive both experiments to quiescence
-  # Both experiments use max_total=2 → 2 integrated variants each. The
-  # orchestrator's multi-experiment loop runs both lease loops; quiescence
-  # exit fires when ALL held leases have drained.
+Phase 3 — Lease-handoff drill (chaos).
+  # Kill the current lease holder; assert the standby acquires the lease.
+  docker rm -f eden-<$HOLDER>            # e.g. eden-orchestrator or eden-orchestrator-2
+  Within lease_duration*2 + poll slack (~45s deadline): a single active lease
+  exists again, held by the OTHER replica ($HOLDER changed) — no split-brain.
 
-  Wait for orchestrator container to exit 0 (timeout 300s).
+Phase 4 — The surviving replica drives the pipeline.
+  Poll the events stream (240s deadline) until ≥2 variant.integrated. Assert
+  ≥2 variant.integrated AND ≥2 execution-task.completed AND ≥2
+  evaluation-task.completed (the post-hand-off holder drove dispatch +
+  execute + evaluate + integrate end-to-end on the deployed stack).
 
-Phase 4 — Cross-experiment isolation assertions
-  curl -fsS .../experiments/exp-A/events | jq …
-  curl -fsS .../experiments/exp-B/events | jq …
-
+Phase 5 — Operator-driven termination + state-sync convergence.
+  # Register a throwaway worker, add it to `admins`, terminate via its
+  # worker bearer (terminate_experiment rejects the literal admin bearer).
+  POST /v0/experiments/<id>/terminate  (admins worker bearer)
   Assert:
-    - exp-A events count >= some floor (≥6 task.completed, ≥2 variant.integrated)
-    - exp-B events count >= same floor
-    - Per-experiment event task_ids are disjoint
-      (no exp-A task_id appears in exp-B's event stream, vice versa)
-    - exp-A variant_ids and exp-B variant_ids are disjoint
-    - Each experiment's idea_ids are disjoint
-    - control-plane registry shows both with last_known_state observed
-      (running OR terminated depending on policy; the smoke's
-      termination policy in the experiment-config drives terminated)
-
-Phase 5 — Lease-handoff drill (chaos)
-  # Bring up a second orchestrator replica via compose.multi-orchestrator.yaml
-  # NO — that conflicts with this overlay. Instead: this overlay layers
-  # a second orchestrator-multi instance directly.
-  #
-  # Decision: include `orchestrator-2` (multi-experiment shape) in
-  # compose.multi-experiment.yaml itself, so the chaos drill works
-  # without needing a third overlay file. Two replicas; chaos-kill
-  # the lease holder; assert the other replica picks up its lease.
-
-  docker rm -f eden-orchestrator        # current lease holder
-  Wait up to lease_duration * 2 (= 20s) for orchestrator-2 to acquire
-  both leases via control-plane /v0/control/leases.
-  Assert: orchestrator-2 now holds both leases; experiment-A and
-          experiment-B both continue to make progress (or are already
-          quiesced).
-
-Phase 6 — Final cross-experiment cardinality cross-check
-  Re-fetch /v0/control/experiments; assert:
-    - Both experiments still registered.
-    - Both have last_known_state == "terminated" (the smoke's
-      termination-policy drives this).
-    - Neither leak across experiment boundaries.
+    - an experiment.terminated event appears (60s deadline).
+    - control-plane /v0/control/experiments shows last_known_state ==
+      "terminated" (state-sync poller running→terminated convergence,
+      chapter 11 §3; 30s deadline).
 
 PASS
 ```
 
-Substrate-cleanup posture mirrors `smoke-checkpoint.sh`: the smoke's `cleanup()` trap runs `docker compose down -v`, removes the per-experiment forgejo creds dirs, and wipes the bind-mount data root via a sibling Alpine container (uid-mismatch dance).
+Substrate-cleanup posture mirrors `smoke-checkpoint.sh`: a per-run `mktemp -d` data root, and the `cleanup()` trap runs `docker compose ... down -v` + wipes the data root via a sibling Alpine container (uid-mismatch dance). bash-3.2 discipline applies (no `mapfile`/assoc-arrays).
+
+#### 3.3 The smoke script [SUPERSEDED — see §3.3′ + §0]
+
+The two-experiment / cross-experiment-isolation smoke design below is deferred to [#254](https://github.com/ealt/eden/issues/254); retained as historical context only. (Original Phase 4/6 cross-experiment-isolation assertions presuppose multi-experiment hosting the reference impl does not provide.)
 
 ### 3.4 Per-experiment env-var namespacing convention
 
@@ -382,27 +420,25 @@ The convention is:
 
 **Code (reference impl):**
 
-- Verify a `/healthz` endpoint exists on the control-plane server; add if missing. (Verify in [`reference/services/control-plane/src/eden_control_plane_server/app.py`](../../reference/services/control-plane/src/eden_control_plane_server/app.py); shape mirrors the web-ui's `/healthz`.)
-- Orchestrator entrypoint wrapper script (~15 lines bash) under [`reference/compose/`](../../reference/compose/) (e.g. `orchestrator-entrypoint.sh`); web-ui entrypoint wrapper (~15 lines bash).
-- Modify the runtime image's Dockerfile so the entrypoint wrappers are installed (small COPY + chmod).
+- Add a `/healthz` endpoint to the control-plane server ([`reference/services/control-plane/src/eden_control_plane_server/app.py`](../../reference/services/control-plane/src/eden_control_plane_server/app.py); unauthenticated, outside `/v0/control`; shape mirrors the web-ui's `/healthz`). + a unit test.
+- **[RE-SCOPED — see §0]** Add an `EDEN_CONTROL_PLANE_URL` env fallback for `--control-plane-url` in the orchestrator CLI ([`reference/services/orchestrator/src/eden_orchestrator/cli.py`](../../reference/services/orchestrator/src/eden_orchestrator/cli.py)) and the web-ui CLI ([`reference/services/web-ui/src/eden_web_ui/cli.py`](../../reference/services/web-ui/src/eden_web_ui/cli.py)), treating empty as unset. **No entrypoint wrapper scripts, no Dockerfile change** (supersedes the draft plan's wrapper items).
 
 **Compose:**
 
 - Add `control-plane` service to [`compose.yaml`](../../reference/compose/compose.yaml).
 - Add `init-control-plane-db.sh` postgres-init hook + mount.
-- Modify `orchestrator` and `web-ui` services in compose.yaml to invoke the entrypoint wrappers.
-- Add `POSTGRES_DB_CONTROL_PLANE`, `CONTROL_PLANE_HOST_PORT`, `EDEN_ORCHESTRATOR_MULTI_EXPERIMENT`, `EDEN_CONTROL_PLANE_URL`, `EDEN_LEASE_DURATION_SECONDS`, `EDEN_STATE_SYNC_INTERVAL_SECONDS`, `EDEN_STATE_SYNC_FAILURE_THRESHOLD` to [`.env.example`](../../reference/compose/.env.example).
-- New `compose.multi-experiment.yaml` overlay.
+- Modify the `orchestrator` + `web-ui` services in compose.yaml: add the `EDEN_CONTROL_PLANE_URL` env (the lease-mode toggle via the §0 CLI env fallback), the `--lease-duration-seconds` flag + `control-plane` `depends_on` on the orchestrator. **No entrypoint wrappers.**
+- Add `POSTGRES_DB_CONTROL_PLANE`, `EDEN_CONTROL_PLANE_STORE_URL`, `CONTROL_PLANE_HOST_PORT`, `EDEN_CONTROL_PLANE_URL`, `EDEN_LEASE_DURATION_SECONDS`, `EDEN_STATE_SYNC_INTERVAL_SECONDS`, `EDEN_STATE_SYNC_FAILURE_THRESHOLD` to [`.env.example`](../../reference/compose/.env.example). (`setup-experiment` emits the first three + `EDEN_CONTROL_PLANE_URL=` empty.)
+- New `compose.multi-experiment.yaml` overlay — **RE-SCOPED**: a second `orchestrator-2` replica in lease mode (§3.1.5′), NOT a second host trio.
 - Delete `compose.control-plane.yaml`.
 
 **setup-experiment.sh:**
 
-- Add `--register-additional-experiment <id>` mode with the §3.2 semantics. Existing single-experiment flow unchanged.
-- Per-experiment-2 env-var namespacing convention documented in the script's help text.
+- **[RE-SCOPED — see §0] No change.** The single-experiment flow is used as-is; the smoke registers the one experiment with the control plane via a wire call (§3.2′). The `--register-additional-experiment` mode is deferred to [#254](https://github.com/ealt/eden/issues/254).
 
 **Smoke + CI:**
 
-- New [`reference/compose/healthcheck/smoke-multi-experiment.sh`](../../reference/compose/healthcheck/smoke-multi-experiment.sh).
+- New [`reference/compose/healthcheck/smoke-multi-experiment.sh`](../../reference/compose/healthcheck/smoke-multi-experiment.sh) — the **lease-handoff** smoke (§3.3′).
 - New `compose-smoke-multi-experiment` job in [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) (20-minute timeout, mirrors compose-smoke-multi-orchestrator + compose-smoke-checkpoint shape, not branch-protected initially).
 
 **Docs:**
@@ -416,10 +452,11 @@ The convention is:
 ### 4.2 Out of scope (followups; file as issues if not already)
 
 - **Helm-chart multi-experiment substrate.** Folded into the existing Phase 13a plan ([`docs/plans/eden-phase-13a-helm-base-chart.md`](eden-phase-13a-helm-base-chart.md)) when that lands; this plan is Compose-only. No new issue needed — Phase 13a's existing scope covers it.
-- **N-experiment generalization beyond N=2.** The `_2` suffix convention is bounded; a generic N-experiment registry would generalize to `_N` suffixes. Out of scope for the smoke's needs.
+- **[RE-SCOPED] Cross-experiment-isolation smoke (two experiments end-to-end).** Deferred to [#254](https://github.com/ealt/eden/issues/254) — the reference impl cannot host >1 experiment per deployment (§0). This is the headline deferral of the re-scope.
+- **N-experiment generalization beyond N=2.** Subsumed by #254.
 - **Multi-experiment load testing.** Per the issue: this is a smoke, not a stress test.
 - **Cross-experiment scheduling intelligence** (e.g. lease-stealing for fair work distribution). Out of scope; chapter 11 §3.9 alternatives-considered documents this as a future v1 amendment.
-- **Worker-host multi-experiment refactor.** Per Decision 5, worker hosts stay single-experiment-scoped; a future refactor that lets one host trio serve multiple experiments would simplify deployment but is a different concern.
+- **Worker-host multi-experiment refactor.** Worker hosts stay single-experiment-scoped; a future refactor that lets one host trio serve multiple experiments is part of the #254 family.
 - **`eden_control_plane` admin-pages in the web-ui.** Phase 12c shipped the read-only `/admin/experiments/` dashboard; a parallel `/admin/control/workers/` + `/admin/control/groups/` admin surface for the deployment-scoped registry is a follow-up (already deferred per the 12c CHANGELOG entry "Deployment-scoped worker/group registry admin pages not shipped").
 
 ### 4.3 Non-goals
@@ -431,16 +468,15 @@ The convention is:
 
 | File | Change |
 |---|---|
-| [`reference/compose/compose.yaml`](../../reference/compose/compose.yaml) | Add `control-plane` service block (§3.1.1). Modify `orchestrator` and `web-ui` services to invoke entrypoint wrappers (§3.1.3). Add postgres-init script mount on the `postgres` service (§3.1.2). |
+| [`reference/compose/compose.yaml`](../../reference/compose/compose.yaml) | Add `control-plane` service block (§3.1.1). Add `EDEN_CONTROL_PLANE_URL` env + `--lease-duration-seconds` flag to `orchestrator`; `control-plane` to its `depends_on`. Add `EDEN_CONTROL_PLANE_URL` env to `web-ui`. Add postgres-init script mount on `postgres` (§3.1.2). |
 | `reference/compose/init-control-plane-db.sh` (new) | Postgres init hook creating `eden_control_plane` database (§3.1.2). |
-| `reference/compose/orchestrator-entrypoint.sh` (new) | Bash wrapper that decides single- vs multi-experiment invocation from env (§3.1.3). |
-| `reference/compose/web-ui-entrypoint.sh` (new) | Bash wrapper that conditionally adds `--control-plane-url` (§3.1.3). |
-| [`reference/compose/Dockerfile`](../../reference/compose/Dockerfile) | `COPY` + `chmod +x` the two entrypoint scripts into the runtime image. |
+| [`reference/services/orchestrator/src/eden_orchestrator/cli.py`](../../reference/services/orchestrator/src/eden_orchestrator/cli.py) | **[RE-SCOPED]** `EDEN_CONTROL_PLANE_URL` env fallback for `--control-plane-url` (empty→unset). |
+| [`reference/services/web-ui/src/eden_web_ui/cli.py`](../../reference/services/web-ui/src/eden_web_ui/cli.py) | **[RE-SCOPED]** `EDEN_CONTROL_PLANE_URL` env fallback for `--control-plane-url` (empty→unset). |
 | [`reference/compose/compose.control-plane.yaml`](../../reference/compose/compose.control-plane.yaml) | **Delete** (§3.1.4). |
-| `reference/compose/compose.multi-experiment.yaml` (new) | Second host trio + second orchestrator-multi-instance, layered as `-f compose.yaml -f compose.multi-experiment.yaml` (§3.1.5). |
-| [`reference/compose/.env.example`](../../reference/compose/.env.example) | Document the per-experiment env-var namespacing convention (§3.4). |
-| [`reference/scripts/setup-experiment/setup-experiment.sh`](../../reference/scripts/setup-experiment/setup-experiment.sh) | Add `--register-additional-experiment <id>` mode (§3.2). |
-| `reference/compose/healthcheck/smoke-multi-experiment.sh` (new) | The smoke (§3.3). |
+| `reference/compose/compose.multi-experiment.yaml` (new) | **RE-SCOPED**: second `orchestrator-2` replica in lease mode, layered as `-f compose.yaml -f compose.multi-experiment.yaml` (§3.1.5′). |
+| [`reference/compose/.env.example`](../../reference/compose/.env.example) | Document the control-plane + lease env vars (§3.1.1/§3.1.3). (`_2` per-experiment namespacing deferred to #254.) |
+| ~~`reference/scripts/setup-experiment/setup-experiment.sh`~~ | **RE-SCOPED — no change** (§3.2′). `--register-additional-experiment` deferred to #254. |
+| `reference/compose/healthcheck/smoke-multi-experiment.sh` (new) | The lease-handoff smoke (§3.3′). |
 | [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) | New `compose-smoke-multi-experiment` job mirroring `compose-smoke-checkpoint` shape. |
 | [`reference/services/control-plane/src/eden_control_plane_server/app.py`](../../reference/services/control-plane/src/eden_control_plane_server/app.py) | Verify `/healthz` endpoint exists; add if missing. |
 | [`AGENTS.md`](../../AGENTS.md) | New row in "Commands" table for the smoke. |
@@ -453,13 +489,12 @@ The convention is:
 
 This is a substrate-level smoke; the assertions ARE the test. There are no new unit tests, no new wire tests, no new conformance scenarios (all of those shipped with 12c). Verification gates:
 
-### 6.1 Smoke-level assertions (per §3.3 above)
+### 6.1 Smoke-level assertions (per §3.3′ above — RE-SCOPED)
 
-- **Stack-startup**: control-plane `/healthz` 200; control-plane lists 2 registered experiments; 2 active leases held by the orchestrator within ~30s.
-- **Cross-experiment isolation**: exp-A and exp-B event streams disjoint by task_id; variant_ids disjoint; idea_ids disjoint.
-- **Per-experiment progress**: each experiment reaches `≥2 variant.integrated` events, `≥6 task.completed` events.
-- **Control-plane state-sync**: each experiment's `last_known_state` in `read_experiment_metadata` converges to `"terminated"` after the in-experiment policy fires (smoke configures `max_variants_policy(2)` for both).
-- **Chaos drill** (Phase 5): killing the lease-holding orchestrator → second orchestrator acquires both leases within `lease_duration * 2`; experiments still complete.
+- **Stack-startup**: control-plane `/healthz` 200; control-plane lists the one registered experiment; exactly ONE active lease held by one of the two replicas within ~60s (lease-singleton invariant).
+- **Lease-handoff chaos**: killing the lease holder → the standby replica acquires the lease within `lease_duration * 2` + poll slack; at no observed instant are there two active leases (no split-brain).
+- **Progress**: the post-hand-off holder reaches `≥2 variant.integrated`, `≥2 execution-task.completed`, `≥2 evaluation-task.completed` (full dispatch→execute→evaluate→integrate pipeline on the deployed stack).
+- **Control-plane state-sync**: after an OPERATOR-DRIVEN `terminate_experiment` (admins worker — the orchestrator's auto-termination decision 403s under wire auth, [#256](https://github.com/ealt/eden/issues/256)), the experiment's `last_known_state` converges to `"terminated"` (chapter 11 §3 poller).
 
 ### 6.2 Local-repro discipline
 
@@ -472,7 +507,7 @@ Per AGENTS.md "Local repro beats log-tail reading", the smoke MUST be runnable l
 - `uv run pytest -q` passes (regression: the entrypoint-wrapper scripts and setup-experiment changes don't break unit tests).
 - `python3 scripts/check-rename-discipline.py` clean.
 - `npx --yes markdownlint-cli2@0.14.0 "**/*.md" "#node_modules" "#.venv" "#docs/archive/**" "#docs/plans/review/**"` clean.
-- Manual UI smoke: spin up the stack with the multi-experiment overlay; verify `/admin/experiments/` shows both experiments; switch between them via the dashboard's select form.
+- Manual UI smoke (RE-SCOPED): spin up the stack with the lease overlay + control-plane env; verify `/admin/experiments/` shows the one registered experiment (the cross-experiment switcher is exercised by #254).
 
 ## 7. Chunked execution plan
 
@@ -489,16 +524,14 @@ The work is bounded enough to land as ONE impl PR after this plan PR merges, but
 - Verify control-plane `/healthz` endpoint (add if missing).
 - **Validation gate**: existing 6 smokes (`smoke.sh`, `smoke-subprocess.sh`, `smoke-subprocess-docker.sh`, `smoke-manual-mode.sh`, `smoke-multi-orchestrator.sh`, `smoke-checkpoint.sh`, `e2e.sh`) all pass unchanged.
 
-**Wave 2 — Multi-experiment substrate + setup-experiment ergonomics** (covers Decisions 4, 5, 6, 7 + §3.1.5, §3.2, §3.4):
+**Wave 2 — Lease overlay (RE-SCOPED — see §0)** (covers Decisions 4, 5, 7 + §3.1.5′):
 
-- New `compose.multi-experiment.yaml` overlay.
-- `setup-experiment.sh --register-additional-experiment <id>` flag.
-- `.env.example` updates for the per-experiment-2 namespaced vars.
-- **Validation gate**: `setup-experiment.sh <config> --experiment-id exp-A && setup-experiment.sh <config> --register-additional-experiment exp-B --env-file <same>` produces an `.env` with both groups of vars; `docker compose -f compose.yaml -f compose.multi-experiment.yaml up -d --wait` brings up the full multi-experiment stack.
+- New `compose.multi-experiment.yaml` overlay adding `orchestrator-2` in lease mode (§3.1.5′).
+- **Validation gate**: `docker compose -f compose.yaml -f compose.multi-experiment.yaml --env-file <env> up -d --wait` (with `EDEN_ORCHESTRATOR_MULTI_EXPERIMENT=1` + `EDEN_CONTROL_PLANE_URL` set) brings up both orchestrator replicas in lease mode against the control plane. (setup-experiment is unchanged; `--register-additional-experiment` deferred to #254.)
 
-**Wave 3 — Smoke + CI + docs** (covers Decision 8 + §3.3 + §3.5):
+**Wave 3 — Smoke + CI + docs** (covers Decision 8 + §3.3′ + §3.5):
 
-- New `smoke-multi-experiment.sh`.
+- New `smoke-multi-experiment.sh` (lease-handoff).
 - New `compose-smoke-multi-experiment` CI job.
 - AGENTS.md / README / user-guide updates.
 - CHANGELOG `[Unreleased]` entry referencing #147.
@@ -514,10 +547,11 @@ Each wave's validation gate is the "go / no-go" for the next wave. If wave 1 bre
 3. **Compose's `${VAR:+...}` substitution doesn't work inside `command:` lists.** Verify before committing to Shape A (entrypoint wrapper) vs Shape B (two service definitions). The decision is Shape A precisely because compose's flag-omission semantics are awkward in list-style command args.
 4. **The chaos drill flake risk.** Lease handoff is bounded by `lease_duration * 2` (20s with the smoke's `EDEN_LEASE_DURATION_SECONDS=10`), but the orchestrator's acquisition thread polls per `poll_interval` (default 1s in the compose config) — so the worst-case detection window is ~22s. CI timeout is 300s on bring-up + 240s on quiescence; the chaos drill adds another ~30s. Total smoke runtime ≤ 10 min on the GitHub Actions runner. Mitigation: explicit `deadline = $((SECONDS + 60))` on the lease-acquisition assertion and `docker compose logs --tail 60` dump on failure (mirrors the existing smokes' diagnostic posture).
 5. **GitHub Actions runner resource pressure (six host containers + control-plane + multi-orchestrator + postgres + forgejo = ~10 containers).** Mitigation: cap `EDEN_IDEATION_POLICY_MAX_TOTAL=2` for both experiments, run the scripted reference ideator/executor/evaluator (not the LLM ones), and rely on the 20-minute timeout. If memory pressure causes flakes, fall back to running the chaos drill in a separate CI job (split the smoke into base + chaos; base goes required first).
-6. **Audit-of-substrate-rename trap.** AGENTS.md "Substrate migrations need a same-PR audit" applies. The compose.control-plane.yaml deletion is the main concrete reference to audit. Grep checklist (run in the impl PR):
-   - `grep -rn 'compose.control-plane' .` — must return zero hits after the wave-1 commit lands.
-   - `grep -rn 'EDEN_CONTROL_PLANE_URL' .` — must surface only documented call-sites (web-ui CLI + orchestrator CLI + the new entrypoint wrappers + .env.example + this plan + the CHANGELOG entry).
-   - `grep -rn 'control-plane' reference/compose/` — must show the new compose.yaml block + the new entrypoint wrappers + nothing else.
+6. **Audit-of-substrate-rename trap.** AGENTS.md "Substrate migrations need a same-PR audit" applies. The compose.control-plane.yaml deletion is the main concrete reference to audit. Grep audit run in the impl PR — every hit classified per the AGENTS.md checklist (real consumer vs doc reference):
+   - **Real consumers** (compose / scripts / CI / operator docs) updated: `docs/observability.md` §2.1/§3.4 rewritten to the first-class-service + `EDEN_CONTROL_PLANE_URL` toggle. No compose/CI/script still references the deleted overlay.
+   - **Forward-looking plan references** updated: the sibling-overlay example lists in `issue-110` and the §3.4 bring-up step in `issue-182` now point at the first-class service / `compose.multi-experiment.yaml`.
+   - **Historical analysis preserved** (deliberately not edited): `docs/plans/issue-157-cli-flags-to-config.md` references the overlay's web-ui-only shape as point-in-time analysis of a now-superseded state; rewriting it would corrupt that plan's record. These remaining `compose.control-plane` hits are expected and intentional.
+   - `grep -rn 'control-plane' reference/compose/` — shows the new compose.yaml `control-plane` service block + the postgres init-hook mount + the `EDEN_CONTROL_PLANE_URL` env wiring + nothing else (no wrapper scripts — see §0 impl refinement).
 7. **Worker-host conflict on shared substrate paths.** The exp-2 host containers' substrate paths (`exp-2-artifacts`, etc.) are distinct from the default-shape exp-1 paths by construction (suffix `_2`). The risk is that a shared mount target inside the container (e.g. `/var/lib/eden/artifacts`) collides if both trios mount different host paths to the SAME container target — which they do, but the trios are different containers so this is fine. Mitigation: documented in the compose.multi-experiment.yaml's per-service `volumes:` blocks.
 8. **The `--register-additional-experiment` flag interacts poorly with checkpoint-import auto-register.** 12c's checkpoint-import endpoint auto-registers the imported experiment with the control plane (Decision 9 of the 12c plan). Operator workflow: import a checkpoint as experiment B; then run `setup-experiment.sh --register-additional-experiment B` against the existing baseline. The setup-experiment flow's control-plane registration is idempotent (chapter 11 §2 / 12c round-6 fix: 200 on idempotent replay), so this is safe — but the smoke doesn't test it. Mitigation: out-of-scope for this plan; flag as a followup if needed.
 9. **EnvVar `EDEN_ADMIN_TOKEN` reuse across both experiments.** Both forgejo repos use the same `EDEN_ADMIN_TOKEN` (deployment-scoped, not per-experiment). This is the correct posture — the chapter 11 §6 deployment-scoped worker registry uses the admin token, NOT per-experiment tokens. The risk is conceptual confusion (operators might expect per-experiment admin tokens); mitigation is the `.env.example` documentation explicitly calling out which vars are deployment-scoped vs experiment-scoped.

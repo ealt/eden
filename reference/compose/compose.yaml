@@ -16,6 +16,13 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-eden}
       POSTGRES_USER: ${POSTGRES_USER:-eden}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
+      # #147: second logical database for the control-plane store
+      # (chapter 11 §3.4 Option A — same instance, separate database).
+      # Read by the init hook mounted below; the hook creates it only
+      # on a fresh data dir (upstream image behavior). See
+      # reference/compose/README.md "Multi-experiment mode" for the
+      # existing-data-root upgrade path.
+      POSTGRES_DB_CONTROL_PLANE: ${POSTGRES_DB_CONTROL_PLANE:-eden_control_plane}
     ports:
       - "${POSTGRES_HOST_PORT:-5433}:5432"
     volumes:
@@ -24,6 +31,10 @@ services:
       # Desktop VM rebuilds, factory resets, and any other event that
       # destroys named-volume backing storage. See chapter 01 §13.
       - ${EDEN_EXPERIMENT_DATA_ROOT:?EDEN_EXPERIMENT_DATA_ROOT must be set (run setup-experiment)}/postgres:/var/lib/postgresql/data
+      # #147: create the control-plane database on first init. The
+      # upstream postgres image runs /docker-entrypoint-initdb.d/*.sh
+      # exactly once, on a fresh data dir.
+      - ./init-control-plane-db.sh:/docker-entrypoint-initdb.d/01-control-plane-db.sh:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-eden} -d ${POSTGRES_DB:-eden}"]
       interval: 5s
@@ -230,6 +241,76 @@ services:
       retries: 20
       start_period: 10s
 
+  # ---------------------------------------------------------------
+  # 12c / #147: deployment-level control plane (chapter 11)
+  # ---------------------------------------------------------------
+  #
+  # First-class always-on service (issue #147). The orchestrator and
+  # web-ui only TALK to it when EDEN_CONTROL_PLANE_URL is set in the
+  # env; with it empty (the default + the existing six smokes) they
+  # run single-experiment and ignore the control plane, so this
+  # container is exercised for clean startup but otherwise idle.
+  # State-sync poller is always on (--task-store-url set); with no
+  # registered experiments it no-ops. Store is Postgres-backed (the
+  # eden_control_plane database created by the postgres init hook) so
+  # lease + registry state survives a control-plane restart, per
+  # chapter 11 §3.4 Option A.
+  control-plane:
+    image: eden-reference:dev
+    build:
+      context: ../..
+      dockerfile: reference/compose/Dockerfile
+    container_name: eden-control-plane
+    restart: unless-stopped
+    logging: *eden-logging
+    depends_on:
+      postgres:
+        condition: service_healthy
+      task-store-server:
+        condition: service_healthy
+    environment:
+      # Issue #109: file-handler companion to docker json-file driver.
+      EDEN_LOG_DIR: /var/lib/eden/logs
+    command:
+      - python
+      - -m
+      - eden_control_plane_server
+      - --store-url
+      - ${EDEN_CONTROL_PLANE_STORE_URL:?EDEN_CONTROL_PLANE_STORE_URL must be set (run setup-experiment)}
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8081"
+      - --admin-token
+      - ${EDEN_ADMIN_TOKEN:?}
+      - --task-store-url
+      - http://task-store-server:8080
+      - --lease-duration-seconds
+      - "${EDEN_LEASE_DURATION_SECONDS:-30}"
+      - --state-sync-interval-seconds
+      - "${EDEN_STATE_SYNC_INTERVAL_SECONDS:-30}"
+      - --state-sync-failure-threshold
+      - "${EDEN_STATE_SYNC_FAILURE_THRESHOLD:-10}"
+      - --log-level
+      - info
+    volumes:
+      # Issue #109: per-service log bind-mount (writable). setup-experiment
+      # creates the host-side dir.
+      - ${EDEN_EXPERIMENT_DATA_ROOT:?}/logs/control-plane:/var/lib/eden/logs
+    ports:
+      - "${CONTROL_PLANE_HOST_PORT:-8081}:8081"
+    healthcheck:
+      # /healthz lives outside /v0/control so it needs no auth header.
+      test:
+        - CMD
+        - curl
+        - -fsS
+        - http://localhost:8081/healthz
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+
   orchestrator:
     image: eden-reference:dev
     build:
@@ -245,12 +326,22 @@ services:
     depends_on:
       task-store-server:
         condition: service_healthy
+      # #147: the control plane is always-on; wait for it so that when
+      # EDEN_CONTROL_PLANE_URL is set (lease-driven mode) the startup
+      # control-plane bootstrap doesn't race the server coming up. In
+      # single-experiment mode (URL empty) the orchestrator ignores it.
+      control-plane:
+        condition: service_healthy
     command:
       - python
       - -m
       - eden_orchestrator
       - --task-store-url
       - http://task-store-server:8080
+      # --experiment-id is always passed; it is the active experiment in
+      # single-experiment mode and only a logging label in lease-driven
+      # mode (the CLI selects mode solely on --control-plane-url / the
+      # EDEN_CONTROL_PLANE_URL env fallback being set). See issue #147.
       - --experiment-id
       - ${EDEN_EXPERIMENT_ID:?}
       - --admin-token
@@ -265,23 +356,47 @@ services:
       - /etc/eden/credential-helper.sh
       - --experiment-config
       - /etc/eden/experiment-config.yaml
-      # Issue #157: the single-experiment orchestrator reads its
-      # ideation_policy, termination_policy, and max_quiescent_iterations
-      # from the experiment-config YAML — not from CLI flags / env vars.
-      # The smoke scripts inject these fields into the config before
-      # bringing the stack up (max_quiescent_iterations: 30 reproduces the
-      # retired EDEN_MAX_QUIESCENT_ITERATIONS:-30 deployment default — 30
-      # iterations × 1s poll = 30s of zero progress before quiescence-exit).
-      # Manual-UI sessions (a human at the keyboard) want a much higher
-      # value — set max_quiescent_iterations in the experiment-config YAML.
-      # See GitHub issue #98 for the design discussion (the structural fix
+      # The orchestrator reads the ideation_policy block from the
+      # experiment config to build the policy callable invoked when
+      # dispatch_mode.ideation_creation == "auto". Absent block →
+      # maintain_pending(target=3).
+      # Compose-friendly quiescence: 30 iterations × 1s = 30s of
+      # zero progress before the orchestrator declares the
+      # experiment done. Tuned for the smoke tests where worker
+      # hosts auto-claim within milliseconds. Manual-UI sessions
+      # (a human at the keyboard) want a much higher value — set
+      # EDEN_MAX_QUIESCENT_ITERATIONS in .env to override. See
+      # GitHub issue #98 for the design discussion (the structural fix
       # — orchestrator as cross-experiment infra — is deferred to
       # Phase 12c control plane).
       - --poll-interval
       - "1.0"
+      - --max-quiescent-iterations
+      - "${EDEN_MAX_QUIESCENT_ITERATIONS:-30}"
+      # #147: lease duration for chapter 11 lease-driven mode. Only
+      # meaningful when EDEN_CONTROL_PLANE_URL is set; harmless (parsed,
+      # unused) in single-experiment mode.
+      - --lease-duration-seconds
+      - "${EDEN_LEASE_DURATION_SECONDS:-30}"
+      # 12a-3 wave 4: --termination-policy gates the new decision-type 0
+      # branch. Default `default_termination_policy` returns
+      # `never_terminate`; deployments that want policy-driven
+      # termination point this at a configured factory (see
+      # docs/operations/experiment-lifecycle.md for the patterns).
+      - --termination-policy
+      - ${EDEN_TERMINATION_POLICY:-eden_dispatch.termination:default_termination_policy}
       - --log-level
       - info
     environment:
+      # 12a-3 wave 4: per-policy configuration. The
+      # `env_max_variants_policy` factory reads this; other
+      # deployment-supplied policies MAY follow the same convention.
+      EDEN_TERMINATION_MAX_VARIANTS: ${EDEN_TERMINATION_MAX_VARIANTS:-}
+      # #147: lease-driven (chapter 11 multi-experiment) mode toggle.
+      # Empty (default + the existing six smokes) → single-experiment
+      # mode, control plane ignored. Non-empty → the orchestrator CLI's
+      # env fallback sets --control-plane-url and the §5 lease loop runs.
+      EDEN_CONTROL_PLANE_URL: ${EDEN_CONTROL_PLANE_URL:-}
       # Issue #109: file-handler companion to docker json-file driver.
       EDEN_LOG_DIR: /var/lib/eden/logs
     configs:
@@ -486,6 +601,15 @@ services:
       - --log-level
       - info
     environment:
+      # #147: when set, the web-ui CLI's env fallback supplies
+      # --control-plane-url and mounts the cross-experiment
+      # /admin/experiments/ dashboard (chapter 11). Empty (default +
+      # the existing six smokes) → the dashboard route stays 404 and
+      # the web-ui operates against the single --experiment-id.
+      # Replaces the retired compose.control-plane.yaml overlay. The
+      # control-plane admin token defaults to EDEN_ADMIN_TOKEN inside
+      # the CLI, so no separate token env is needed here.
+      EDEN_CONTROL_PLANE_URL: ${EDEN_CONTROL_PLANE_URL:-}
       # Issue #109: file-handler companion to docker json-file driver.
       EDEN_LOG_DIR: /var/lib/eden/logs
     configs:

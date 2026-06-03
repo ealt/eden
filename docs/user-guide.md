@@ -190,6 +190,18 @@ docker compose --env-file .env \
     up -d --wait
 ```
 
+> **Multi-experiment / control-plane mode.** A `control-plane` service
+> (chapter 11: experiment registry + orchestrator leases + state-sync)
+> runs on every stack but is opt-in — set
+> `EDEN_CONTROL_PLANE_URL=http://control-plane:8081` to flip the
+> orchestrator into lease-driven mode and surface the web-ui's
+> `/admin/experiments/` dashboard. The reference impl hosts one
+> experiment per task-store-server; the lease lifecycle (including a
+> lease-handoff chaos drill) is exercised by
+> `reference/compose/healthcheck/smoke-multi-experiment.sh`. See
+> [`reference/compose/README.md`](../reference/compose/README.md)
+> "Multi-experiment mode" for details.
+
 ### The orchestrator's quiescence-exit
 
 The orchestrator is tuned for CI: the default budget (`max_quiescent_iterations: 3`, and `30` in the smoke-injected configs) × 1s poll is seconds of zero progress before it exits 0. With a human at the keyboard this fires constantly. Since [issue #157](https://github.com/ealt/eden/issues/157) the budget is the experiment-config `max_quiescent_iterations` field (the `EDEN_MAX_QUIESCENT_ITERATIONS` env var was retired). Set it in your experiment-config YAML **before** running setup-experiment:

@@ -537,6 +537,39 @@ jobs:
         working-directory: reference/compose
         run: bash healthcheck/smoke-checkpoint.sh
 
+  # Backfill of the Phase 12c CHANGELOG-narrated deferral (issue #147),
+  # re-scoped: the reference impl cannot host >1 experiment per
+  # deployment (single-experiment task-store-server; cross-experiment
+  # isolation deferred to #254), so this exercises the control-plane as
+  # a first-class Compose service + the chapter-11 lease lifecycle and
+  # lease-handoff chaos drill on the deployed stack. Not required by
+  # branch protection in this PR; same posture as the other newly-added
+  # smoke jobs — bump to required-status after staying clean on main
+  # for ~2 weeks.
+  compose-smoke-multi-experiment:
+    name: compose-smoke-multi-experiment
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: changes
+    if: >-
+      !cancelled() && (
+      needs.changes.result != 'success' ||
+      needs.changes.outputs.run_all == 'true' ||
+      needs.changes.outputs.compose == 'true' ||
+      needs.changes.outputs.python == 'true' )
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify docker compose + jq + python3 are available
+        run: |
+          docker compose version
+          jq --version
+          python3 --version
+
+      - name: Run compose smoke (control-plane + lease-handoff drill)
+        working-directory: reference/compose
+        run: bash healthcheck/smoke-multi-experiment.sh
+
   # Issue #110: exercises the opt-in Loki + Alloy + Grafana log-search
   # overlay (compose.logging.yaml) end-to-end — brings up base +
   # subprocess + logging, asserts Loki ingests EDEN lines, Grafana is
