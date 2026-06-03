@@ -26,10 +26,13 @@ def test_empty_experiment_round_trips(
     sender_wire_client: WireClient,
     receiver_wire_client: WireClient,
 ) -> None:
-    """spec/v0/10-checkpoints.md §9 — every preserved field round-trips.
+    """spec/v0/10-checkpoints.md §9 — import sets imported_from with source-id provenance.
 
-    A freshly-created experiment exports + reimports cleanly. The
-    receiver's ``imported_from`` becomes non-null per §10; the
+    A freshly-created experiment exports + reimports cleanly. Per §9 the
+    receiver's ``imported_from`` is set by the importer (per §10) and records
+    ``source_experiment_id`` = the source's opaque ``exp_*`` (the
+    rename's provenance contract: the source id is preserved for
+    recovery probing, never reused as the receiver's primary key); the
     pre-import state assertion confirms native (None) provenance.
     """
     # Pre-import: receiver is native (imported_from absent).
@@ -45,7 +48,12 @@ def test_empty_experiment_round_trips(
     assert resp.status_code == 201, resp.text
 
     post = _seed.read_experiment(receiver_wire_client)
-    assert post.get("imported_from") is not None
+    imported = post.get("imported_from")
+    assert imported is not None
+    # Source-id provenance: the manifest's ``exp_*`` is stamped verbatim
+    # and is NOT the receiver's primary key (§10/§11).
+    assert imported["source_experiment_id"] == sender_wire_client.experiment_id
+    assert post["experiment_id"] != sender_wire_client.experiment_id
 
 
 def test_experiment_with_workers_round_trips(

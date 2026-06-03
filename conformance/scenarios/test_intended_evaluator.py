@@ -96,13 +96,17 @@ def test_intended_evaluator_worker_flows_to_task_target(
     resulting evaluation task's ``target`` MUST be the same tagged
     object.
     """
+    # Since the identity rename (#128) ``TaskTarget.id`` is a minted
+    # ``wkr_*`` MemberId; register the worker and resolve its handle.
+    _seed.register_worker(wire_client, "evaluator-w")
+    target = wire_client.member_ref("worker", "evaluator-w")
     variant_id = _seed_starting_variant(
         wire_client,
-        intended_evaluator={"kind": "worker", "id": "evaluator-w"},
+        intended_evaluator=target,
     )
     eval_tid = _seed.create_evaluation_task(wire_client, variant_id=variant_id)
     task = _seed.read_task(wire_client, eval_tid)
-    assert task.get("target") == {"kind": "worker", "id": "evaluator-w"}
+    assert task.get("target") == target
 
 
 def test_intended_evaluator_group_flows_to_task_target(
@@ -114,11 +118,13 @@ def test_intended_evaluator_group_flows_to_task_target(
     target is well-formed without forcing claim-time resolution into
     the test scope.
     """
-    _seed.create_group(wire_client, group_id="humans", members=())
+    # The server mints the ``grp_*`` id (#128); resolve the handle.
+    _seed.create_group(wire_client, name="humans", members=[])
+    target = wire_client.member_ref("group", "humans")
     variant_id = _seed_starting_variant(
         wire_client,
-        intended_evaluator={"kind": "group", "id": "humans"},
+        intended_evaluator=target,
     )
     eval_tid = _seed.create_evaluation_task(wire_client, variant_id=variant_id)
     task = _seed.read_task(wire_client, eval_tid)
-    assert task.get("target") == {"kind": "group", "id": "humans"}
+    assert task.get("target") == target

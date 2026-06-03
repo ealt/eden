@@ -45,6 +45,10 @@ def test_non_holder_observable_via_lease_query(
     docstring.
     """
     control_plane_client.register_experiment("exp-a", "file:///etc/a.yaml")
+    holder_a = control_plane_client.register_worker(
+        "auto-orchestrator-a"
+    ).json()["worker_id"]
+    control_plane_client.register_worker("auto-orchestrator-b")
     # Replica A acquires.
     control_plane_client.acquire_lease(
         "exp-a", "auto-orchestrator-a", "uuid-a"
@@ -53,10 +57,11 @@ def test_non_holder_observable_via_lease_query(
     # gate the replica MUST self-enforce against.
     r_b = control_plane_client.list_active_leases("auto-orchestrator-b")
     assert r_b.json()["leases"] == []
-    # Per `read_experiment_metadata` the holder is replica A.
+    # Per `read_experiment_metadata` the holder is replica A's minted
+    # `wkr_*` id (identity rename #128).
     entry = control_plane_client.read_experiment_metadata("exp-a").json()
     assert entry["lease"] is not None
-    assert entry["lease"]["holder"] == "auto-orchestrator-a"
+    assert entry["lease"]["holder"] == holder_a
 
 
 @pytest.mark.skip(

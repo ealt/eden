@@ -10,8 +10,9 @@ other groups. This file pins:
   bullet's transitive closure).
 - Cycle rejection: a mutation that would close a cycle in the
   group-DAG returns 409 cycle-detected (§7.3).
-- Reserved group identifier: a reserved id (``admin`` per §6.1)
-  returns 409 reserved-identifier.
+- Reserved group name: a reserved name (``admins`` per §7.5)
+  returns 409 reserved-identifier when created by a non-privileged
+  ``register_group`` call.
 
 The wire-observable surface for transitive resolution is
 ``Store.claim`` with a ``group``-target task — §4 §3.5 step 3
@@ -20,6 +21,8 @@ claim is positive evidence the resolver walks transitively.
 """
 
 from __future__ import annotations
+
+import re
 
 import pytest
 from conformance.harness import _seed
@@ -41,7 +44,7 @@ def test_direct_membership_resolves(wire_client: WireClient) -> None:
         wire_client, target={"kind": "group", "id": gid}
     )
     c = _seed.claim(wire_client, tid, worker_id=wid)
-    assert c["worker_id"] == wid
+    assert c["worker_id"] == wire_client.worker_id_for(wid)
 
 
 def test_transitive_membership_resolves(wire_client: WireClient) -> None:
@@ -57,7 +60,7 @@ def test_transitive_membership_resolves(wire_client: WireClient) -> None:
         wire_client, target={"kind": "group", "id": outer}
     )
     c = _seed.claim(wire_client, tid, worker_id=wid)
-    assert c["worker_id"] == wid
+    assert c["worker_id"] == wire_client.worker_id_for(wid)
 
 
 def test_non_member_rejected_by_target_eligibility(wire_client: WireClient) -> None:
@@ -108,32 +111,40 @@ def test_register_group_rejects_cycle(wire_client: WireClient) -> None:
 
 
 def test_register_group_rejects_reserved_identifier(wire_client: WireClient) -> None:
-    """spec/v0/02-data-model.md §6.1 — reserved group id (``admin``) → 409 reserved-identifier."""
+    """spec/v0/02-data-model.md §7.5 — reserved group name (``admins``) → 409 reserved-identifier.
+
+    Since the identity rename (#128) the reserved values live in the
+    NAME space: group ids are system-minted (§1.6), so the reservation
+    is on the display ``name``. ``admins`` is created at experiment
+    setup through the privileged path; once it exists, an ordinary
+    ``register_group(name="admins")`` from a non-privileged bearer MUST
+    be rejected with ``reserved-identifier`` (the reserved name is
+    taken).
+    """
     r = wire_client.post(
         f"{wire_client.base_path}/groups",
-        json={"group_id": "admin", "members": []},
+        json={"name": "admins", "members": []},
+        as_worker="test-worker",
     )
     assert r.status_code == 409, r.text
     assert r.json().get("type") == "eden://error/reserved-identifier"
 
 
-def test_register_group_rejects_id_already_used_by_worker(
+def test_register_group_mints_opaque_grp_id(
     wire_client: WireClient,
 ) -> None:
-    """spec/v0/02-data-model.md §7.1 — worker / group namespaces MUST be disjoint.
+    """spec/v0/02-data-model.md §1.6 — the server MUST mint an opaque ``grp_*`` id.
 
-    Symmetric to the worker-side test in
-    ``test_worker_registration.py``: a register_group(id) whose id
-    is already registered as a worker MUST be rejected.
+    Since the identity rename (#128) ids are system-minted: an
+    implementation MUST mint the ``group_id`` itself and MUST NOT
+    accept an operator-supplied value (§1.6). The disjoint
+    worker/group namespaces are now guaranteed by construction (the
+    ``wkr_`` / ``grp_`` prefixes can never collide — §7.1), so the
+    wire-observable contract is that ``register_group`` returns a
+    grammar-valid ``grp_*`` id rather than echoing a caller value.
     """
-    wid = _seed.fresh_worker_id("disjoint")
-    _seed.register_worker(wire_client, wid)
-    r = wire_client.post(
-        f"{wire_client.base_path}/groups",
-        json={"group_id": wid, "members": []},
-    )
-    assert r.status_code == 409, r.text
-    assert r.json().get("type") == "eden://error/already-exists"
+    record = _seed.create_group(wire_client, _seed.fresh_group_id("minted"))
+    assert re.fullmatch(r"grp_[0-9a-hjkmnp-tv-z]{26}", record["group_id"]), record
 
 
 def test_read_group_returns_record(wire_client: WireClient) -> None:
@@ -142,12 +153,13 @@ def test_read_group_returns_record(wire_client: WireClient) -> None:
     _seed.register_worker(wire_client, wid)
     gid = _seed.fresh_group_id("read-g")
     _seed.create_group(wire_client, gid, members=[wid])
-    resp = wire_client.get(f"{wire_client.base_path}/groups/{gid}")
+    minted_gid = wire_client.group_id_for(gid)
+    resp = wire_client.get(f"{wire_client.base_path}/groups/{minted_gid}")
     assert resp.status_code == 200, resp.text
     record = resp.json()
-    assert record["group_id"] == gid
+    assert record["group_id"] == minted_gid
     assert record["experiment_id"] == wire_client.experiment_id
-    assert wid in record["members"]
+    assert wire_client.worker_id_for(wid) in record["members"]
 
 
 def test_read_unknown_group_returns_404(wire_client: WireClient) -> None:
@@ -168,7 +180,7 @@ def test_list_groups_returns_registered_records(wire_client: WireClient) -> None
     body = resp.json()
     assert isinstance(body.get("groups"), list)
     ids = {g["group_id"] for g in body["groups"]}
-    assert {g1, g2}.issubset(ids)
+    assert {wire_client.group_id_for(g1), wire_client.group_id_for(g2)}.issubset(ids)
 
 
 def test_remove_from_group_drops_membership(wire_client: WireClient) -> None:
@@ -177,25 +189,33 @@ def test_remove_from_group_drops_membership(wire_client: WireClient) -> None:
     _seed.register_worker(wire_client, wid)
     gid = _seed.fresh_group_id("rm-g")
     _seed.create_group(wire_client, gid, members=[wid])
+    minted_gid = wire_client.group_id_for(gid)
+    minted_wid = wire_client.worker_id_for(wid)
     # Sanity: starts as member.
-    assert wid in wire_client.get(f"{wire_client.base_path}/groups/{gid}").json()["members"]
+    assert (
+        minted_wid
+        in wire_client.get(f"{wire_client.base_path}/groups/{minted_gid}").json()[
+            "members"
+        ]
+    )
     # Remove and re-read.
     resp = wire_client.request(
         "DELETE",
-        f"{wire_client.base_path}/groups/{gid}/members/{wid}",
+        f"{wire_client.base_path}/groups/{minted_gid}/members/{minted_wid}",
     )
     assert 200 <= resp.status_code < 300, resp.text
-    after = wire_client.get(f"{wire_client.base_path}/groups/{gid}").json()
-    assert wid not in after["members"]
+    after = wire_client.get(f"{wire_client.base_path}/groups/{minted_gid}").json()
+    assert minted_wid not in after["members"]
 
 
 def test_delete_group_removes_record(wire_client: WireClient) -> None:
     """spec/v0/07-wire-protocol.md §7.3 — DELETE /groups/{G} removes the registered group."""
     gid = _seed.fresh_group_id("del-g")
     _seed.create_group(wire_client, gid, members=[])
-    resp = wire_client.request("DELETE", f"{wire_client.base_path}/groups/{gid}")
+    minted_gid = wire_client.group_id_for(gid)
+    resp = wire_client.request("DELETE", f"{wire_client.base_path}/groups/{minted_gid}")
     assert 200 <= resp.status_code < 300, resp.text
     # Subsequent GET returns 404.
-    follow = wire_client.get(f"{wire_client.base_path}/groups/{gid}")
+    follow = wire_client.get(f"{wire_client.base_path}/groups/{minted_gid}")
     assert follow.status_code == 404
     assert follow.json().get("type") == "eden://error/not-found"

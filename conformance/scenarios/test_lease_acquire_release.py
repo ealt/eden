@@ -1,4 +1,12 @@
-"""Lease acquire + release conformance — chapter 11 §4.4 / §4.5."""
+"""Lease acquire + release conformance — chapter 11 §4.4 / §4.5.
+
+Identity rename (#128): a lease's `holder` is the opaque, system-minted
+`wkr_*` id of a deployment-scoped worker, and the experiment is
+addressed by its minted `exp_*`. Each scenario registers its
+worker(s) first so the harness can resolve the stable handle to the
+minted `wkr_*` the wire requires (the `holder` field is grammar-gated
+to `wkr_*`), then asserts against the resolved id.
+"""
 
 from __future__ import annotations
 
@@ -20,12 +28,15 @@ def test_first_acquire_succeeds(
     grants the lease.
     """
     control_plane_client.register_experiment("exp-a", "file:///etc/a.yaml")
+    holder = control_plane_client.register_worker(
+        "auto-orchestrator-1"
+    ).json()["worker_id"]
     r = control_plane_client.acquire_lease(
         "exp-a", "auto-orchestrator-1", "uuid-1"
     )
     assert r.status_code == 201
     body = r.json()
-    assert body["holder"] == "auto-orchestrator-1"
+    assert body["holder"] == holder
     assert body["holder_instance"] == "uuid-1"
 
 
@@ -38,6 +49,8 @@ def test_second_acquire_returns_lease_held_by_other(
     against the same experiment MUST return 409 lease-held-by-other.
     """
     control_plane_client.register_experiment("exp-a", "file:///etc/a.yaml")
+    control_plane_client.register_worker("auto-orchestrator-1")
+    control_plane_client.register_worker("auto-orchestrator-2")
     control_plane_client.acquire_lease(
         "exp-a", "auto-orchestrator-1", "uuid-1"
     )
@@ -58,6 +71,8 @@ def test_acquire_after_release_succeeds(
     semantics.
     """
     control_plane_client.register_experiment("exp-a", "file:///etc/a.yaml")
+    control_plane_client.register_worker("auto-orchestrator-1")
+    control_plane_client.register_worker("auto-orchestrator-2")
     first = control_plane_client.acquire_lease(
         "exp-a", "auto-orchestrator-1", "uuid-1"
     ).json()
@@ -97,6 +112,7 @@ def test_released_lease_disappears_from_registry_entry(
     conformance.)
     """
     control_plane_client.register_experiment("exp-a", "file:///etc/a.yaml")
+    control_plane_client.register_worker("auto-orchestrator-1")
     lease = control_plane_client.acquire_lease(
         "exp-a", "auto-orchestrator-1", "uuid-1"
     ).json()
@@ -115,7 +131,10 @@ def test_released_lease_disappears_from_registry_entry(
     assert "lease" in post
     assert post["lease"] is None
     # And the same posture via list_experiments.
+    minted_eid = control_plane_client.experiment_id_for("exp-a")
     listed = control_plane_client.list_experiments().json()
-    entry = next(e for e in listed["experiments"] if e["experiment_id"] == "exp-a")
+    entry = next(
+        e for e in listed["experiments"] if e["experiment_id"] == minted_eid
+    )
     assert "lease" in entry
     assert entry["lease"] is None

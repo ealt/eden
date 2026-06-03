@@ -25,8 +25,11 @@ is asserted by the in-process tests on the import endpoint.
 
 from __future__ import annotations
 
+import re
+
 import pytest
 from conformance.harness.control_plane_client import ControlPlaneWireClient
+from conformance.harness.identity import mint_experiment_id
 
 pytestmark = pytest.mark.conformance
 
@@ -49,15 +52,18 @@ def test_explicit_register_after_partial_import(
     """
     # Simulate the partial-success state: experiment exists in the
     # task-store-server (out-of-band; not modeled here) but NOT in
-    # the control plane. The operator's recovery call:
+    # the control plane. The operator's recovery call uses the opaque
+    # ``exp_*`` id (02-data-model.md §1.6) the import minted.
+    imported_id = mint_experiment_id()
+    assert re.fullmatch(r"exp_[0-9a-hjkmnp-tv-z]{26}", imported_id)
     r = control_plane_client.register_experiment(
-        "exp-imported", "file:///etc/imported.yaml"
+        imported_id, "file:///etc/imported.yaml"
     )
     assert r.status_code == 201
-    assert r.json()["experiment_id"] == "exp-imported"
+    assert r.json()["experiment_id"] == imported_id
     # And the post-recovery state is visible to list_experiments.
     listed = control_plane_client.list_experiments().json()["experiments"]
-    assert "exp-imported" in [e["experiment_id"] for e in listed]
+    assert imported_id in [e["experiment_id"] for e in listed]
 
 
 @pytest.mark.skip(
