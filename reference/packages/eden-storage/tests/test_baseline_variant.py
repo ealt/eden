@@ -21,6 +21,8 @@ from eden_storage import InvalidPrecondition, Store
 _SEED = "a" * 40
 _DT = "2026-05-01T00:00:00.000Z"
 _SCHEMA = EvaluationSchema.model_validate({"score": "real"})
+# Valid opaque experiment id (issue #128 grammar: ^exp_[Crockford]{26}$).
+_EXP = "exp_0123456789abcdefghjkmnpqrs"
 
 
 def _baseline(
@@ -28,7 +30,7 @@ def _baseline(
     status: str = "starting",
     evaluation: dict[str, object] | None = None,
     completed_at: str | None = None,
-    experiment_id: str = "exp-test",
+    experiment_id: str = _EXP,
 ) -> Variant:
     # Omit evaluation / completed_at when None: those fields carry NotNone
     # and reject an explicit null at construction.
@@ -53,7 +55,7 @@ def test_baseline_default_path_created_starting(
     make_store: Callable[..., Store],
 ) -> None:
     """Default-path baseline: created ``starting`` with no idea_id."""
-    store = make_store(evaluation_schema=_SCHEMA)
+    store = make_store(_EXP, evaluation_schema=_SCHEMA)
     store.create_variant(_baseline())
     got = store.read_variant("baseline")
     assert got.kind == "baseline"
@@ -74,7 +76,7 @@ def test_baseline_override_path_created_success(
     make_store: Callable[..., Store],
 ) -> None:
     """Override-path baseline: directly ``success`` with config metrics."""
-    store = make_store(evaluation_schema=_SCHEMA)
+    store = make_store(_EXP, evaluation_schema=_SCHEMA)
     store.create_variant(
         _baseline(status="success", evaluation={"score": 0.5}, completed_at=_DT)
     )
@@ -91,7 +93,7 @@ def test_baseline_override_bad_metrics_rejected(
     make_store: Callable[..., Store],
 ) -> None:
     """Override metrics MUST validate against evaluation_schema at create time."""
-    store = make_store(evaluation_schema=_SCHEMA)
+    store = make_store(_EXP, evaluation_schema=_SCHEMA)
     with pytest.raises(InvalidPrecondition):
         store.create_variant(
             _baseline(
@@ -108,7 +110,7 @@ def test_baseline_override_missing_metrics_rejected(
     make_store: Callable[..., Store],
 ) -> None:
     """A baseline created directly in ``success`` MUST carry metrics."""
-    store = make_store(evaluation_schema=_SCHEMA)
+    store = make_store(_EXP, evaluation_schema=_SCHEMA)
     with pytest.raises(InvalidPrecondition):
         store.create_variant(_baseline(status="success", completed_at=_DT))
 
@@ -117,10 +119,10 @@ def test_ordinary_variant_must_start_in_starting(
     make_store: Callable[..., Store],
 ) -> None:
     """The direct-success relaxation is baseline-only."""
-    store = make_store(evaluation_schema=_SCHEMA)
+    store = make_store(_EXP, evaluation_schema=_SCHEMA)
     ordinary = Variant(
         variant_id="variant-1",
-        experiment_id="exp-test",
+        experiment_id=_EXP,
         idea_id="idea-1",
         status="success",
         parent_commits=[_SEED],
@@ -137,7 +139,7 @@ def test_integrate_baseline_rejected(
     make_store: Callable[..., Store],
 ) -> None:
     """A baseline is never integrated (06-integrator.md §2, 07 §5)."""
-    store = make_store(evaluation_schema=_SCHEMA)
+    store = make_store(_EXP, evaluation_schema=_SCHEMA)
     store.create_variant(
         _baseline(status="success", evaluation={"score": 0.5}, completed_at=_DT)
     )
@@ -152,7 +154,7 @@ def test_baseline_evaluation_dispatch_is_untargeted(
     make_store: Callable[..., Store],
 ) -> None:
     """A baseline's evaluation task has no idea-derived target (§D.7)."""
-    store = make_store(evaluation_schema=_SCHEMA)
+    store = make_store(_EXP, evaluation_schema=_SCHEMA)
     store.create_variant(_baseline())
     task = store.create_evaluation_task("evaluate-baseline", "baseline")
     assert task.target is None

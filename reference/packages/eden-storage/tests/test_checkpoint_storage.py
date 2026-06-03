@@ -194,12 +194,12 @@ def test_base_commit_sha_round_trip(
     field from the source manifest (10-checkpoints.md §5).
     """
     seed = "f" * 40
-    source = make_store("exp-bcs", seed_workers=False, base_commit_sha=seed)
+    source = make_store(_eid("exp-bcs"), seed_workers=False, base_commit_sha=seed)
     assert source.read_experiment().base_commit_sha == seed
     archive = io.BytesIO()
     source.export_checkpoint(archive, experiment_config="parallel_variants: 1\n")
 
-    target = make_store("exp-bcs", seed_workers=False)  # no seed on the receiver
+    target = make_store(_eid("exp-bcs"), seed_workers=False)  # no seed on the receiver
     archive.seek(0)
     target.import_checkpoint(archive, extract_dir=tmp_path)
     assert target.read_experiment().base_commit_sha == seed
@@ -214,14 +214,14 @@ def test_base_commit_sha_absent_source_clears_receiver_seed(
     a seedless source inherit the receiver's seed and synthesize a baseline
     the source never had (10-checkpoints.md §5 round-trip fidelity).
     """
-    source = make_store("exp-noseed", seed_workers=False)  # no seed
+    source = make_store(_eid("exp-noseed"), seed_workers=False)  # no seed
     assert source.read_experiment().base_commit_sha is None
     archive = io.BytesIO()
     source.export_checkpoint(archive, experiment_config="parallel_variants: 1\n")
 
     # Receiver was constructed WITH a seed — import must clear it to match
     # the seedless source.
-    target = make_store("exp-noseed", seed_workers=False, base_commit_sha="e" * 40)
+    target = make_store(_eid("exp-noseed"), seed_workers=False, base_commit_sha="e" * 40)
     assert target.read_experiment().base_commit_sha == "e" * 40
     archive.seek(0)
     target.import_checkpoint(archive, extract_dir=tmp_path)
