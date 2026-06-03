@@ -855,13 +855,22 @@ upsert_env_key() {
 }
 
 # Persist a per-worker credential token to <credentials_dir>/<id>.token
-# (matches eden_service_common.auth.credential_path). 0600; the dir was
-# created world-writable in the substrate mkdir block above.
+# (matches eden_service_common.auth.credential_path).
+#
+# Mode 0644 (world-READABLE), NOT 0600: setup-experiment runs as the HOST
+# user, but the worker-host containers read this token as eden:1000. On a
+# Linux native bind-mount the host-uid-owned 0600 file is unreadable by
+# eden:1000 (PermissionError at startup); macOS Docker Desktop's uid
+# mapping masks this, so 0600 only fails on Linux/CI. 0644 matches the
+# already-0777 credentials dir's documented bind-mount posture (this
+# reference deployment trades token-file secrecy on the host fs for
+# cross-uid host↔container access; a hardened deployment uses matching
+# uids or a secrets manager — chapter 01 §13.5 token-storage hygiene).
 persist_token() {
     local cred_dir="$1" worker_id="$2" token="$3"
     local path="${EDEN_EXPERIMENT_DATA_ROOT}/credentials/${cred_dir}/${worker_id}.token"
     printf '%s' "$token" > "$path"
-    chmod 0600 "$path" 2>/dev/null || true
+    chmod 0644 "$path" 2>/dev/null || true
 }
 
 # Mint a reserved group by NAME under the admin bearer (allowed to
