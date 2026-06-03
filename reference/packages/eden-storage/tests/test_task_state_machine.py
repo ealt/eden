@@ -6,6 +6,7 @@ at least one negative test. Atomic claim-match on submit (§4.1),
 idempotency (§4.2), terminal immutability (§4.4), and reclamation
 policy (§5) each have their own scenario.
 """
+# pyright: reportAttributeAccessIssue=false
 
 from __future__ import annotations
 

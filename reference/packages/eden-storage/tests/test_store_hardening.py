@@ -7,6 +7,7 @@ enforcement, and the exact evaluate-resubmit equivalence rule from
 `04-task-protocol.md` §4.2 (which deliberately excludes
 `artifacts_uri`).
 """
+# pyright: reportAttributeAccessIssue=false
 
 from __future__ import annotations
 

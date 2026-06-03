@@ -8,6 +8,7 @@ database (CI sets it). Adding a future backend means: implement the
 ``Store`` Protocol, add a factory here, and let the existing
 scenarios surface drift in tests rather than in production.
 """
+# pyright: reportAttributeAccessIssue=false
 
 from __future__ import annotations
 

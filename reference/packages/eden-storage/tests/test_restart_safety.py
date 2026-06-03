@@ -14,6 +14,7 @@ transactional semantics hold *within* a single process lifetime.
 These tests add the piece that only a durable backend has to prove:
 the same semantics hold *across* a process boundary.
 """
+# pyright: reportAttributeAccessIssue=false
 
 from __future__ import annotations
 

@@ -11,6 +11,7 @@ Covers both enforcement layers in `_StoreBase._validate_non_no_op_variant`:
 Also asserts the rule does NOT fire on ``status=error`` submissions
 or on ideas with empty ``parent_commits``.
 """
+# pyright: reportAttributeAccessIssue=false
 
 from __future__ import annotations
 

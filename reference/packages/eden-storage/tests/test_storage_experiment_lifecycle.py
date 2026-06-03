@@ -10,6 +10,7 @@ Parametrized across the three reference backends (``memory`` /
 [`conftest.py`](conftest.py). The postgres rows skip when
 ``EDEN_TEST_POSTGRES_DSN`` is unset.
 """
+# pyright: reportAttributeAccessIssue=false
 
 from __future__ import annotations
 

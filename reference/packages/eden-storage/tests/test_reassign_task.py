@@ -5,6 +5,7 @@ Spec: [`spec/v0/04-task-protocol.md`](../../../../spec/v0/04-task-protocol.md)
 §3.1. Post-#128 ``reassigned_by`` is an ActorId (``admin`` | ``wkr_*``)
 and ``TaskTarget.id`` is a MemberId (opaque ``wkr_*`` / ``grp_*``).
 """
+# pyright: reportAttributeAccessIssue=false
 
 from __future__ import annotations
 

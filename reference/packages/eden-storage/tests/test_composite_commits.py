@@ -4,6 +4,7 @@ Each test asserts that the events enumerated for a composite commit
 appear together in the log after the operation, and that no partial
 state is observable if a precondition fails.
 """
+# pyright: reportAttributeAccessIssue=false
 
 from __future__ import annotations
 

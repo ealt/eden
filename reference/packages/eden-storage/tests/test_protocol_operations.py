@@ -5,6 +5,7 @@ payload; §2.1 lists ``read_range`` and ``replay`` on the event log.
 These scenarios exercise both paths; they run against every backend
 via the parametrized ``make_store`` fixture.
 """
+# pyright: reportAttributeAccessIssue=false
 
 from __future__ import annotations
 

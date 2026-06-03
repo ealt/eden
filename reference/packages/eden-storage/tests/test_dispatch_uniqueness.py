@@ -5,6 +5,7 @@ Spec: [`spec/v0/03-roles.md`](../../../../spec/v0/03-roles.md) §6.4
 [`spec/v0/04-task-protocol.md`](../../../../spec/v0/04-task-protocol.md)
 §8 (uniqueness preconditions).
 """
+# pyright: reportAttributeAccessIssue=false
 
 from __future__ import annotations
 
