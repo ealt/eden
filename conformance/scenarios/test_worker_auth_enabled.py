@@ -149,43 +149,67 @@ def _client(
     )
 
 
-def _admin_register(server: dict[str, str], worker_id: str) -> str:
-    """Register ``worker_id`` via admin bearer; return the registration_token."""
+def _admin_register(
+    server: dict[str, str], name: str | None = None
+) -> tuple[str, str]:
+    """Register a worker via admin bearer; return (minted_worker_id, registration_token).
+
+    Since the identity rename (#128) the server MINTS the opaque
+    ``wkr_*`` id; the caller supplies only an OPTIONAL display
+    ``name``. The bearer principal for subsequent worker-authenticated
+    calls is the minted ``worker_id``, not the display name.
+    """
+    body: dict[str, str] = {}
+    if name is not None:
+        body["name"] = name
     with _client(server, bearer=f"admin:{server['admin_token']}") as c:
         resp = c.post(
             f"/v0/experiments/{server['experiment_id']}/workers",
-            json={"worker_id": worker_id},
+            json=body,
         )
         resp.raise_for_status()
-        body = resp.json()
-        token = body.get("registration_token")
-        assert isinstance(token, str) and token, body
-        return token
+        result = resp.json()
+        worker_id = result["worker_id"]
+        token = result.get("registration_token")
+        assert isinstance(worker_id, str) and worker_id, result
+        assert isinstance(token, str) and token, result
+        return worker_id, token
+
+
+def _admin_resolve_group(server: dict[str, str], name: str) -> str:
+    """Resolve a reserved group ``name`` to its minted ``grp_*`` id via the admin bearer.
+
+    The reserved groups (``admins`` / ``orchestrators``) are minted at
+    experiment setup; resolve by name through the §7.3 ``?name=`` lookup.
+    """
+    with _client(server, bearer=f"admin:{server['admin_token']}") as c:
+        resp = c.get(
+            f"/v0/experiments/{server['experiment_id']}/groups",
+            params={"name": name},
+        )
+        resp.raise_for_status()
+        groups = resp.json()["groups"]
+        assert groups, f"reserved group {name!r} not found: {resp.text}"
+        return groups[0]["group_id"]
 
 
 def _admin_put_in_group(
-    server: dict[str, str], worker_id: str, group_id: str
+    server: dict[str, str], worker_id: str, group_name: str
 ) -> None:
-    """Idempotently add ``worker_id`` to ``group_id`` via the admin bearer.
+    """Idempotently add ``worker_id`` to the named group via the admin bearer.
 
     Used by tests that need a worker bearer to clear the §3.7 kind-
-    keyed authority gate on ``POST /tasks`` (wave-3 wire change). Tries
-    ``register_group`` first (swallowing AlreadyExists), then
-    ``add_to_group``.
+    keyed authority gate on ``POST /tasks`` (wave-3 wire change). The
+    reserved group is resolved to its minted ``grp_*`` id by name.
     """
+    group_id = _admin_resolve_group(server, group_name)
     with _client(server, bearer=f"admin:{server['admin_token']}") as c:
-        reg = c.post(
-            f"/v0/experiments/{server['experiment_id']}/groups",
-            json={"group_id": group_id},
-        )
-        # 409 already-exists is fine; setup-experiment or a prior test
-        # may have already registered the group.
-        assert reg.status_code in (200, 409), reg.text
         add = c.post(
             f"/v0/experiments/{server['experiment_id']}/groups/{group_id}/members",
             json={"member_id": worker_id},
         )
-        add.raise_for_status()
+        # 409 already-exists is fine; a prior test may have added it.
+        assert add.status_code in (200, 409), add.text
 
 
 def test_missing_bearer_returns_401(auth_server: dict[str, str]) -> None:
@@ -225,13 +249,12 @@ def test_worker_bearer_on_admin_gated_endpoint_returns_403(
     auth_server: dict[str, str],
 ) -> None:
     """spec/v0/07-wire-protocol.md §13.3 — worker bearer on admin-gated route → 403."""
-    wid = "test-worker"
-    token = _admin_register(auth_server, wid)
+    wid, token = _admin_register(auth_server, name="test-worker")
     # POST /workers (register_worker) is admin-gated per §13.3.
     with _client(auth_server, bearer=f"{wid}:{token}") as c:
         resp = c.post(
             f"/v0/experiments/{auth_server['experiment_id']}/workers",
-            json={"worker_id": "another-worker"},
+            json={"name": "another-worker"},
         )
     assert resp.status_code == 403, resp.text
     assert resp.json().get("type") == "eden://error/forbidden"
