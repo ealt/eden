@@ -347,11 +347,16 @@ services:
       - --admin-token
       - ${EDEN_ADMIN_TOKEN:?}
       - --worker-id
-      # #128: opaque wkr_* minted by setup-experiment (was the
-      # literal default `orchestrator`). Always populated by setup;
-      # no :- fallback (an operator-typed default is no longer a valid
-      # opaque id and would fail registration/auth).
-      - ${EDEN_ORCHESTRATOR_WORKER_ID:?EDEN_ORCHESTRATOR_WORKER_ID must be set (run setup-experiment)}
+      # #128: opaque wkr_* minted by setup-experiment (was the literal
+      # default `orchestrator`). Plain ${VAR} (not :? / :-): the id is
+      # SERVER-minted, so it cannot exist until setup-experiment has
+      # brought the task-store-server up and registered the worker —
+      # which is AFTER setup's own `docker compose build`. A :? guard
+      # would trip that build (compose v2 interpolates every service's
+      # command even for an unrelated `build`/`up <svc>`); setup always
+      # writes the minted id to .env before the operator's final
+      # `docker compose up`, mirroring the host-worker vars below.
+      - ${EDEN_ORCHESTRATOR_WORKER_ID}
       - --repo-path
       - /var/lib/eden/repo
       - --forgejo-url
@@ -609,8 +614,12 @@ services:
       - ${EDEN_BASE_COMMIT_SHA:?EDEN_BASE_COMMIT_SHA must be set (run setup-experiment)}
       - --worker-id
       # #128: opaque wkr_* minted by setup-experiment (was the literal
-      # default `web-ui-1`). Always populated by setup; no :- fallback.
-      - ${EDEN_WEB_UI_WORKER_ID:?EDEN_WEB_UI_WORKER_ID must be set (run setup-experiment)}
+      # default `web-ui-1`). Plain ${VAR} (not :?): server-minted, so it
+      # only exists after setup brings the task-store-server up — AFTER
+      # setup's own `docker compose build`, which a :? guard would trip
+      # (compose interpolates every service's command). setup writes the
+      # minted id to .env before the operator's final `up`.
+      - ${EDEN_WEB_UI_WORKER_ID}
       - --host
       - 0.0.0.0
       - --port

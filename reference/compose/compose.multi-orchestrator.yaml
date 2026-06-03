@@ -43,7 +43,7 @@ services:
       - --worker-id
       # #128: opaque wkr_* minted + exported by the multi-orchestrator
       # smoke (was literal orchestrator-2). See this overlay's header.
-      - ${EDEN_ORCHESTRATOR_2_WORKER_ID:?EDEN_ORCHESTRATOR_2_WORKER_ID must be set (multi-orchestrator smoke mints it)}
+      - ${EDEN_ORCHESTRATOR_2_WORKER_ID}
       - --repo-path
       - /var/lib/eden/repo
       - --forgejo-url
