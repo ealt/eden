@@ -197,16 +197,16 @@ The contract per object kind:
 
 ## 10. Recovery on lost import response
 
-The `POST /v0/checkpoints/import` wire endpoint commits state-mutating writes; it is not idempotent in the strict HTTP sense. Because the receiver **mints a fresh `exp_*`** for an unkeyed import (§5; [`07-wire-protocol.md`](07-wire-protocol.md) §14.2), a naive retry would create a second, duplicate experiment rather than 409. To make safe retry possible after a transport-indeterminate failure, a conforming receiving Store MUST record provenance on the imported experiment that lets a client probe whether a given source archive has already been imported:
+The `POST /v0/checkpoints/import` wire endpoint commits state-mutating writes; it is not idempotent in the strict HTTP sense. Because the receiver imports an unkeyed checkpoint under **its own** experiment id — a freshly-minted `exp_*` for a multi-experiment receiver, or its single configured `experiment_id` for a single-experiment receiver (§5; [`07-wire-protocol.md`](07-wire-protocol.md) §14.2) — rather than the source manifest's id, a naive retry could create a duplicate experiment (multi-experiment receiver) or re-import the same source (single-experiment receiver). To make safe retry possible after a transport-indeterminate failure, a conforming receiving Store MUST record provenance on the imported experiment that lets a client probe whether a given source archive has already been imported:
 
 - The imported Experiment row MUST carry an `imported_from` field of shape `{checkpoint_exported_at: timestamp, checkpoint_format_version: string, source_experiment_id: opaque-id}` ([`02-data-model.md`](02-data-model.md) §2.5).
 - The `checkpoint_exported_at` value MUST be taken from the manifest's `exported_at` field verbatim; `source_experiment_id` MUST be the manifest's `experiment_id` (the source `exp_*`) verbatim.
 - Natively-created experiments (never imported) MUST have `imported_from` absent (`null` on the wire).
 
-A client whose import call lost its `201 Created` response queries `list_experiments` ([`07-wire-protocol.md`](07-wire-protocol.md) §15.1) — or, on a non-control-plane deployment, its equivalent enumeration — and matches on the provenance pair `(source_experiment_id, checkpoint_exported_at)`:
+A client whose import call lost its `201 Created` response probes the receiver's `imported_from` provenance and matches on the pair `(source_experiment_id, checkpoint_exported_at)`. A multi-experiment client enumerates `list_experiments` ([`07-wire-protocol.md`](07-wire-protocol.md) §15.1); a **single-experiment** client reads back its one configured experiment (`read_experiment`, [`07-wire-protocol.md`](07-wire-protocol.md) §14.3) directly — it already knows the receiving id:
 
-- If an experiment exists whose `imported_from.source_experiment_id` equals the local manifest's `experiment_id` AND whose `checkpoint_exported_at` equals the local manifest's `exported_at`, the import has already committed; the missing 201 was a transport blip and recovery is complete. The client reads back that experiment's minted `experiment_id` from the probe.
-- If no such experiment exists, the prior call did not commit; the client retries the import normally (which mints a fresh `exp_*`).
+- If the probed experiment's `imported_from.source_experiment_id` equals the local manifest's `experiment_id` AND its `checkpoint_exported_at` equals the local manifest's `exported_at`, the import has already committed; the missing 201 was a transport blip and recovery is complete. The client reads back that experiment's `experiment_id` (the receiver's id) from the probe.
+- If no such experiment exists (or the single configured experiment carries no matching provenance), the prior call did not commit; the client retries the import normally (which imports under the receiver's own id again).
 
 This is "bounded idempotency": full content-addressed-by-bytes idempotency would require hashing the upload before any commit, which defeats streaming. The `(source_experiment_id, exported_at)` probe gives operators a recovery path without that cost.
 
