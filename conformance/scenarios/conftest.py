@@ -31,12 +31,12 @@ skips itself when ``--cross-impl-adapter`` is unset and the chapter-9
 from __future__ import annotations
 
 import shutil
-import uuid
 from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
 from conformance.harness.adapter import IutAdapter, IutHandle
+from conformance.harness.identity import mint_experiment_id
 from conformance.harness.wire_client import WireClient
 
 
@@ -53,7 +53,7 @@ def receiver_iut(
     default workers — chapter 10 §11 requires a fresh store for
     import to commit.
     """
-    receiver_id = f"recv-{uuid.uuid4().hex[:8]}"
+    receiver_id = mint_experiment_id()
     adapter = iut_adapter_factory()
     cfg_copy = tmp_path / f"{receiver_id}-config.yaml"
     shutil.copyfile(experiment_config_path, cfg_copy)

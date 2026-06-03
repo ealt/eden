@@ -61,31 +61,35 @@ def fresh_group_id(prefix: str = "g") -> str:
 
 def register_worker(
     client: WireClient,
-    worker_id: str,
+    name: str | None = None,
     *,
     labels: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """POST /workers — register a worker for this experiment.
 
-    Per chapter 02 §6.3 registration is idempotent: a second call with
-    the same ``worker_id`` succeeds and returns the existing record.
-    The response body is the worker record; the first registration
-    additionally includes ``registration_token`` for bearer auth.
-
-    When the server returns a ``registration_token``, this helper
-    stashes the ``<worker_id>:<token>`` bearer on the client's
-    per-worker registry so subsequent ``as_worker=<wid>`` calls
-    authenticate as that worker.
+    Since the identity rename (#128) the server MINTS the opaque
+    ``worker_id`` (chapter 02 §1.6/§6.1); the caller supplies only an
+    OPTIONAL display ``name`` (§1.7). The first ``name`` argument is a
+    stable display-name handle the scenario reuses; this helper records
+    the handle -> minted-id mapping on the client so later
+    ``as_worker=<handle>`` / ``member_ref(..., <handle>)`` calls resolve
+    to the minted ``wkr_*`` id. Returns the worker record (its
+    ``worker_id`` is the minted opaque id; the first registration also
+    carries ``registration_token`` for bearer auth).
     """
-    body: dict[str, Any] = {"worker_id": worker_id}
+    body: dict[str, Any] = {}
+    if name is not None:
+        body["name"] = name
     if labels is not None:
         body["labels"] = labels
     resp = client.post(_workers_path(client), json=body)
     resp.raise_for_status()
     record = resp.json()
+    worker_id = record["worker_id"]
     token = record.get("registration_token")
     if isinstance(token, str) and token:
         client.register_worker_bearer(worker_id, f"{worker_id}:{token}")
+    client.record_worker_identity(name, worker_id)
     return record
 
 
@@ -107,6 +111,9 @@ def register_default_workers(client: WireClient) -> None:
         register_worker(client, wid)
     for wid in ORCHESTRATOR_ACTOR_IDS:
         register_worker(client, wid)
+    # Each handle above is registered as a display NAME; the minted
+    # wkr_* id is recorded against the handle so the group-membership
+    # adds and `as_worker=<handle>` calls below resolve correctly.
     # The §3.7 wire-side authority groups; chapter 07 §13.3 specifies
     # these as the canonical names of the principal groups the wire
     # consults. We seed them as empty and then add the actor IDs as
@@ -142,20 +149,35 @@ ORCHESTRATOR_ACTOR_IDS: tuple[str, ...] = (
 )
 
 
-def _ensure_group(client: WireClient, group_id: str) -> None:
-    """Idempotently create ``group_id`` (409 already-exists is fine)."""
-    resp = client.post(_groups_path(client), json={"group_id": group_id})
+def _ensure_group(client: WireClient, name: str) -> None:
+    """Idempotently create a group named ``name``; record handle -> minted id.
+
+    The server mints the opaque ``grp_*`` id (#128); ``name`` is the
+    stable display-name handle (e.g. the reserved ``admins`` /
+    ``orchestrators`` names — created via the admin bearer that the
+    client defaults to). A second create of an already-existing
+    reserved name returns 409, which is fine here.
+    """
+    if client.group_id_for(name) != name:
+        return  # already recorded for this client
+    resp = client.post(_groups_path(client), json={"name": name})
     if resp.status_code not in (200, 409):
         resp.raise_for_status()
+    if resp.status_code == 200:
+        client.record_group_identity(name, resp.json()["group_id"])
 
 
 def _ensure_group_member(
-    client: WireClient, group_id: str, member_id: str
+    client: WireClient, group_handle: str, member_handle: str
 ) -> None:
-    """Idempotently add ``member_id`` to ``group_id`` (409 already-member is fine)."""
+    """Idempotently add ``member_handle`` to ``group_handle`` (409 is fine).
+
+    Both handles are resolved to their minted opaque ids: the group id
+    in the URL path, the member id (``wkr_*`` or ``grp_*``) in the body.
+    """
     resp = client.post(
-        _groups_path(client, group_id, "/members"),
-        json={"member_id": member_id},
+        _groups_path(client, group_handle, "/members"),
+        json={"member_id": _resolve_member_id(client, member_handle)},
     )
     if resp.status_code not in (200, 409):
         resp.raise_for_status()
@@ -163,25 +185,61 @@ def _ensure_group_member(
 
 def create_group(
     client: WireClient,
-    group_id: str,
+    name: str | None = None,
     *,
     members: list[str] | None = None,
 ) -> dict[str, Any]:
-    body: dict[str, Any] = {"group_id": group_id, "members": members or []}
+    """POST /groups — server mints the opaque ``grp_*`` id (#128).
+
+    ``name`` is an optional display-name handle (recorded handle ->
+    minted id); ``members`` are handles resolved to minted member ids.
+    """
+    body: dict[str, Any] = {
+        "members": [_resolve_member_id(client, m) for m in (members or [])],
+    }
+    if name is not None:
+        body["name"] = name
     resp = client.post(_groups_path(client), json=body)
     resp.raise_for_status()
-    return resp.json()
+    record = resp.json()
+    client.record_group_identity(name, record["group_id"])
+    return record
 
 
 def add_to_group(
     client: WireClient,
-    group_id: str,
-    member_id: str,
+    group_handle: str,
+    member_handle: str,
 ) -> Any:
     return client.post(
-        _groups_path(client, group_id, "/members"),
-        json={"member_id": member_id},
+        _groups_path(client, group_handle, "/members"),
+        json={"member_id": _resolve_member_id(client, member_handle)},
     )
+
+
+def _resolve_member_id(client: WireClient, handle: str) -> str:
+    """Resolve a worker/group handle to its minted opaque id (else verbatim)."""
+    resolved = client.worker_id_for(handle)
+    if resolved != handle:
+        return resolved
+    return client.group_id_for(handle)
+
+
+def _resolve_target(
+    client: WireClient, target: dict[str, str]
+) -> dict[str, str]:
+    """Resolve a ``{kind, id}`` target's id handle to its minted opaque id.
+
+    Leaves a target already carrying an opaque id (or an unknown
+    handle, e.g. a deliberate "no such worker" probe) unchanged.
+    """
+    if "id" not in target or "kind" not in target:
+        return target
+    if target["kind"] == "group":
+        resolved = client.group_id_for(target["id"])
+    else:
+        resolved = client.worker_id_for(target["id"])
+    return {**target, "id": resolved}
 
 
 def _workers_path(client: WireClient) -> str:
@@ -190,13 +248,13 @@ def _workers_path(client: WireClient) -> str:
 
 def _groups_path(
     client: WireClient,
-    group_id: str | None = None,
+    group_handle: str | None = None,
     suffix: str = "",
 ) -> str:
     base = f"{client.base_path}/groups"
-    if group_id is None:
+    if group_handle is None:
         return base
-    return f"{base}/{group_id}{suffix}"
+    return f"{base}/{client.group_id_for(group_handle)}{suffix}"
 
 
 # Task seeding ---------------------------------------------------------
@@ -228,7 +286,7 @@ def create_ideation_task(
         "updated_at": _NOW,
     }
     if target is not None:
-        body["target"] = target
+        body["target"] = _resolve_target(client, target)
     resp = client.post(client.tasks_path(), json=body, as_worker=actor_id)
     resp.raise_for_status()
     return tid
@@ -256,7 +314,7 @@ def create_evaluation_task(
         "updated_at": _NOW,
     }
     if target is not None:
-        body["target"] = target
+        body["target"] = _resolve_target(client, target)
     resp = client.post(client.tasks_path(), json=body, as_worker=actor_id)
     resp.raise_for_status()
     return tid
@@ -287,7 +345,7 @@ def create_execution_task(
         "updated_at": _NOW,
     }
     if target is not None:
-        body["target"] = target
+        body["target"] = _resolve_target(client, target)
     resp = client.post(client.tasks_path(), json=body, as_worker=actor_id)
     resp.raise_for_status()
     return tid
