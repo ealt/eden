@@ -225,7 +225,14 @@ def lineage_for_variant(
     omitted, so unit-test callers stay unchanged).
     """
     acc = _Accumulator()
-    idea_link = _idea_link(store, variant.idea_id, acc)
+    # A kind == "baseline" variant has no producing idea (02-data-model.md
+    # §9.4), so it renders as a root node with no idea link — never look up
+    # a None idea_id.
+    idea_link = (
+        _idea_link(store, variant.idea_id, acc)
+        if variant.idea_id is not None
+        else None
+    )
     exec_task_id = _producing_execution_task(
         store, variant, acc, exec_tasks=exec_tasks
     )

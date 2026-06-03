@@ -150,7 +150,10 @@ class _TaskCreateOpsMixin(_StoreCore):
             # explicit task.target on the create payload, the resulting
             # task inherits the originating idea's intended_evaluator.
             insert_task = task
-            if task.target is None:
+            # A kind == "baseline" variant has no producing idea
+            # (02-data-model.md §9.4), so skip the idea_id lookup and leave
+            # the baseline's evaluation task untargeted.
+            if task.target is None and variant.idea_id is not None:
                 idea = self._get_idea(variant.idea_id)
                 if idea is not None and idea.intended_evaluator is not None:
                     insert_task = _validated_update(
@@ -278,6 +281,10 @@ class _TaskCreateOpsMixin(_StoreCore):
         (admin override path). When ``target`` is ``None``, the task
         inherits the originating idea's ``intended_evaluator`` (the
         auto-orchestrator path per ``03-roles.md`` §6.2 decision-type 3).
+        A ``kind == "baseline"`` variant has no producing idea
+        (``02-data-model.md`` §9.4), so its evaluation task is untargeted
+        (any registered evaluator may claim) — no ``idea_id`` lookup is
+        attempted.
         """
         with self._atomic_operation():
             self._require_running()
@@ -300,7 +307,7 @@ class _TaskCreateOpsMixin(_StoreCore):
             # `idea.intended_evaluator` per the §6.2 decision-type 3
             # flow-through rule.
             effective_target: TaskTarget | None = target
-            if effective_target is None:
+            if effective_target is None and variant.idea_id is not None:
                 idea = self._get_idea(variant.idea_id)
                 if idea is not None:
                     effective_target = idea.intended_evaluator

@@ -244,11 +244,19 @@
         "properties": {
           "data": {
             "type": "object",
-            "required": ["variant_id", "idea_id"],
+            "required": ["variant_id"],
             "properties": {
               "variant_id": {"$ref": "#/$defs/variantId"},
-              "idea_id": {"$ref": "#/$defs/ideaId"}
-            }
+              "idea_id": {"$ref": "#/$defs/ideaId"},
+              "kind": {"type": "string", "enum": ["baseline"]}
+            },
+            "allOf": [
+              {
+                "description": "idea_id is required on variant.started unless the variant is a baseline (spec/v0/05-event-protocol.md §3.3).",
+                "if": {"not": {"properties": {"kind": {"const": "baseline"}}, "required": ["kind"]}},
+                "then": {"required": ["idea_id"]}
+              }
+            ]
           }
         }
       }

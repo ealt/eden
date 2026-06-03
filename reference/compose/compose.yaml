@@ -177,6 +177,8 @@ services:
       - ${EDEN_EXPERIMENT_ID:?EDEN_EXPERIMENT_ID must be set (run setup-experiment)}
       - --experiment-config
       - /etc/eden/experiment-config.yaml
+      - --base-commit-sha
+      - ${EDEN_BASE_COMMIT_SHA:?EDEN_BASE_COMMIT_SHA must be set (run setup-experiment)}
       - --admin-token
       - ${EDEN_ADMIN_TOKEN:?EDEN_ADMIN_TOKEN must be set (run setup-experiment)}
       - --artifacts-dir

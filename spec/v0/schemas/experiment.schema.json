@@ -20,6 +20,11 @@
       "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$",
       "description": "Wall-clock time at which the experiment was created. Used by deployment-supplied termination policies (e.g. max_wall_time) and not constrained beyond ISO-8601 UTC."
     },
+    "base_commit_sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?$",
+      "description": "The experiment seed commit on main, recorded at registration / repo-init time (spec/v0/02-data-model.md §2.5). The orchestrator reads this per experiment to create the kind=='baseline' variant (§9.4); both single- and multi-experiment modes read it via read_experiment. Absent (never JSON null) on experiments registered before this field existed; such experiments never acquire a baseline."
+    },
     "imported_from": {
       "description": "Provenance of the experiment when it was imported from a portable checkpoint (spec/v0/10-checkpoints.md §10). Absent (or JSON null) on natively-created experiments; present on experiments produced by the import endpoint (07-wire-protocol.md §14.2). Recovery probe: a client that lost the import 201 response queries this field and matches checkpoint_exported_at against the local manifest's exported_at.",
       "oneOf": [

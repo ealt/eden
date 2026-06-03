@@ -71,11 +71,23 @@ bash "${REPO_ROOT}/reference/scripts/setup-experiment/setup-experiment.sh" \
 # (30 reproduces the retired EDEN_MAX_QUIESCENT_ITERATIONS:-30 default).
 # Both orchestrator replicas read it from the shared experiment-config.
 EXPERIMENT_CONFIG="${REPO_ROOT}/reference/compose/experiment-config.yaml"
+# Suppress the seed baseline variant (issue #122 §9.4) for this smoke.
+# This smoke asserts the §6.4 multi-instance idempotency invariant on the
+# *candidate* pipeline: integrated == exec_completed == eval_completed,
+# each within [3, N*T=6]. A default-on baseline is the experiment seed
+# elevated to a variant — it is evaluated (adding to eval_completed) but
+# has no execution task and is never integrated, so it breaks the
+# three-way equality and inflates eval_completed past the N*T bound. The
+# baseline's own multi-instance idempotency (deterministic id + verified
+# read-back) is covered by the orchestrator unit tests; the default-on
+# baseline path end-to-end is covered by smoke.sh / e2e.sh.
 cat >>"$EXPERIMENT_CONFIG" <<'YAML'
 ideation_policy:
   kind: fixed_total
   total: 3
 max_quiescent_iterations: 30
+baseline:
+  enabled: false
 YAML
 
 EDEN_ADMIN_TOKEN="$(grep -E '^EDEN_ADMIN_TOKEN=' "$ENV_FILE" | cut -d= -f2-)"

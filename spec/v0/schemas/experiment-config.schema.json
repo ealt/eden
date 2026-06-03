@@ -160,6 +160,26 @@
         }
       ]
     },
+    "baseline": {
+      "type": "object",
+      "description": "Optional baseline-variant block (see 02-data-model.md §2.7 and §9.4). Controls whether the experiment seed is elevated to a first-class kind=='baseline' variant. Absent is equivalent to {enabled: true} (default-on, real evaluation). When 'metrics' is present the orchestrator stamps those metrics and creates the baseline directly in 'success', skipping evaluation dispatch; the metrics MUST validate against evaluation_schema (a runtime check, like variant.evaluation — §9.2). Supplying 'metrics' while enabled is false is a config error (suppressing a baseline while supplying its metrics).",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "When true (the default), the orchestrator auto-creates the seed baseline variant. When false, baseline creation is suppressed entirely and the seed stays out of the variant table."
+        },
+        "metrics": {
+          "type": "object",
+          "description": "Optional config-supplied evaluation metrics. When present, the orchestrator creates the baseline already terminal ('success' + these metrics) and skips evaluation dispatch. Keys MUST be a subset of evaluation_schema and values MUST match the declared types; like variant.evaluation this is a runtime check (§9.2), not expressible in this schema."
+        }
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"enabled": {"const": false}}, "required": ["enabled"]},
+          "then": {"not": {"required": ["metrics"]}}
+        }
+      ]
+    },
     "max_quiescent_iterations": {
       "type": "integer",
       "minimum": 2,

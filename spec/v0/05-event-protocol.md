@@ -118,7 +118,7 @@ Produced atomically with variant `status` transitions and with the integrator's 
 
 | Type | Transition | `data` required fields |
 |---|---|---|
-| `variant.started` | — → `starting` | `variant_id`, `idea_id` |
+| `variant.started` | — → `starting` | `variant_id`, `idea_id` (absent for `kind == "baseline"`), `kind` (required when `kind == "baseline"`) |
 | `variant.succeeded` | `starting` → `success` | `variant_id`, `commit_sha` |
 | `variant.errored` | `starting` → `error` | `variant_id` |
 | `variant.evaluation_errored` | `starting` → `evaluation_error` | `variant_id` |
@@ -127,11 +127,14 @@ Produced atomically with variant `status` transitions and with the integrator's 
 Payload field definitions:
 
 - `variant_id` — the `variant_id` of the transitioning variant.
-- `idea_id` — the variant's `idea_id` ([`02-data-model.md`](02-data-model.md) §9.1).
-- `commit_sha` — the worker-branch tip recorded on the variant at the moment of success ([`02-data-model.md`](02-data-model.md) §9.1).
+- `idea_id` — the variant's `idea_id` ([`02-data-model.md`](02-data-model.md) §9.1). REQUIRED on `variant.started` for an ordinary variant; **absent** for a `kind == "baseline"` variant, which has no producing idea ([`02-data-model.md`](02-data-model.md) §9.4).
+- `kind` — the variant's `kind` ([`02-data-model.md`](02-data-model.md) §9.1), present on `variant.started`. REQUIRED (not merely recommended) when the variant is a baseline, so an event-only subscriber gets an explicit `kind == "baseline"` signal rather than inferring a baseline from a missing `idea_id`. Absent (or `null`) for an ordinary variant.
+- `commit_sha` — the worker-branch tip recorded on the variant at the moment of success ([`02-data-model.md`](02-data-model.md) §9.1). For a baseline this is the seed (`base_commit_sha`).
 - `variant_commit_sha` — the canonical-lineage SHA the integrator wrote ([`06-integrator.md`](06-integrator.md)). A 40-hex SHA-1 or a 64-hex SHA-256; the same pattern as commits elsewhere in the data model.
 
-`variant.integrated` is not a variant-`status` transition — integration does not change the variant's `status` field, only its `variant_commit_sha`. The event marks integration so subscribers can reconstruct the canonical lineage without reading git directly.
+`variant.integrated` is not a variant-`status` transition — integration does not change the variant's `status` field, only its `variant_commit_sha`. The event marks integration so subscribers can reconstruct the canonical lineage without reading git directly. A `kind == "baseline"` variant is never integrated ([`02-data-model.md`](02-data-model.md) §9.4), so no `variant.integrated` event is ever emitted for one.
+
+**Baseline override path.** A `kind == "baseline"` variant created directly in `success` with config-supplied metrics ([`02-data-model.md`](02-data-model.md) §2.7, §9.4, [`08-storage.md`](08-storage.md) §1.7) emits both `variant.started` (with the required `kind` and absent `idea_id`) **and** `variant.succeeded`, atomically, in the single `create_variant` transaction — the same pair the normal start → evaluate → succeed flow produces, collapsed to one commit. A default-path baseline emits `variant.started` at create and `variant.succeeded` later via the normal evaluation-acceptance path. Both events carry only the identifying fields above; neither references an evaluation `task_id` (a baseline on the override path has no evaluation task).
 
 ### 3.4 Experiment events
 

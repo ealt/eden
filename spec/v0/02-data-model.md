@@ -85,7 +85,7 @@ The five keys are fixed in v0:
 | `ideation_creation` | Create new `kind=="ideation"` tasks per a deployment policy. | `"auto"` |
 | `execution_dispatch` | Create a `kind=="execution"` task for each `ready` idea with no live execution task. | `"auto"` |
 | `evaluation_dispatch` | Create a `kind=="evaluation"` task for each `starting` variant with `commit_sha` set and no live evaluation task. | `"auto"` |
-| `integration` | Invoke the integrator ([`06-integrator.md`](06-integrator.md)) for each `success` variant with `variant_commit_sha` unset. | `"auto"` |
+| `integration` | Invoke the integrator ([`06-integrator.md`](06-integrator.md)) for each `success` variant with `variant_commit_sha` unset and `kind != "baseline"` (a baseline is never integrated — §9.4). | `"auto"` |
 
 `termination` defaults to `"manual"` so that adding the new key in 12a-3 does not change the runtime behavior of any pre-12a-3 deployment (which had no termination policy at all). The other four keys default to `"auto"` to preserve the 12a-2 behavior. A configuration that omits `dispatch_mode` is equivalent to one with `termination == "manual"` and all four operational keys set to `"auto"`. A configuration that supplies `dispatch_mode` with a subset of the keys is equivalent to one with the unspecified keys at their defaults. Additional decision-type keys MAY be introduced in later spec lineages; a conforming implementation MUST accept (and MAY ignore) keys it does not recognize.
 
@@ -104,7 +104,7 @@ The experiment runtime carries a `state` field independent of the declarative `e
 | Value | Meaning |
 |---|---|
 | `"running"` | Default at experiment creation. The orchestrator MAY make any decision per [`03-roles.md`](03-roles.md) §6.2. Workers MAY claim pending tasks, submit results, and produce ideas / variants per their role contracts. |
-| `"terminated"` | The task store MUST reject every task-creation op (`create_task` for any `kind`) AND every `claim` op against a pending task with `eden://error/illegal-transition`. Already-claimed tasks MAY still be submitted, accepted, or rejected per the normal task-lifecycle ([`04-task-protocol.md`](04-task-protocol.md) §4) so in-progress work is not stranded. Already-claimed tasks MAY also still be reclaimed (`cause == "expired"` / `"operator"`); the resulting pending task is unreachable (the §2.5 `claim` guard rejects subsequent claims) but its existence is a no-op. The orchestrator's integration decision ([`03-roles.md`](03-roles.md) §6.2 decision-type 4) MUST continue to run until no `status == "success"` variants without `variant_commit_sha` remain, so committed work in flight is not abandoned. The other three operational decisions (ideation-task creation, execution-task dispatch, evaluation-task dispatch) MUST NOT run on a terminated experiment. |
+| `"terminated"` | The task store MUST reject every task-creation op (`create_task` for any `kind`) AND every `claim` op against a pending task with `eden://error/illegal-transition`. Already-claimed tasks MAY still be submitted, accepted, or rejected per the normal task-lifecycle ([`04-task-protocol.md`](04-task-protocol.md) §4) so in-progress work is not stranded. Already-claimed tasks MAY also still be reclaimed (`cause == "expired"` / `"operator"`); the resulting pending task is unreachable (the §2.5 `claim` guard rejects subsequent claims) but its existence is a no-op. The orchestrator's integration decision ([`03-roles.md`](03-roles.md) §6.2 decision-type 4) MUST continue to run until no `status == "success"` variants with `kind != "baseline"` and `variant_commit_sha` unset remain, so committed work in flight is not abandoned. A `kind == "baseline"` variant is excluded from this drain clause: it is never integrated (§9.4), so a successful baseline MUST NOT block termination. The other three operational decisions (ideation-task creation, execution-task dispatch, evaluation-task dispatch) MUST NOT run on a terminated experiment. |
 
 The `running → terminated` transition is one-way in v0. The transition is committed atomically with a single `experiment.terminated` event ([`05-event-protocol.md`](05-event-protocol.md) §3.4) carrying a free-form `reason` string. The protocol does not define a `terminated → running` transition; reactivation of a terminated experiment is reserved for a future spec lineage.
 
@@ -126,9 +126,22 @@ The experiment runtime object additionally carries an optional `imported_from` f
 
 `imported_from` is absent (JSON null on the wire) on natively-created experiments and present on experiments produced by the portable-checkpoint import endpoint ([`07-wire-protocol.md`](07-wire-protocol.md) §14.2). The field is the recovery-probe anchor for [`10-checkpoints.md`](10-checkpoints.md) §10: a client that lost the import response queries `read_experiment` and compares `imported_from.checkpoint_exported_at` against the source manifest's `exported_at` to disambiguate "commit succeeded; response lost" from "commit never happened". The field is written exactly once (at import) and is immutable thereafter.
 
+The experiment runtime object additionally carries an optional `base_commit_sha` field (commit SHA, §1.4): the experiment seed — the single commit on `main` at experiment start. It is written at experiment registration / repo-init time (where the seed SHA is known) and is immutable thereafter. It is the authoritative, per-experiment source the orchestrator reads (via `read_experiment`) to create the seed baseline variant (§9.4) in both single- and multi-experiment modes; a single process-level input cannot carry a per-experiment seed. `base_commit_sha` is absent (never JSON null) on experiments registered before this field existed; an orchestrator that finds it absent skips baseline creation rather than failing. It round-trips through portable checkpoint export/import ([`10-checkpoints.md`](10-checkpoints.md) §5).
+
 ### 2.6 Control-plane registry projection (informative)
 
 A deployment that runs the control plane ([`11-control-plane.md`](11-control-plane.md)) maintains a deployment-wide experiment registry that mirrors the per-experiment `state` field above into a `last_known_state` projection. The registry also carries a `lease: ExperimentLease | null` field that names the currently-active lease holder, if any; the lease shape is normative in [`11-control-plane.md`](11-control-plane.md) §4.2 and its schema is [`schemas/lease.schema.json`](schemas/lease.schema.json). The registry projection is observed only through the control-plane wire endpoints ([`07-wire-protocol.md`](07-wire-protocol.md) §15); it does NOT appear on the task-store-server's `read_experiment` response ([`07-wire-protocol.md`](07-wire-protocol.md) §14.3). A deployment without a control plane does not have the projection; the task-store-server's authoritative `state` is the only lifecycle datum.
+
+### 2.7 Baseline block
+
+The experiment-config schema defines an optional `baseline` block controlling whether the experiment seed is elevated to a first-class `kind == "baseline"` variant (§9.4):
+
+| Field | Type | Description |
+|---|---|---|
+| `enabled` | boolean | When `true` (the default), the orchestrator auto-creates the seed baseline variant. When `false`, baseline creation is suppressed entirely and the seed stays out of the variant table. |
+| `metrics` | object | OPTIONAL. When present, the orchestrator creates the baseline directly in `success` carrying these metrics and skips evaluation dispatch (the override path, §9.4). The metrics MUST validate against `evaluation_schema` (§9.2); like `variant.evaluation` this is a runtime check the orchestrator performs, not expressible in the config schema. |
+
+The block follows the same posture as `ideation_policy` (§2.4): a conforming orchestrator MUST accept its absence, which is equivalent to `{enabled: true}` (default-on, real evaluation). Supplying `metrics` while `enabled` is `false` is a config error — suppressing a baseline while supplying its metrics — and config validation MUST fail.
 
 ## 3. Task
 
@@ -358,7 +371,8 @@ A variant is one completed attempt.
 |---|---|---|---|
 | `variant_id` | yes | string | Unique identifier. |
 | `experiment_id` | yes | string | The experiment this variant belongs to. |
-| `idea_id` | yes | string | The idea that produced this variant. |
+| `kind` | no | string | Variant classifier. Absent (the default) for ordinary executor-produced variants. `"baseline"` marks the experiment seed elevated to a first-class variant (§9.4). |
+| `idea_id` | conditional | string | The idea that produced this variant. REQUIRED for every variant except a `kind == "baseline"` variant, which MAY omit it (the seed has no producing idea; §9.4, §10 invariant 2). |
 | `status` | yes | string | One of `"starting"`, `"success"`, `"error"`, `"evaluation_error"`. |
 | `parent_commits` | yes | array of SHA | Inherited from the idea. |
 | `branch` | no | string | Worker branch under `work/*`. Present once the executor starts. |
@@ -381,12 +395,27 @@ If present, `metrics` MUST be an object whose keys are a subset of the declared 
 
 Variant status transitions are behavioral and are defined alongside the task and event protocols in [`04-task-protocol.md`](04-task-protocol.md). The data model constrains only that the status be one of the listed strings.
 
+### 9.4 Baseline variants
+
+A `kind == "baseline"` variant represents the experiment seed — the single commit on `main` at experiment start (`commit_sha == base_commit_sha`, §2.5) — elevated to a first-class variant so it can be scored and compared like any other variant. It exists so operators have a "what did the seed score?" anchor and so the lineage tree has a colored root rather than a colorless one.
+
+The following hold for a `kind == "baseline"` variant:
+
+- **At most one per experiment.** A conforming orchestrator MUST NOT create more than one `kind == "baseline"` variant per experiment (single-baseline; multi-baseline is out of scope for v0).
+- **`idea_id` MAY be absent.** The seed has no producing idea, so a baseline MAY omit `idea_id` (§9.1, §10 invariant 2). Every non-baseline variant MUST carry `idea_id`.
+- **`parent_commits` is `[base_commit_sha]`.** The seed is framed as its own parent, so a baseline's single `commit_sha` equals its single `parent_commits` entry — the no-op case, which is permitted for baselines (the no-op prohibition is scoped to executor submissions; see [`03-roles.md`](03-roles.md) §3.3 and [`04-task-protocol.md`](04-task-protocol.md) §4.2).
+- **Never integrated.** A baseline receives no `variant/*` commit and no `variant_commit_sha`: it is already reachable on `main`. A conforming integrator MUST NOT integrate a baseline ([`06-integrator.md`](06-integrator.md) §2), and the `integration` decision (§2.4) and termination-drain rule (§2.5) both carve it out so a successful baseline does not block termination.
+- **Reaches terminal `success` by one of two paths.** Either (default) ordinary evaluation — the baseline is created `status == "starting"` with `commit_sha` set, so the `evaluation_dispatch` decision (§2.4) dispatches an evaluation task for it like any other variant — or (override) the orchestrator stamps config-supplied metrics (§2.7 `baseline.metrics`) at creation and creates the baseline directly in `success`. Either way the metrics MUST validate against `evaluation_schema` (§9.2 applies unchanged; the override path validates at create time, [`08-storage.md`](08-storage.md) §1.7).
+- **`error` / `evaluation_error` are reachable** for a baseline exactly as for any variant (e.g. the evaluator fails to score the seed); no special-casing.
+
+Creating a `kind == "baseline"` variant requires `orchestrators`-group authority ([`07-wire-protocol.md`](07-wire-protocol.md) §4) — ordinary worker authentication does not suffice, because a baseline created directly in `success` carries operator-trusted metrics.
+
 ## 10. Invariants across entities
 
 This section collects structural invariants that span multiple entities. Behavioral invariants (claim semantics, transactional event writes) live in the corresponding behavior chapters.
 
 1. **Identifier scope.** `task_id`, `idea_id`, `variant_id`, and `event_id` MUST each be unique within a single experiment. Uniqueness across experiments is not required by the protocol but is RECOMMENDED when an implementation shares a store across experiments.
-2. **Reference integrity.** Every `idea_id` referenced by a task payload or variant MUST name an idea persisted in the store before the reference is written. Every `variant_id` referenced by an `evaluation` task MUST exist with `status == "starting"` at dispatch time.
+2. **Reference integrity.** Every `idea_id` referenced by a task payload or variant MUST name an idea persisted in the store before the reference is written (a `kind == "baseline"` variant MAY omit `idea_id` — §9.4 — and so references no idea). Every `variant_id` referenced by an `evaluation` task MUST exist with `status == "starting"` at dispatch time.
 3. **Evaluation/schema conformance.** Every evaluation payload persisted on a variant MUST validate against the experiment's `evaluation_schema` (§8).
 4. **Canonical-lineage single-writer.** Only the integrator MAY write to `variant_commit_sha` on a variant. Workers MUST NOT set or modify this field directly.
 5. **Claim uniqueness.** A task MAY have at most one active `claim` object at any time.

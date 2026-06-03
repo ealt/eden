@@ -186,13 +186,15 @@ Request and response bodies match [`schemas/idea.schema.json`](schemas/idea.sche
 
 | Operation | HTTP | Path | Auth |
 |---|---|---|---|
-| `create_variant` | `POST` | `/v0/experiments/{E}/variants` | worker |
+| `create_variant` | `POST` | `/v0/experiments/{E}/variants` | worker (kind-gated: `kind == "baseline"` requires `orchestrators`) |
 | `list_variants` | `GET` | `/v0/experiments/{E}/variants` | either |
 | `read_variant` | `GET` | `/v0/experiments/{E}/variants/{T}` | either |
 | `declare_variant_evaluation_error` | `POST` | `/v0/experiments/{E}/variants/{T}/declare-evaluation-error` | worker |
 | `integrate_variant` | `POST` | `/v0/experiments/{E}/variants/{T}/integrate` | worker (group-gated: `orchestrators`) |
 
 `integrate_variant` binds [`06-integrator.md`](06-integrator.md) §3.4 and carries additional idempotency rules (§5 below); the other endpoints are transport-only bindings of their [`08-storage.md`](08-storage.md) §1.7 operations.
+
+**Per-`kind` authority on `create_variant`:** an ordinary variant (`kind` absent — the executor's output) is worker-authenticated as before. Creating a `kind == "baseline"` variant ([`02-data-model.md`](02-data-model.md) §9.4) additionally requires the caller be in the `orchestrators` group ([`02-data-model.md`](02-data-model.md) §7.5); a caller outside the group receives 403 `eden://error/forbidden`. The carve closes a privilege hole: a baseline MAY be created directly in `success` carrying arbitrary `evaluation` metrics (the override path), so allowing any registered worker to create one would let a malicious/buggy executor fabricate a passing baseline. The baseline create body carries `kind: "baseline"`, MAY omit `idea_id`, and MAY carry a terminal `status: "success"` with `evaluation` + `completed_at` (the override path); the store enforces the precondition relaxation and validates the metrics against `evaluation_schema` per [`08-storage.md`](08-storage.md) §1.7.
 
 **Authority on `integrate_variant`:** caller MUST be in the `orchestrators` group ([`02-data-model.md`](02-data-model.md) §7.5). The integration decision is the orchestrator role's job per [`03-roles.md`](03-roles.md) §6.2 decision 4; a caller outside the group receives 403 `eden://error/forbidden`.
 
@@ -204,6 +206,7 @@ The `POST /v0/experiments/{E}/variants/{T}/integrate` endpoint has additional se
 - **Same-value idempotency.** A repeated call whose `variant_commit_sha` equals the value already stored on the variant MUST return 200 and MUST NOT append a second `variant.integrated` event. This is what lets a client safely retry an `integrate_variant` request after a transport- indeterminate failure without double-commit.
 - **Different-value rejection.** A call whose `variant_commit_sha` differs from the value already stored MUST return 409 `eden://error/invalid-precondition`. A conforming client MUST surface this as an atomicity violation (the chapter 6 §1.2 sole-writer rule has been violated somewhere upstream); operator intervention is required.
 - **Other preconditions.** Standard [`06-integrator.md`](06-integrator.md) §3.4 preconditions continue to apply: the variant MUST be in `status == "success"`, and the `variant_commit_sha` MUST be a well-formed commit SHA; violations return `invalid-precondition`.
+- **Baseline rejection.** A `kind == "baseline"` variant ([`02-data-model.md`](02-data-model.md) §9.4) MUST NOT be integrated: an `integrate_variant` call against one returns 409 `eden://error/invalid-precondition`, writes no `variant_commit_sha`, and emits no `variant.integrated` event. This is the wire-side defense-in-depth behind the integrator's §2 skip ([`06-integrator.md`](06-integrator.md) §2).
 
 A client that issues `integrate_variant` and does not receive a 2xx response (connection reset, read timeout, proxy disconnect) MUST treat the outcome as indeterminate and MUST NOT assume the server has not committed. The reference reconciliation procedure is a read-back (`GET /v0/experiments/{E}/variants/{T}`) that resolves to one of three outcomes:
 
@@ -491,11 +494,14 @@ If the manifest carries `requires_credential_reissue: true` ([`10-checkpoints.md
   "experiment_id": "<id>",
   "state": "running" | "terminated",
   "created_at": "<RFC 3339 timestamp>",
+  "base_commit_sha": "<commit SHA>",
   "imported_from": null | {"checkpoint_exported_at": "<timestamp>", "checkpoint_format_version": "<string>"}
 }
 ```
 
 `imported_from` is `null` on natively-created experiments and an object on imported experiments ([`02-data-model.md`](02-data-model.md) §2.5, [`10-checkpoints.md`](10-checkpoints.md) §10). The endpoint is the recovery-probe surface for the import-response-lost case described in [`10-checkpoints.md`](10-checkpoints.md) §10.
+
+`base_commit_sha` is the experiment seed commit ([`02-data-model.md`](02-data-model.md) §2.5), recorded at registration / repo-init time. The orchestrator reads it (over its worker bearer — see the §14 intro note that `read_experiment` is either-auth, not admin-gated) to create the seed baseline variant ([`02-data-model.md`](02-data-model.md) §9.4). It is omitted from the response when absent (an experiment registered before the field existed).
 
 The companion `GET /v0/experiments/{E}/state` (§2.9) remains worker-accessible and returns only the state projection; this endpoint exposes the full object including `imported_from` and is admin-gated to avoid widening the recovery-probe surface.
 

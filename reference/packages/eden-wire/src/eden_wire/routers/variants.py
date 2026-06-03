@@ -39,7 +39,17 @@ def _create_variant(deps: RouterDeps):
         x_eden_experiment_id: str | None = Header(None),
     ) -> dict[str, Any]:
         check_experiment(deps, experiment_id, x_eden_experiment_id)
-        enforce_worker(deps, request)
+        # §4 per-kind authority: an ordinary variant (kind absent — the
+        # executor's output) is worker-authenticated. Creating a
+        # kind == "baseline" variant additionally requires the
+        # `orchestrators` group (02-data-model.md §9.4) — a baseline MAY be
+        # created directly in `success` with arbitrary metrics, so allowing
+        # any worker would let a buggy/malicious executor fabricate a passing
+        # baseline. enforce_in_any_group also enforces worker authentication.
+        if isinstance(body, dict) and body.get("kind") == "baseline":
+            enforce_in_any_group(deps, request, ("orchestrators",))
+        else:
+            enforce_worker(deps, request)
         try:
             variant = Variant.model_validate(body)
         except ValidationError as exc:

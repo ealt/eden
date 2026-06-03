@@ -188,6 +188,21 @@ def _apply_v6(cur: Any) -> None:
         cur.execute(stmt)
 
 
+# Issue #122: parallels the SQLite v7 migration. Adds the
+# `base_commit_sha` column to the experiment row (the seed commit per
+# `02-data-model.md` §2.5 / §9.4); NULL on pre-#122 rows and on
+# deployments that did not supply a seed. Stored as `text` for parity
+# with SqliteStore.
+_V7_STATEMENTS: list[str] = [
+    "ALTER TABLE experiment ADD COLUMN base_commit_sha text",
+]
+
+
+def _apply_v7(cur: Any) -> None:
+    for stmt in _V7_STATEMENTS:
+        cur.execute(stmt)
+
+
 _MIGRATIONS: list[Callable[[Any], None]] = [
     _apply_v1,
     _apply_v2,
@@ -195,6 +210,7 @@ _MIGRATIONS: list[Callable[[Any], None]] = [
     _apply_v4,
     _apply_v5,
     _apply_v6,
+    _apply_v7,
 ]
 
 

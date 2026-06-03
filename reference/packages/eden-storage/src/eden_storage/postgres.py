@@ -474,6 +474,7 @@ class PostgresStore(_StoreBase):
         now: Callable[[], datetime] | None = None,
         event_id_factory: Callable[[], str] | None = None,
         tree_resolver: Callable[[str], str | None] | None = None,
+        base_commit_sha: str | None = None,
     ) -> None:
         super().__init__(
             experiment_id,
@@ -481,6 +482,7 @@ class PostgresStore(_StoreBase):
             now=now,
             event_id_factory=event_id_factory,
             tree_resolver=tree_resolver,
+            base_commit_sha=base_commit_sha,
         )
         self._dsn = dsn
         # autocommit=True + explicit BEGIN/COMMIT per op mirrors
@@ -536,12 +538,13 @@ class PostgresStore(_StoreBase):
                 created_at = self._ts()
                 cur.execute(
                     "INSERT INTO experiment(experiment_id, evaluation_schema, "
-                    "state, created_at) VALUES (%s, %s, %s, %s)",
+                    "state, created_at, base_commit_sha) VALUES (%s, %s, %s, %s, %s)",
                     (
                         experiment_id,
                         schema_json,
                         _DEFAULT_EXPERIMENT_STATE,
                         created_at,
+                        self._base_commit_sha,
                     ),
                 )
                 return
@@ -776,8 +779,8 @@ class PostgresStore(_StoreBase):
     def _get_experiment(self) -> Experiment:
         with self._conn.cursor() as cur:
             cur.execute(
-                "SELECT state, created_at, imported_from FROM experiment "
-                "WHERE experiment_id = %s",
+                "SELECT state, created_at, imported_from, base_commit_sha "
+                "FROM experiment WHERE experiment_id = %s",
                 (self._experiment_id,),
             )
             row = cur.fetchone()
@@ -788,11 +791,14 @@ class PostgresStore(_StoreBase):
         imported_from: ImportProvenance | None = None
         if row[2] is not None:
             imported_from = ImportProvenance.model_validate_json(row[2])
+        # base_commit_sha carries NotNone — omit when absent (passing an
+        # explicit None trips the reject-null validator).
         return Experiment(
             experiment_id=self._experiment_id,
             state=row[0],
             created_at=row[1],
             imported_from=imported_from,
+            **({"base_commit_sha": row[3]} if row[3] is not None else {}),
         )
 
     # ------------------------------------------------------------------
@@ -863,6 +869,15 @@ class PostgresStore(_StoreBase):
                     "WHERE experiment_id = %s",
                     (serialized, self._experiment_id),
                 )
+        if tx.base_commit_sha_update is not None:
+            (new_base_commit_sha,) = tx.base_commit_sha_update
+            with self._conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE experiment SET base_commit_sha = %s "
+                    "WHERE experiment_id = %s",
+                    (new_base_commit_sha, self._experiment_id),
+                )
+            self._base_commit_sha = new_base_commit_sha
         for event in tx.events:
             self._insert_event(event)
 

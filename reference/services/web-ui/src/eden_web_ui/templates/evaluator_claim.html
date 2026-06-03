@@ -51,6 +51,9 @@
 
 <section class="idea">
     <h2>idea</h2>
+    {% if not idea %}
+    <p>None — this is a <code>kind=baseline</code> variant (the experiment seed); it has no producing idea. Evaluate the seed commit directly.</p>
+    {% else %}
     <table>
         <tbody>
             <tr><th>id</th><td><code>{{ idea.idea_id }}</code></td></tr>
@@ -83,6 +86,7 @@
     {% with manifest=idea_manifest, bundle_uri=idea.artifacts_uri, bundle_label="idea" %}
         {% include "_artifact_manifest.html" %}
     {% endwith %}
+    {% endif %}
 </section>
 
 <section class="instructions">

@@ -672,6 +672,79 @@ EXPERIMENT_CONFIG_CASES: list[Case] = [
         },
         False,
     ),
+    # --- baseline block (02-data-model.md §2.7) ---
+    Case(
+        "baseline_enabled_true",
+        {
+            "parallel_variants": 2,
+            "evaluation_schema": {"accuracy": "real"},
+            "objective": {"expr": "accuracy", "direction": "maximize"},
+            "baseline": {"enabled": True},
+        },
+        True,
+    ),
+    Case(
+        "baseline_disabled",
+        {
+            "parallel_variants": 2,
+            "evaluation_schema": {"accuracy": "real"},
+            "objective": {"expr": "accuracy", "direction": "maximize"},
+            "baseline": {"enabled": False},
+        },
+        True,
+    ),
+    Case(
+        "baseline_with_metrics_override",
+        {
+            "parallel_variants": 2,
+            "evaluation_schema": {"accuracy": "real"},
+            "objective": {"expr": "accuracy", "direction": "maximize"},
+            "baseline": {"metrics": {"accuracy": 0.5}},
+        },
+        True,
+    ),
+    Case(
+        "baseline_enabled_with_metrics",
+        {
+            "parallel_variants": 2,
+            "evaluation_schema": {"accuracy": "real"},
+            "objective": {"expr": "accuracy", "direction": "maximize"},
+            "baseline": {"enabled": True, "metrics": {"accuracy": 0.5}},
+        },
+        True,
+    ),
+    Case(
+        "baseline_empty_block",
+        {
+            "parallel_variants": 2,
+            "evaluation_schema": {"accuracy": "real"},
+            "objective": {"expr": "accuracy", "direction": "maximize"},
+            "baseline": {},
+        },
+        True,
+    ),
+    Case(
+        "baseline_disabled_with_metrics_rejected",
+        # Suppressing a baseline while supplying its metrics is a config error
+        # (02-data-model.md §2.7).
+        {
+            "parallel_variants": 2,
+            "evaluation_schema": {"accuracy": "real"},
+            "objective": {"expr": "accuracy", "direction": "maximize"},
+            "baseline": {"enabled": False, "metrics": {"accuracy": 0.5}},
+        },
+        False,
+    ),
+    Case(
+        "baseline_enabled_explicit_null_rejected",
+        {
+            "parallel_variants": 2,
+            "evaluation_schema": {"accuracy": "real"},
+            "objective": {"expr": "accuracy", "direction": "maximize"},
+            "baseline": {"enabled": None},
+        },
+        False,
+    ),
 ]
 
 
@@ -1515,6 +1588,39 @@ EVENT_CASES: list[Case] = [
         True,
     ),
     Case(
+        "variant_started_baseline_ok",
+        {
+            "event_id": "evt-ts-101",
+            "type": "variant.started",
+            "occurred_at": _DT,
+            "experiment_id": "exp-1",
+            "data": {"variant_id": "baseline", "kind": "baseline"},
+        },
+        True,
+    ),
+    Case(
+        "variant_started_missing_idea_id_not_baseline",
+        {
+            "event_id": "evt-ts-102",
+            "type": "variant.started",
+            "occurred_at": _DT,
+            "experiment_id": "exp-1",
+            "data": {"variant_id": "variant-1"},
+        },
+        False,
+    ),
+    Case(
+        "variant_started_baseline_may_carry_idea_id",
+        {
+            "event_id": "evt-ts-103",
+            "type": "variant.started",
+            "occurred_at": _DT,
+            "experiment_id": "exp-1",
+            "data": {"variant_id": "baseline", "kind": "baseline", "idea_id": "idea-1"},
+        },
+        True,
+    ),
+    Case(
         "variant_succeeded_ok",
         {
             "event_id": "evt-ts-200",
@@ -2198,6 +2304,85 @@ VARIANT_CASES: list[Case] = [
         },
         False,
     ),
+    # --- Baseline variants (kind == "baseline"; 02-data-model.md §9.4) ---
+    Case(
+        "baseline_starting_no_idea_id",
+        {
+            "variant_id": "baseline",
+            "experiment_id": "exp-1",
+            "kind": "baseline",
+            "status": "starting",
+            "parent_commits": [_SHA1],
+            "commit_sha": _SHA1,
+            "started_at": _DT,
+        },
+        True,
+    ),
+    Case(
+        "baseline_success_with_evaluation",
+        {
+            "variant_id": "baseline",
+            "experiment_id": "exp-1",
+            "kind": "baseline",
+            "status": "success",
+            "parent_commits": [_SHA1],
+            "commit_sha": _SHA1,
+            "evaluation": {"accuracy": 0.5},
+            "started_at": _DT,
+            "completed_at": _DT2,
+        },
+        True,
+    ),
+    Case(
+        "baseline_may_carry_idea_id",
+        {
+            "variant_id": "baseline",
+            "experiment_id": "exp-1",
+            "kind": "baseline",
+            "idea_id": "idea-1",
+            "status": "starting",
+            "parent_commits": [_SHA1],
+            "commit_sha": _SHA1,
+            "started_at": _DT,
+        },
+        True,
+    ),
+    Case(
+        "ordinary_variant_missing_idea_id_rejected",
+        {
+            "variant_id": "variant-18",
+            "experiment_id": "exp-1",
+            "status": "starting",
+            "parent_commits": [_SHA1],
+            "started_at": _DT,
+        },
+        False,
+    ),
+    Case(
+        "unknown_kind_rejected",
+        {
+            "variant_id": "variant-19",
+            "experiment_id": "exp-1",
+            "kind": "experimental",
+            "status": "starting",
+            "parent_commits": [_SHA1],
+            "started_at": _DT,
+        },
+        False,
+    ),
+    Case(
+        "baseline_explicit_null_kind_rejected",
+        {
+            "variant_id": "variant-20",
+            "experiment_id": "exp-1",
+            "kind": None,
+            "idea_id": "idea-1",
+            "status": "starting",
+            "parent_commits": [_SHA1],
+            "started_at": _DT,
+        },
+        False,
+    ),
 ]
 
 
@@ -2383,8 +2568,58 @@ EVALUATION_SCHEMA_CASES: list[Case] = [
 ]
 
 
+EXPERIMENT_CASES: list[Case] = [
+    Case(
+        "running_minimal",
+        {"experiment_id": "exp-1", "state": "running", "created_at": _DT},
+        True,
+    ),
+    Case(
+        "with_base_commit_sha",
+        {
+            "experiment_id": "exp-1",
+            "state": "running",
+            "created_at": _DT,
+            "base_commit_sha": _SHA1,
+        },
+        True,
+    ),
+    Case(
+        "base_commit_sha_sha256",
+        {
+            "experiment_id": "exp-1",
+            "state": "terminated",
+            "created_at": _DT,
+            "base_commit_sha": _SHA256,
+        },
+        True,
+    ),
+    Case(
+        "base_commit_sha_explicit_null_rejected",
+        {
+            "experiment_id": "exp-1",
+            "state": "running",
+            "created_at": _DT,
+            "base_commit_sha": None,
+        },
+        False,
+    ),
+    Case(
+        "base_commit_sha_malformed_rejected",
+        {
+            "experiment_id": "exp-1",
+            "state": "running",
+            "created_at": _DT,
+            "base_commit_sha": "not-a-sha",
+        },
+        False,
+    ),
+]
+
+
 ALL_CASES: dict[str, list[Case]] = {
     "experiment-config": EXPERIMENT_CONFIG_CASES,
+    "experiment": EXPERIMENT_CASES,
     "task": TASK_CASES,
     "event": EVENT_CASES,
     "idea": IDEA_CASES,

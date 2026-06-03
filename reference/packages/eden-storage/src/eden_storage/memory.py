@@ -141,11 +141,19 @@ class InMemoryStore(_StoreBase):
         return dict(self._dispatch_mode)
 
     def _get_experiment(self) -> Experiment:
+        # base_commit_sha carries NotNone — passing an explicit None would
+        # trip the reject-null validator, so omit the kwarg when absent and
+        # let the field default to None.
         return Experiment(
             experiment_id=self._experiment_id,
             state=self._experiment_state,  # type: ignore[arg-type]
             created_at=self._experiment_created_at,
             imported_from=self._imported_from,
+            **(
+                {"base_commit_sha": self._base_commit_sha}
+                if self._base_commit_sha is not None
+                else {}
+            ),
         )
 
     def _apply_commit(self, tx: _Tx) -> None:
@@ -177,4 +185,7 @@ class InMemoryStore(_StoreBase):
         if tx.imported_from_update is not None:
             (new_imported_from,) = tx.imported_from_update
             self._imported_from = new_imported_from
+        if tx.base_commit_sha_update is not None:
+            (new_base_commit_sha,) = tx.base_commit_sha_update
+            self._base_commit_sha = new_base_commit_sha
         self._events.extend(tx.events)

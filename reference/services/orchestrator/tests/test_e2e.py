@@ -290,6 +290,12 @@ def test_three_variant_experiment_over_subprocesses(tmp_path: Path) -> None:
                 )
             repo = GitRepo(str(bare_repo))
             for variant in variants:
+                # This deployment's task-store-server is started without
+                # --base-commit-sha, so no kind=='baseline' variant is
+                # created (issue #122 §9.4); every success variant here is
+                # an ordinary executor-produced variant with an idea_id.
+                assert variant.kind is None
+                assert variant.idea_id is not None
                 assert variant.variant_commit_sha is not None
                 assert variant.parent_commits == [base_sha]
                 parents = repo.commit_parents(variant.variant_commit_sha)

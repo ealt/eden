@@ -46,6 +46,7 @@ _COMMON_COLUMN_EXPRS: list[tuple[str, str]] = [
     ("variant_id", "variant_id"),
     ("status", "status"),
     ("experiment_id", "data::jsonb ->> 'experiment_id'"),
+    ("kind", "data::jsonb ->> 'kind'"),
     ("idea_id", "data::jsonb ->> 'idea_id'"),
     ("branch", "data::jsonb ->> 'branch'"),
     ("commit_sha", "data::jsonb ->> 'commit_sha'"),

@@ -46,6 +46,8 @@ The mechanism by which the integrator observes the trigger — subscribing to `v
 
 A conforming integrator MUST NOT integrate variants in any other status. In particular, `error`, `evaluation_error`, and `starting` variants MUST NOT receive a `variant/*` commit.
 
+A conforming integrator MUST NOT integrate a `kind == "baseline"` variant ([`02-data-model.md`](02-data-model.md) §9.4), regardless of its `status`. A baseline has no `work/*` branch to squash and already points at the seed on `main`, so it receives no `variant/*` commit, no `variant_commit_sha`, and no `variant.integrated` event. This carve is paired with the `integration` decision predicate and the termination-drain rule ([`02-data-model.md`](02-data-model.md) §2.4, §2.5), both of which exclude baselines so a successful baseline does not block termination. A binding MAY additionally reject a manual/operator `integrate_variant` call against a baseline with `eden://error/invalid-precondition` ([`07-wire-protocol.md`](07-wire-protocol.md) §5) as defense in depth.
+
 The integrator MUST NOT integrate a variant whose `metrics` do not validate against the experiment's `evaluation_schema` ([`02-data-model.md`](02-data-model.md) §9.2, [`08-storage.md`](08-storage.md) §4). The orchestrator's acceptance of a `success` submission is the primary guard for this; the integrator MAY additionally re-validate as defense in depth but MUST NOT silently drop or coerce invalid metrics.
 
 ## 3. Integration output

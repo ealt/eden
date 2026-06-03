@@ -6,7 +6,6 @@
   "required": [
     "variant_id",
     "experiment_id",
-    "idea_id",
     "status",
     "parent_commits",
     "started_at"
@@ -19,6 +18,11 @@
     "experiment_id": {
       "type": "string",
       "minLength": 1
+    },
+    "kind": {
+      "type": "string",
+      "enum": ["baseline"],
+      "description": "Variant classifier. Absent (the default) for ordinary executor-produced variants. 'baseline' marks the experiment seed elevated to a first-class variant (spec/v0/02-data-model.md §9.4); a baseline MAY omit idea_id."
     },
     "idea_id": {
       "type": "string",
@@ -92,5 +96,17 @@
       "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
       "description": "worker_id of the evaluator whose metrics were committed; written at evaluation-task submit time."
     }
-  }
+  },
+  "allOf": [
+    {
+      "description": "idea_id is required for every variant except a kind=='baseline' variant (the seed has no producing idea; spec/v0/02-data-model.md §9.4 / §10 invariant 2).",
+      "if": {
+        "not": {
+          "properties": {"kind": {"const": "baseline"}},
+          "required": ["kind"]
+        }
+      },
+      "then": {"required": ["idea_id"]}
+    }
+  ]
 }

@@ -90,6 +90,7 @@ The v1+roles+integrator scenario groups (added in chunk 11d), with their primary
 |---|---|---|
 | Integrator atomicity | Cross-artifact (field, event) consistency on success; no-overwrite under repeat integration. | [`06-integrator.md`](06-integrator.md) §3.4, §5.3 |
 | Integration preconditions | Status-vocabulary preconditions for integration (`error`, `evaluation_error`); end-state assertion on rejection. | [`06-integrator.md`](06-integrator.md) §2 |
+| Baseline variant | `kind == "baseline"` round-trips through `create_variant` / `read_variant` / `list_variants`; a baseline in `success` without `variant_commit_sha` is NOT integratable (`integrate_variant` → 409 `eden://error/invalid-precondition`, no `variant.integrated`); override-path metrics validate against `evaluation_schema` (bad rejected, good accepted); `idea_id` is required on `create_variant` unless `kind == "baseline"`; per-`kind` authority — `create_variant(kind="baseline")` requires the `orchestrators` group (a plain worker is rejected). The default-path auto-dispatch of a baseline evaluation task is an orchestrator-role decision, not a task-store wire MUST, and is **out of scope** for the wire-only suite (covered by reference-impl orchestrator e2e tests). | [`02-data-model.md`](02-data-model.md) §9.2, §9.4, §10; [`06-integrator.md`](06-integrator.md) §2; [`07-wire-protocol.md`](07-wire-protocol.md) §4, §5 |
 
 The v1+checkpoints scenario groups (added in chunk 12b), with their primary spec citations:
 

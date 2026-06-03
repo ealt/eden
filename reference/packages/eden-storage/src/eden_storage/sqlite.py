@@ -107,6 +107,7 @@ class SqliteStore(_StoreBase):
         now: Callable[[], datetime] | None = None,
         event_id_factory: Callable[[], str] | None = None,
         tree_resolver: Callable[[str], str | None] | None = None,
+        base_commit_sha: str | None = None,
     ) -> None:
         super().__init__(
             experiment_id,
@@ -114,6 +115,7 @@ class SqliteStore(_StoreBase):
             now=now,
             event_id_factory=event_id_factory,
             tree_resolver=tree_resolver,
+            base_commit_sha=base_commit_sha,
         )
         self._path = str(path)
         # isolation_level=None ⇒ manual BEGIN/COMMIT control. Without
@@ -186,8 +188,14 @@ class SqliteStore(_StoreBase):
             created_at = self._ts()
             self._conn.execute(
                 "INSERT INTO experiment(experiment_id, evaluation_schema, "
-                "state, created_at) VALUES (?, ?, ?, ?)",
-                (experiment_id, schema_json, _DEFAULT_EXPERIMENT_STATE, created_at),
+                "state, created_at, base_commit_sha) VALUES (?, ?, ?, ?, ?)",
+                (
+                    experiment_id,
+                    schema_json,
+                    _DEFAULT_EXPERIMENT_STATE,
+                    created_at,
+                    self._base_commit_sha,
+                ),
             )
             self._conn.commit()
             return
@@ -413,7 +421,7 @@ class SqliteStore(_StoreBase):
 
     def _get_experiment(self) -> Experiment:
         row = self._conn.execute(
-            "SELECT state, created_at, imported_from FROM experiment "
+            "SELECT state, created_at, imported_from, base_commit_sha FROM experiment "
             "WHERE experiment_id = ?",
             (self._experiment_id,),
         ).fetchone()
@@ -427,11 +435,14 @@ class SqliteStore(_StoreBase):
         imported_from: ImportProvenance | None = None
         if row[2] is not None:
             imported_from = ImportProvenance.model_validate_json(row[2])
+        # base_commit_sha carries NotNone — omit when absent (passing an
+        # explicit None trips the reject-null validator).
         return Experiment(
             experiment_id=self._experiment_id,
             state=row[0],
             created_at=row[1],
             imported_from=imported_from,
+            **({"base_commit_sha": row[3]} if row[3] is not None else {}),
         )
 
     # ------------------------------------------------------------------
@@ -499,6 +510,13 @@ class SqliteStore(_StoreBase):
                 "UPDATE experiment SET imported_from = ? WHERE experiment_id = ?",
                 (serialized, self._experiment_id),
             )
+        if tx.base_commit_sha_update is not None:
+            (new_base_commit_sha,) = tx.base_commit_sha_update
+            self._conn.execute(
+                "UPDATE experiment SET base_commit_sha = ? WHERE experiment_id = ?",
+                (new_base_commit_sha, self._experiment_id),
+            )
+            self._base_commit_sha = new_base_commit_sha
         for event in tx.events:
             self._insert_event(event)
 

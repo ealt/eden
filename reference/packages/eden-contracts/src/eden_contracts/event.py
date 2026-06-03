@@ -21,9 +21,10 @@ from pydantic import (
     StringConstraints,
     TypeAdapter,
     model_serializer,
+    model_validator,
 )
 
-from ._common import CommitSha, DateTimeStr
+from ._common import CommitSha, DateTimeStr, NotNone
 from .config import DispatchModeValue
 from .task import TaskTarget
 
@@ -274,7 +275,26 @@ class IdeaCompletedEvent(_RegisteredEventBase):
 class _VariantStartedData(BaseModel):
     model_config = ConfigDict(strict=True, extra="allow")
     variant_id: Annotated[str, Field(min_length=1)]
-    idea_id: Annotated[str, Field(min_length=1)]
+    idea_id: Annotated[str | None, NotNone, Field(min_length=1)] = None
+    """The producing idea. Absent for a ``kind == "baseline"`` variant, which
+    has no producing idea (``05-event-protocol.md`` §3.3, ``02-data-model.md``
+    §9.4)."""
+    kind: Annotated[Literal["baseline"] | None, NotNone] = None
+    """REQUIRED when the variant is a baseline so event-only subscribers get an
+    explicit signal rather than inferring from a missing ``idea_id``; absent for
+    an ordinary variant. Enforced by ``_kind_or_idea_id_present`` below."""
+
+    @model_validator(mode="after")
+    def _kind_or_idea_id_present(self) -> _VariantStartedData:
+        # An ordinary variant.started carries idea_id; a baseline carries
+        # kind == "baseline" and omits idea_id (05-event-protocol.md §3.3).
+        if self.kind == "baseline":
+            return self
+        if self.idea_id is None:
+            raise ValueError(
+                "variant.started payload requires idea_id unless kind == 'baseline'"
+            )
+        return self
 
 
 class VariantStartedEvent(_RegisteredEventBase):
