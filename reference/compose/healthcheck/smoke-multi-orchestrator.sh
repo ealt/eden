@@ -38,7 +38,16 @@ REPO_ROOT="$(cd "${COMPOSE_DIR}/../.." && pwd)"
 cd "$COMPOSE_DIR"
 
 ENV_FILE="$(mktemp)"
-EXPERIMENT_ID="smoke-multi"
+# #128: mint an opaque `exp_*` experiment id (the wire grammar rejects
+# the old typed "smoke-multi" mnemonic). Same Crockford-base32 ULID
+# one-liner setup-experiment uses; passed via `--experiment-id`.
+EXPERIMENT_ID="$(python3 - <<'PY'
+import secrets, time
+alphabet = "0123456789abcdefghjkmnpqrstvwxyz"
+value = ((int(time.time() * 1000) & ((1 << 48) - 1)) << 80) | secrets.randbits(80)
+print("exp_" + "".join(alphabet[(value >> (5 * i)) & 31] for i in range(26))[::-1])
+PY
+)"
 
 COMPOSE_FILES=(-f compose.yaml -f compose.multi-orchestrator.yaml)
 
@@ -95,25 +104,57 @@ test -n "$EDEN_ADMIN_TOKEN"
 EXP_BASE="/v0/experiments/${EXPERIMENT_ID}"
 
 call_wire() {
-    local method="$1" path="$2"
-    docker compose "${COMPOSE_FILES[@]}" --env-file "$ENV_FILE" \
-        exec -T task-store-server curl -fsS \
-            -X "$method" \
-            -H "Authorization: Bearer admin:${EDEN_ADMIN_TOKEN}" \
-            -H "X-Eden-Experiment-Id: ${EXPERIMENT_ID}" \
-            "http://localhost:8080${path}"
+    local method="$1" path="$2" body="${3:-}"
+    if [[ -n "$body" ]]; then
+        docker compose "${COMPOSE_FILES[@]}" --env-file "$ENV_FILE" \
+            exec -T task-store-server curl -fsS \
+                -X "$method" \
+                -H "Authorization: Bearer admin:${EDEN_ADMIN_TOKEN}" \
+                -H "X-Eden-Experiment-Id: ${EXPERIMENT_ID}" \
+                -H "Content-Type: application/json" \
+                -d "$body" \
+                "http://localhost:8080${path}"
+    else
+        docker compose "${COMPOSE_FILES[@]}" --env-file "$ENV_FILE" \
+            exec -T task-store-server curl -fsS \
+                -X "$method" \
+                -H "Authorization: Bearer admin:${EDEN_ADMIN_TOKEN}" \
+                -H "X-Eden-Experiment-Id: ${EXPERIMENT_ID}" \
+                "http://localhost:8080${path}"
+    fi
 }
+
+# #128: ids are opaque, system-minted. Resolve the ids setup-experiment
+# wrote to .env (the orchestrators group's grp_* id and the primary
+# orchestrator's wkr_* id).
+EDEN_ORCHESTRATORS_GROUP_ID="$(grep -E '^EDEN_ORCHESTRATORS_GROUP_ID=' "$ENV_FILE" | cut -d= -f2-)"
+EDEN_ORCHESTRATOR_WORKER_ID="$(grep -E '^EDEN_ORCHESTRATOR_WORKER_ID=' "$ENV_FILE" | cut -d= -f2-)"
+test -n "$EDEN_ORCHESTRATORS_GROUP_ID"
+test -n "$EDEN_ORCHESTRATOR_WORKER_ID"
+
+# setup-experiment mints only the primary orchestrator's worker. This
+# smoke mints the SECOND replica's per-experiment worker so the overlay's
+# ${EDEN_ORCHESTRATOR_2_WORKER_ID} resolves. Registering goes through the
+# wire, so bring up the task-store-server first, mint, then the full stack.
+echo "--- staged bring-up: task-store-server first (to mint orchestrator-2) ---"
+docker compose "${COMPOSE_FILES[@]}" --env-file "$ENV_FILE" \
+    up -d --wait --wait-timeout 240 task-store-server
+
+ORCH2_JSON="$(call_wire POST "${EXP_BASE}/workers" '{"name":"orchestrator-2"}')"
+EDEN_ORCHESTRATOR_2_WORKER_ID="$(echo "$ORCH2_JSON" | jq -r '.worker_id')"
+test -n "$EDEN_ORCHESTRATOR_2_WORKER_ID"
+printf 'EDEN_ORCHESTRATOR_2_WORKER_ID=%s\n' "$EDEN_ORCHESTRATOR_2_WORKER_ID" >> "$ENV_FILE"
 
 echo "--- bringing up the full stack with multi-orchestrator overlay ---"
 docker compose "${COMPOSE_FILES[@]}" --env-file "$ENV_FILE" \
     up -d --wait --wait-timeout 240
 
-# Both replicas should have joined the `orchestrators` group at
-# startup via the wave-4 `_ensure_orchestrators_membership` helper.
-# Assert both worker_ids are members.
+# Both replicas join the `orchestrators` group at startup via the
+# `_ensure_orchestrators_membership` helper. Assert both minted
+# worker_ids are members (the group is addressed by its opaque grp_* id).
 echo "--- asserting both orchestrators joined the orchestrators group ---"
-ORCH_JSON="$(call_wire GET "${EXP_BASE}/groups/orchestrators")"
-for wid in orchestrator orchestrator-2; do
+ORCH_JSON="$(call_wire GET "${EXP_BASE}/groups/${EDEN_ORCHESTRATORS_GROUP_ID}")"
+for wid in "$EDEN_ORCHESTRATOR_WORKER_ID" "$EDEN_ORCHESTRATOR_2_WORKER_ID"; do
     echo "$ORCH_JSON" | jq -e --arg w "$wid" '.members | index($w)' >/dev/null \
         || {
             echo "orchestrators group missing $wid: $ORCH_JSON" >&2

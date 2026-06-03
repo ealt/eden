@@ -57,7 +57,18 @@ cd "$COMPOSE_DIR"
 
 ENV_FILE="$(mktemp)"
 SMOKE_DATA_ROOT="$(mktemp -d -t eden-smoke-logging-XXXXXX)"
-EXPERIMENT_ID="smoke-logging-exp"
+# #128: mint an opaque `exp_*` experiment id (the wire grammar rejects
+# the old typed "smoke-logging-exp" mnemonic). This script asserts on
+# Loki `service` labels rather than experiment-scoped wire reads, but
+# the EDEN services still need a grammar-valid id to register against
+# the task-store-server at startup. Passed via `--experiment-id`.
+EXPERIMENT_ID="$(python3 - <<'PY'
+import secrets, time
+alphabet = "0123456789abcdefghjkmnpqrstvwxyz"
+value = ((int(time.time() * 1000) & ((1 << 48) - 1)) << 80) | secrets.randbits(80)
+print("exp_" + "".join(alphabet[(value >> (5 * i)) & 31] for i in range(26))[::-1])
+PY
+)"
 
 # The overlay set is reused across up / down / exec; keep it in one
 # place. The infra overlay is layered later (conditionally), so the
