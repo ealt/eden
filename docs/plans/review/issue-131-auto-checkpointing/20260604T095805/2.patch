@@ -1,0 +1,145 @@
+--- docs/plans/review/issue-131-auto-checkpointing/20260604T095805/1.md	2026-06-04 10:05:39
++++ docs/plans/issue-131-auto-checkpointing.md	2026-06-04 10:10:04
+@@ -128,7 +128,7 @@
+ Default resolves to `${EDEN_EXPERIMENT_DATA_ROOT}/checkpoints` at the
+ compose layer (the orchestrator just receives a resolved path).
+ 
+-### D4 — The orchestrator exports with the **admin bearer**, no spec change
++### D4 — The orchestrator exports with the **admin bearer**, no wire/spec authority change
+ 
+ The export endpoint is **deliberately admin-gated as "bootstrap-class"**
+ ([`07-wire-protocol.md`](../../spec/v0/07-wire-protocol.md) §14): the
+@@ -273,14 +273,18 @@
+ admin-authed `export_fn`. Responsibilities — pure enough to unit-test
+ without the loop:
+ 
+-- `maybe_checkpoint_periodic(*, wall_now)` — if
+-  `now_fn() - next_at >= 0`, export to `<dir>/<safe_exp>-<wall_ts>.tar`,
+-  advance `next_at += interval_seconds`, then prune. **First checkpoint
+-  is one full interval after construction** (`next_at` initialized to
++- `maybe_checkpoint_periodic(*, wall_now)` — if `now_fn() >= next_at`,
++  export to `<dir>/<safe_exp>-<wall_ts>.tar`, then prune, then set
++  `next_at = now_fn() + interval_seconds`. **First checkpoint is one full
++  interval after construction** (`next_at` initialized to
+   `start + interval_seconds`) — startup state is just the seed, low value,
+-  and this avoids a t=0 churn checkpoint. Best-effort (D5): on any
+-  exception, log and **still advance `next_at` by one interval** (no
+-  retry storm); a partial temp file is cleaned up.
++  and this avoids a t=0 churn checkpoint. The timer is measured **from
++  the completion of the last attempt**, not from a fixed slot, so a slow
++  export or a delayed loop tick cannot leave `next_at` in the past and
++  produce back-to-back catch-up checkpoints (the invariant is "at most
++  one attempt per interval after the last attempt"). Best-effort (D5): on
++  any exception, log, clean up the partial temp file, and **still set
++  `next_at = now + interval`** (no retry storm — retry waits one cadence).
+ - `maybe_checkpoint_terminal()` — if `on_terminate`, not already done
+   this process, **and no `<safe_exp>-terminated-*.tar` already exists in
+   the destination** (restart dedup, D6), export to
+@@ -291,11 +295,20 @@
+   `retention_count`. Robust to unexpected files (a too-broad glob is a
+   data-loss vector — §8 risk 3).
+ 
+-**Filename safety.** `experiment_id` is an arbitrary ≤64-char string per
++**Filename safety + collision-freedom.** `experiment_id` is an arbitrary
++≤64-char string per
+ [`02-data-model.md`](../../spec/v0/02-data-model.md) §1.3 (not guaranteed
+-filesystem-safe). The scheduler derives `safe_exp` by replacing any
+-character outside `[A-Za-z0-9._-]` with `_` before composing filenames,
+-so a `/`-bearing id cannot escape the destination dir or collide oddly.
++filesystem-safe). The scheduler derives
++`safe_exp = sanitize(experiment_id) + "-" + sha256(experiment_id)[:8]`,
++where `sanitize` replaces any character outside `[A-Za-z0-9._-]` with `_`.
++A bare sanitizer would alias distinct ids (`a/b` and `a_b` both → `a_b`),
++and since pruning matches on the filename prefix that could delete a
++*different* experiment's archives in a shared destination; the raw-id
++hash suffix makes the prefix collision-free. (In the reference deployment
++each experiment already gets its own destination — `DATA_ROOT` defaults to
++`${HOME}/.eden/experiments/${EXPERIMENT_ID}` — so cross-experiment sharing
++is unusual; the hash is defense-in-depth so the safety doesn't *rely* on
++that.)
+ 
+ **Atomic write.** Export goes to a temp file **created inside the
+ destination directory** (`tempfile.NamedTemporaryFile(dir=dest, ...)`) so
+@@ -358,14 +371,25 @@
+   but with a fixture config that sets `auto_checkpoint.enabled: true` and
+   a short `interval_seconds`. Asserts: ≥1 periodic `.tar` appears in the
+   host checkpoints dir while the experiment runs; each `.tar` parses and
+-  carries `manifest.json`; the periodic count never exceeds
+-  `retention_count`. To make the terminal assertion **deterministic**,
+-  the smoke **explicitly terminates** the experiment (drive a
+-  `termination=auto` policy to fire, or `POST .../terminate` with the
+-  admin bearer) and only then asserts a `<exp>-terminated-*.tar` exists —
+-  it does NOT infer termination from orchestrator exit (a quiescent-but-
+-  running exit must produce no terminal archive). Bash-3.2 clean (no
+-  `mapfile`/`declare -A`) per AGENTS.md.
++  carries `manifest.json` with populated wire-state JSONL; the periodic
++  count never exceeds `retention_count`. It asserts the archive is
++  **structurally valid**, NOT repo-bundle-complete — the compose
++  task-store-server carries no `--repo-path` today and so emits an empty
++  bundle (inherited 12b gap — §4.2 deferral, §8 risk 8). To make the
++  terminal assertion **deterministic**,
++  the smoke drives the experiment to an actual `terminated` state via the
++  orchestrator's own `termination=auto` policy (the orchestrator commits
++  the transition over its `orchestrators`-group worker bearer — the clean
++  path that needs no extra auth wiring). **Note:** `POST .../terminate` is
++  group-gated to `(admins, orchestrators)` — a *worker bearer in those
++  groups*, **not** the literal deployment-admin bearer (which is valid
++  only for the bootstrap-class checkpoint export/import endpoints, §14).
++  So the smoke does not hand-roll an admin-bearer terminate; it lets the
++  orchestrator terminate. Only then does it assert a
++  `<safe_exp>-terminated-*.tar` exists — it does NOT infer termination
++  from orchestrator exit (a quiescent-but-running exit must produce no
++  terminal archive). Bash-3.2 clean (no `mapfile`/`declare -A`) per
++  AGENTS.md.
+ - `.github/workflows/ci.yml`: `compose-smoke-auto-checkpoint` job mirroring
+   the existing `compose-smoke-checkpoint` job (no `setup-python` needed —
+   pure docker/jq/curl). Includes the volume-cleanup-between-runs guard.
+@@ -416,6 +440,14 @@
+   (terminate after the orchestrator has exited). Needs the
+   task-store-server to own a destination + repo bundle + admin context.
+   Filed as a follow-up.
++- **Compose repo-bundle completeness (inherited 12b gap, §8 risk 8).**
++  The compose `task-store-server` carries no `--repo-path`, so checkpoint
++  archives (manual *and* auto) ship an empty git bundle. Closing this
++  needs a design choice for the canonical-bundle source (a dedicated
++  Forgejo-fetching checkpoint-repo clone, or bundling from Forgejo
++  directly). Affects manual checkpoints equally, so it's a 12b-completeness
++  follow-up rather than auto-checkpoint scope. Filed as a follow-up and
++  referenced from the CHANGELOG entry.
+ - **Checkpoint compression** (`.tar.gz`). Out of scope per the issue
+   ("Compression strategy choices"). Filed if a real size motivator surfaces.
+ 
+@@ -587,14 +619,24 @@
+    Documented in observability docs so operators running with
+    `auto_checkpoint.enabled: true` understand the orchestrator is now a
+    long-lived admin-token holder.
+-8. **Incomplete archives if the task-store-server substrate is unwired.**
+-   The export composes the experiment-config text + repo bundle
+-   server-side ([`checkpoints.py`](../../reference/packages/eden-wire/src/eden_wire/routers/checkpoints.py));
+-   when the task-store-server has no `checkpoint_repo_root` configured the
+-   bundle is empty (structurally valid, resume-incomplete). Auto-checkpoint
+-   inherits this dependency from the manual export — in the compose
+-   deployment the server is wired (the manual `smoke-checkpoint.sh`
+-   round-trips), so the auto smoke runs against the same wired stack. No
+-   new work; flagged so it isn't a surprise.
++8. **Empty repo bundle under Compose (inherited 12b gap).** The export
++   composes the experiment-config text + repo bundle server-side
++   ([`checkpoints.py`](../../reference/packages/eden-wire/src/eden_wire/routers/checkpoints.py));
++   the bundle is built from the task-store-server's `checkpoint_repo_root`
++   (its `--repo-path`). **The compose `task-store-server` service does NOT
++   pass `--repo-path`** (verified — it passes `--artifacts-dir` only), so
++   today *both* manual and auto checkpoints carry an **empty** bundle:
++   wire state round-trips, git history does not. This is a pre-existing
++   12b-portable-checkpoint completeness gap, not introduced here. It is
++   non-trivial to close because there is no single canonical bare repo in
++   the stack — Forgejo is the source of truth and each service keeps its
++   own per-host clone (`orchestrator-repo`, `executor-repo`, …), so the
++   fix needs a design choice (a dedicated checkpoint-repo clone that
++   fetches Forgejo, or bundling directly from Forgejo). **Deferred to a
++   tracked follow-up (§4.2);** auto-checkpoint inherits the gap and its
++   smoke asserts structural validity only. The honest operator framing
++   (documented in observability docs): until that follow-up lands,
++   auto-checkpoints protect the *task-store* state — they are not yet a
++   full git-history rollback under Compose.
+ 9. **Terminal duplication on restart** is handled by the existing-file
+    check (D6); a defense-in-depth note, not an open risk.

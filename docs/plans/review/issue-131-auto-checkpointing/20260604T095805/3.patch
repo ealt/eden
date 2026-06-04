@@ -1,0 +1,82 @@
+--- docs/plans/review/issue-131-auto-checkpointing/20260604T095805/2.md	2026-06-04 10:10:18
++++ docs/plans/issue-131-auto-checkpointing.md	2026-06-04 10:13:15
+@@ -66,8 +66,8 @@
+ | `AutoCheckpointConfig` | Pydantic model | `eden_contracts/config.py` | Mirrors the schema block; `strict=True`, `NotNone`-wrapped optional field on `ExperimentConfig`. |
+ | `--auto-checkpoint-dir` / `EDEN_AUTO_CHECKPOINT_DIR` | orchestrator CLI flag / env | `eden_orchestrator/cli.py` | Destination directory (deployment path concern — NOT in the config block; see Decision D3). |
+ | `CheckpointScheduler` | class | `eden_orchestrator/checkpoint_scheduler.py` (new) | Owns interval timing, retention pruning, terminal-once flag, and the export call. |
+-| periodic checkpoint filename | `<experiment_id>-<YYYYMMDDTHHMMSSZ>.tar` | destination dir | `.tar` (not `.tar.gz`) — matches `application/x-eden-checkpoint+tar`; compression is out of scope per the issue. |
+-| terminal checkpoint filename | `<experiment_id>-terminated-<YYYYMMDDTHHMMSSZ>.tar` | destination dir | Kept outside the retention ring. |
++| periodic checkpoint filename | `<safe_exp>-<YYYYMMDDTHHMMSSZ>.tar` | destination dir | `<safe_exp>` is the sanitized + hash-suffixed experiment id (§3.2); `.tar` (not `.tar.gz`) — matches `application/x-eden-checkpoint+tar`; compression is out of scope per the issue. |
++| terminal checkpoint filename | `<safe_exp>-terminated-<YYYYMMDDTHHMMSSZ>.tar` | destination dir | Kept outside the retention ring. |
+ | `smoke-auto-checkpoint.sh` | compose smoke | `reference/compose/healthcheck/` | Mirrors `smoke-checkpoint.sh` phases 1–3. |
+ | `compose-smoke-auto-checkpoint` | CI job | `.github/workflows/ci.yml` | Runs the new smoke. |
+ 
+@@ -192,9 +192,10 @@
+ **Terminal is once-per-deployment, restart-deduped.** The once-only flag
+ is in-memory, so an orchestrator restart against an
+ already-`terminated` experiment would re-fire. Before writing a terminal
+-archive the scheduler checks whether a `<experiment_id>-terminated-*.tar`
+-already exists in the destination and skips if so — so a restart does not
+-produce a second terminal checkpoint.
++archive the scheduler checks whether a `<safe_exp>-terminated-*.tar`
++(the §3.2 sanitized + hash-suffixed prefix) already exists in the
++destination and skips if so — so a restart does not produce a second
++terminal checkpoint.
+ 
+ **Known gap:** if the orchestrator has already exited (quiescence) before
+ an admin later terminates, no terminal checkpoint fires — the most recent
+@@ -304,7 +305,11 @@
+ A bare sanitizer would alias distinct ids (`a/b` and `a_b` both → `a_b`),
+ and since pruning matches on the filename prefix that could delete a
+ *different* experiment's archives in a shared destination; the raw-id
+-hash suffix makes the prefix collision-free. (In the reference deployment
++hash suffix makes the prefix **practically collision-resistant** (8 hex =
++32 bits — astronomically unlikely to collide across the handful of ids a
++deployment uses, though not a hard cryptographic guarantee; an operator
++needing certainty can give each experiment its own destination, which the
++reference deployment does anyway). (In the reference deployment
+ each experiment already gets its own destination — `DATA_ROOT` defaults to
+ `${HOME}/.eden/experiments/${EXPERIMENT_ID}` — so cross-experiment sharing
+ is unusual; the hash is defense-in-depth so the safety doesn't *rely* on
+@@ -347,10 +352,14 @@
+ [`cli.py`](../../reference/services/orchestrator/src/eden_orchestrator/cli.py):
+ new `--auto-checkpoint-dir` (env `EDEN_AUTO_CHECKPOINT_DIR`). At startup
+ (single-experiment path only): parse `config.auto_checkpoint`; if
+-`enabled`, **fail fast** (clear startup error) when either the admin
+-token is not resolvable (D4) **or** no destination dir is resolved — both
+-are required for auto-checkpoint to function and a silent no-op would
+-violate the operator's durability expectation. Then build the
++`enabled`, **fail fast** (clear startup error) when the admin token is
++not resolvable (D4) or when the destination dir is unusable. For the
++destination the CLI is *deliberate*, not best-effort: it resolves the
++path, `mkdir(parents=True, exist_ok=True)`-creates it, and verifies it is
++a writable directory — failing fast at startup on any of (path is a
++non-directory, not writable, cannot be created). A missing/unwritable
++destination must surface as a startup error, never as post-startup
++warning churn that silently drops every checkpoint. Then build the
+ admin-authed export client, construct the `CheckpointScheduler`, and pass
+ it to `run_orchestrator_loop`. When disabled, pass the no-op scheduler.
+ The multi-experiment entrypoint passes the no-op scheduler
+@@ -380,7 +389,12 @@
+   the smoke drives the experiment to an actual `terminated` state via the
+   orchestrator's own `termination=auto` policy (the orchestrator commits
+   the transition over its `orchestrators`-group worker bearer — the clean
+-  path that needs no extra auth wiring). **Note:** `POST .../terminate` is
++  path that needs no extra auth wiring). This requires the smoke fixture
++  to opt termination in: `dispatch_mode.termination: auto` plus
++  `termination_policy: {kind: max_variants, target: 3}` (the
++  `max_variants` policy requires `target`), so the orchestrator commits
++  `terminated` deterministically once the target variant count is reached.
++  **Note:** `POST .../terminate` is
+   group-gated to `(admins, orchestrators)` — a *worker bearer in those
+   groups*, **not** the literal deployment-admin bearer (which is valid
+   only for the bootstrap-class checkpoint export/import endpoints, §14).
+@@ -485,7 +499,7 @@
+ | 4 | `reference/compose/compose.yaml` | Bind-mount + orchestrator env. |
+ | 4 | `reference/compose/healthcheck/smoke-auto-checkpoint.sh` (new) | Cadence + terminal smoke. |
+ | 4 | `.github/workflows/ci.yml` | `compose-smoke-auto-checkpoint` job. |
+-| 4 | `tests/fixtures/experiment/.eden/config.yaml` or a smoke-local config | Fixture with `auto_checkpoint.enabled: true`, short interval. |
++| 4 | smoke-local experiment config (new fixture under the smoke's dir; do NOT mutate the shared `tests/fixtures/experiment/.eden/config.yaml` used by other smokes) | `auto_checkpoint: {enabled: true, interval_seconds: <short>, retention_count: <small>}` + `dispatch_mode.termination: auto` + `termination_policy: {kind: max_variants, target: 3}` so the orchestrator terminates deterministically. |
+ | 5 | `docs/user-guide.md`, `docs/observability.md`, `CHANGELOG.md`, `docs/roadmap.md`, (glossary if needed) | Docs + completion record. |
+ 
+ ---
