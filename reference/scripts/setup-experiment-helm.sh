@@ -121,9 +121,11 @@ if [[ "$RELEASE" == *"$CHART_NAME"* ]]; then
 else
     FULLNAME="${RELEASE}-${CHART_NAME}"
 fi
-# Mirror the chart's eden.fullname truncation (trunc 40 + trim trailing '-') so
-# the resource names this script targets match what Helm rendered.
-FULLNAME="$(printf '%s' "$FULLNAME" | cut -c1-40 | sed 's/-*$//')"
+# Mirror the chart's eden.fullname truncation EXACTLY: trunc 40 then
+# `trimSuffix "-"`, which removes a SINGLE trailing hyphen (not a run). Using
+# `s/-*$//` here would diverge from Helm when char 40 lands mid-hyphen-run, so
+# the script would target resource names Helm never rendered.
+FULLNAME="$(printf '%s' "$FULLNAME" | cut -c1-40 | sed 's/-$//')"
 
 # Default chart-managed secret name; overridden after phase 1 if the operator's
 # values set secrets.existingSecret.
