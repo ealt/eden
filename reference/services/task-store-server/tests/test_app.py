@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from eden_storage import InMemoryStore, SqliteStore
 from eden_task_store_server import build_app, build_store, load_experiment_config
 from fastapi.testclient import TestClient
@@ -96,3 +97,25 @@ def test_build_app_with_admin_token_admits_admin_bearer() -> None:
         },
     )
     assert resp.status_code == 200
+
+
+def test_build_app_rejects_blob_dir_inside_artifacts_dir(tmp_path: Path) -> None:
+    # Issue #166: the §16 blob dir must not overlap --artifacts-dir (served
+    # unauthenticated by the legacy /_reference route → ACL bypass).
+    config = load_experiment_config(FIXTURE_CONFIG)
+    store = build_store(store_url=":memory:", experiment_id="exp-1", config=config)
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    with pytest.raises(SystemExit, match="must not overlap"):
+        build_app(store=store, artifacts_dir=artifacts, artifact_blob_dir=artifacts / "blobs")
+
+
+def test_build_app_accepts_disjoint_blob_dir(tmp_path: Path) -> None:
+    config = load_experiment_config(FIXTURE_CONFIG)
+    store = build_store(store_url=":memory:", experiment_id="exp-1", config=config)
+    app = build_app(
+        store=store,
+        artifacts_dir=tmp_path / "artifacts",
+        artifact_blob_dir=tmp_path / "blobs",
+    )
+    assert app is not None

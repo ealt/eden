@@ -130,6 +130,30 @@ def build_store(
     )
 
 
+def _reject_blob_dir_overlap(
+    blob_dir: Path | str, artifacts_dir: Path | str | None
+) -> None:
+    """Reject a §16 blob dir that overlaps the legacy ``--artifacts-dir``.
+
+    The legacy ``--artifacts-dir`` is served by the unauthenticated
+    ``/_reference/.../artifacts/{path}`` route. If the server-private §16
+    blob dir is equal to / nested in / a parent of it, a worker who learns
+    an opaque id could fetch deposited bytes through the reference path,
+    bypassing the §16.2 depositor/admin ACL. Fail fast at startup.
+    """
+    if artifacts_dir is None:
+        return
+    blob = Path(blob_dir).resolve()
+    arts = Path(artifacts_dir).resolve()
+    if blob == arts or blob.is_relative_to(arts) or arts.is_relative_to(blob):
+        raise SystemExit(
+            f"--artifact-blob-dir ({blob}) must not overlap --artifacts-dir "
+            f"({arts}): the legacy /_reference artifact route serves the "
+            "latter unauthenticated, which would bypass the §16.2 fetch ACL "
+            "(issue #166)."
+        )
+
+
 def build_app(
     *,
     store: Store,
@@ -189,6 +213,7 @@ def build_app(
         # /_reference serve route). Without it the deposit endpoint falls
         # back to a non-durable in-memory backend — see the warning the
         # CLI logs.
+        _reject_blob_dir_overlap(artifact_blob_dir, artifacts_dir)
         make_app_kwargs["artifact_backend"] = FileArtifactBackend(artifact_blob_dir)
     return make_app(
         store,

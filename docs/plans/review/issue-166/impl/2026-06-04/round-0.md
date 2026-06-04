@@ -163,5 +163,25 @@ Re-ran `codex review --base main` after the round-5 fixes — three findings:
 
 ## Round 7
 
-Re-ran `codex review --base main` after the round-6 fixes — no further actionable
-findings (convergence; remaining work is the deferred cutover tracked in #290).
+Re-ran `codex review --base main` after the round-6 fixes — three findings, one new:
+
+- **[P2, fixed] Reject blob dirs exposed by the reference route.** If an operator set
+  `--artifact-blob-dir` equal to / nested in / a parent of `--artifacts-dir`, the
+  server-private §16 blobs would land in the tree served by the unauthenticated
+  `/_reference/.../artifacts/{path}` route → a worker who learned an opaque id could
+  fetch deposited bytes bypassing the §16.2 ACL. `build_app` now fails startup
+  (`SystemExit`) on any overlap via `_reject_blob_dir_overlap`. Added two tests.
+- **[P2, re-raise of round-6 — declined] Per-part streaming cap.** Same item; the
+  raw-body streamed cap bounds peak memory and the rationale is unchanged.
+- **[P2, re-raise of round-4 — declined] Durable-store deposits into memory.** Same
+  item; the deposit endpoint is unused in the stack until the #290 cutover wires a
+  durable blob volume, and erroring on the missing flag would regress existing
+  Compose/manual startup. The CLI warning documents the failure mode.
+
+## Round 8
+
+Re-ran `codex review --base main` after the round-7 fix — only re-raises of the two
+documented declines above (per-part streaming cap; durable-store deposit posture), no
+new actionable findings. Converged: every actionable defect is fixed; the two open
+items are deliberate, documented scoping decisions for this additive PR (the durable
+blob volume + writer adoption are the #290 cutover's work).
