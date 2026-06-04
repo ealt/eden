@@ -64,6 +64,7 @@ Every experiment is driven by a YAML config validated against [`spec/v0/schemas/
 | `baseline.metrics` | map | no | Optional config-supplied evaluation metrics (subset of `evaluation_schema`). When present, the orchestrator stamps these and creates the baseline directly in `success`, skipping the baseline's evaluation dispatch — useful when the evaluator is expensive or a known-good baseline score exists. Supplying `metrics` with `enabled: false` is a config error. |
 | `max_quiescent_iterations` | integer ≥ 2 | no | A polling orchestrator exits after N consecutive no-progress iterations. Default 3; manual-UI sessions want a much higher value (e.g. 3600). |
 | `ideation_task_deadline` / `execution_task_deadline` / `evaluation_task_deadline` | number > 0 | no | Seconds each worker host waits for one `*_command` invocation. Defaults: 120 / 600 / 300. |
+| `auto_checkpoint` | object | no | Opt-in automatic checkpointing ([issue #131](https://github.com/ealt/eden/issues/131)). Absent block ≡ `{enabled: false}`. See [the subsection below](#automatic-checkpointing-auto_checkpoint). |
 | `ideation_command` / `execution_command` / `evaluation_command` | string | no (impl-specific) | Shell commands to invoke for [subprocess mode](#3-worker-host-modes). Travel under additional-properties; the spec defers role-bindings to a future chapter. |
 
 The pre-12a-3 top-level termination fields (`max_variants` / `max_wall_time` / `convergence_window` / `target_condition`) are **removed** from the normative schema — their semantics now round-trip as `termination_policy.kind` values selected declaratively per [`03-roles.md`](../spec/v0/03-roles.md) §6.2 decision-type 0 (see [`docs/operations/experiment-lifecycle.md`](operations/experiment-lifecycle.md) for the operator playbook). Configs that still carry the old top-level fields validate (they round-trip under the schema's permissive additional-properties posture) but the orchestrator ignores them.
@@ -106,6 +107,31 @@ objective:
 ```
 
 **Convention** (not required by the schema): put your config at `<your-experiment-dir>/.eden/config.yaml`. `setup-experiment.sh` defaults `--experiment-id` from the directory containing `.eden` and uses that directory as the host-side bind-mount source in subprocess mode.
+
+### Automatic checkpointing (`auto_checkpoint`)
+
+[Issue #131](https://github.com/ealt/eden/issues/131) makes portable checkpoints ([Phase 12b](https://github.com/ealt/eden/issues/152)) happen *automatically* so the "I can accept interruptions / teardown / redeployment" posture is viable without operator action. It is a deployment behavior consumed by the reference orchestrator — not a protocol contract — and is **opt-in** (an absent block means `{enabled: false}`).
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `enabled` | boolean | `false` | Master switch. |
+| `interval_seconds` | number > 0 | `3600` | Cadence between periodic checkpoints, in **seconds** (matching the `*_task_deadline` convention — `3600` is 60 minutes; `1800` is 30 minutes). |
+| `retention_count` | integer ≥ 1 | `6` | Ring-buffer depth for periodic checkpoints; the oldest periodic archives beyond this count are pruned. Does **not** bound the terminal checkpoint. |
+| `on_terminate` | boolean | `true` | Take one terminal checkpoint when the experiment reaches `state == "terminated"`. |
+
+```yaml
+auto_checkpoint:
+  enabled: true
+  interval_seconds: 1800     # every 30 minutes (seconds, not minutes!)
+  retention_count: 6
+  on_terminate: true
+```
+
+Two triggers fire while the orchestrator is running: a **cadence** checkpoint every `interval_seconds` (the first fires one full interval after orchestrator startup), and one **terminal** checkpoint if the orchestrator observes the experiment reach `terminated`. Restoration stays **operator-driven** — there is no auto-restore; use the manual `eden-experiment restore` flow.
+
+**The destination directory is deployment wiring, not a config field.** A host filesystem path is meaningless on a different deployment, so the portable config carries only the *intent* (enabled / cadence / retention / on-terminate); *where* the archives land is the orchestrator's `--auto-checkpoint-dir` flag (env `EDEN_AUTO_CHECKPOINT_DIR`). In the Compose deployment this is pre-wired to `/var/lib/eden/checkpoints`, bind-mounted from `${EDEN_EXPERIMENT_DATA_ROOT}/checkpoints` — so enabling the block in your config is all it takes; the archives appear under the experiment's host data root. When `auto_checkpoint.enabled` is `true` the orchestrator **fails fast at startup** if no admin token is available (the export endpoint is admin-gated per [`07-wire-protocol.md`](../spec/v0/07-wire-protocol.md) §14) or the destination directory is missing/unwritable.
+
+Periodic archives are named `<safe_exp>-<UTC-timestamp>.tar`; the terminal archive is `<safe_exp>-terminated-<UTC-timestamp>.tar` (kept outside the retention ring). See [`docs/observability.md`](observability.md) §"Checkpoint cadence" for the cadence guarantees, the documented orphan gap, and the disk-growth consideration.
 
 ### Specifying the starting git tree
 

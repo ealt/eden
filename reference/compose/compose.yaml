@@ -394,6 +394,15 @@ services:
       # docs/operations/experiment-lifecycle.md for the patterns).
       - --termination-policy
       - ${EDEN_TERMINATION_POLICY:-eden_dispatch.termination:default_termination_policy}
+      # Issue #131: automatic-checkpoint destination. A fixed container
+      # path bind-mounted from ${EDEN_EXPERIMENT_DATA_ROOT}/checkpoints
+      # (host path is deployment wiring, not the portable config block).
+      # No-op unless the experiment-config carries
+      # `auto_checkpoint: {enabled: true}`; the orchestrator fails fast at
+      # startup if enabled and this dir is unwritable or no admin token is
+      # available (EDEN_ADMIN_TOKEN is already wired above).
+      - --auto-checkpoint-dir
+      - /var/lib/eden/checkpoints
       - --log-level
       - info
     environment:
@@ -423,6 +432,11 @@ services:
       - ${EDEN_FORGEJO_CREDS_DIR_HOST:?}/credential-helper.sh:/etc/eden/credential-helper.sh:ro
       # Issue #109: per-service log bind-mount.
       - ${EDEN_EXPERIMENT_DATA_ROOT:?}/logs/orchestrator:/var/lib/eden/logs
+      # Issue #131: automatic-checkpoint destination bind-mount. The
+      # orchestrator writes periodic + terminal checkpoint .tar archives
+      # here (no-op unless auto_checkpoint.enabled in the experiment
+      # config); operators read them back from the host checkpoints dir.
+      - ${EDEN_EXPERIMENT_DATA_ROOT:?}/checkpoints:/var/lib/eden/checkpoints
 
   ideator-host:
     image: eden-reference:dev

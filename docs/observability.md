@@ -273,6 +273,26 @@ Infra stdout streams carry only a `service` label (`postgres` / `forgejo`) — t
 
 **Implicit contract with `logging.py`.** Alloy's JSON-parse stage keys on the field names emitted by [`eden_service_common/logging.py`](../reference/services/_common/src/eden_service_common/logging.py) (`ts`, `level`, `service`, `experiment_id`). A future logging-schema rename degrades labels *silently* (ingestion keeps working; search by the renamed label quietly stops). The `compose-smoke-logging` CI job asserts `{service="orchestrator"}` returns lines, so a `service`-label regression fails the smoke. Validate locally with `bash reference/compose/healthcheck/smoke-logging.sh`.
 
+### 2.9 Checkpoint cadence (automatic checkpointing)
+
+When the experiment-config opts in with an [`auto_checkpoint`](user-guide.md#automatic-checkpointing-auto_checkpoint) block ([issue #131](https://github.com/ealt/eden/issues/131)), the orchestrator drops portable-checkpoint `.tar` archives into its `--auto-checkpoint-dir` (Compose: `${EDEN_EXPERIMENT_DATA_ROOT}/checkpoints/`). This turns "checkpoints exist" into "checkpoints are happening regularly" with no operator action.
+
+**Trigger model.** Two triggers fire while the orchestrator is *running*:
+
+- **Cadence** — every `interval_seconds` (default 3600). The first fires one full interval after orchestrator startup (startup state is just the seed). The timer advances from the completion of the last attempt, so a slow export or a delayed tick never produces back-to-back catch-up checkpoints.
+- **On-terminate** — one checkpoint when the orchestrator *observes* the experiment reach `state == "terminated"` (whether the transition came from its own termination policy or an admin). A healthy quiescent-but-running exit emits **no** terminal archive.
+
+**Filename scheme + retention ring.** Periodic archives are `<safe_exp>-<YYYYMMDDTHHMMSSZ>.tar`; the terminal archive is `<safe_exp>-terminated-<YYYYMMDDTHHMMSSZ>.tar`. `<safe_exp>` is the sanitized experiment id plus an 8-hex hash suffix (collision-resistant across experiments sharing a destination). Only the **periodic** archives are bounded by `retention_count` (default 6, oldest pruned first); the terminal archive is kept outside the ring. Pruning is surgical — it touches only this experiment's periodic files, never terminal archives or operator-dropped files.
+
+**Best-effort, never a storm.** A checkpoint failure never crashes the loop and never perturbs the quiescence counter; on both success and failure the periodic timer advances one interval, so a persistently-failing export retries at the next cadence boundary, not every poll tick.
+
+**Documented gaps (operator framing):**
+
+- **Restoration stays manual.** There is no auto-restore on stack-up (too magical) — use the operator-driven `eden-experiment restore` flow.
+- **Orphan window (no terminal after orchestrator exit).** The orchestrator is not unconditionally long-running — it exits cleanly on quiescence, and the Compose deployment does not restart a clean exit. So if an admin terminates an experiment *after* the orchestrator has already exited, no terminal checkpoint fires; the most recent periodic archive is the safety net. Closing this needs a server-side on-terminate hook (deferred — see the CHANGELOG entry for the tracking issue). Keeping the orchestrator alive longer (a high `max_quiescent_iterations`) widens the window the cadence covers.
+- **Empty git bundle under Compose.** The Compose `task-store-server` carries no `--repo-path`, so the git bundle inside *every* checkpoint archive — manual and auto alike — is empty: task-store wire state round-trips, git history does not yet. This is an inherited Phase 12b completeness gap (deferred — see the CHANGELOG entry); auto-checkpoint protects the task-store state but is not yet a full git-history rollback under Compose.
+- **Disk growth + admin-token lifetime.** Budget `retention_count × checkpoint_size` per experiment for the periodic ring (plus one terminal archive). And note that with `auto_checkpoint.enabled: true` the orchestrator holds the deployment admin token in memory for its whole run (the export endpoint is admin-gated per [`07-wire-protocol.md`](../spec/v0/07-wire-protocol.md) §14) — a modest, opt-in privilege-lifetime expansion over the startup-only use it otherwise makes of the token.
+
 ## 3. Bring-your-own admin UIs
 
 These do not ship with the Compose stack. They're one-shot `docker run` siblings on the same docker network. Useful for ad-hoc inspection; tear them down when you're done.

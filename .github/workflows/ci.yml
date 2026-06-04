@@ -537,6 +537,30 @@ jobs:
         working-directory: reference/compose
         run: bash healthcheck/smoke-checkpoint.sh
 
+  compose-smoke-auto-checkpoint:
+    name: compose-smoke-auto-checkpoint
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: changes
+    if: >-
+      !cancelled() && (
+      needs.changes.result != 'success' ||
+      needs.changes.outputs.run_all == 'true' ||
+      needs.changes.outputs.compose == 'true' ||
+      needs.changes.outputs.python == 'true' )
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify docker compose + jq + python3 are available
+        run: |
+          docker compose version
+          jq --version
+          python3 --version
+
+      - name: Run compose smoke (auto-checkpoint cadence + terminal)
+        working-directory: reference/compose
+        run: bash healthcheck/smoke-auto-checkpoint.sh
+
   # Backfill of the Phase 12c CHANGELOG-narrated deferral (issue #147),
   # re-scoped: the reference impl cannot host >1 experiment per
   # deployment (single-experiment task-store-server; cross-experiment
