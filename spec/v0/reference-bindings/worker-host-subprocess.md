@@ -114,11 +114,13 @@ MUST carry the same `task_id` as the dispatch.
 {"event": "ideation-done", "task_id": "ideation-…"}
 ```
 
-If `content` is present, the host writes it to
-`<artifacts_dir>/ideas/<idea_id>/content.md` and uses the
-resulting `file://` URI as the idea's `artifacts_uri` (the
-entity-hierarchical layout — see §10). If `content` is absent,
-the subprocess MUST set `artifacts_uri` explicitly.
+If `content` is present, the host **deposits** the content bytes
+over the wire (`deposit_artifact`, [chapter 7 §16](../07-wire-protocol.md))
+and uses the returned opaque `eden://artifacts/<id>` URI as the
+idea's `artifacts_uri` (see §10 — the physical layout is
+server-internal). If `content` is absent, the subprocess MUST set
+`artifacts_uri` explicitly to a URI the deployment's artifact store
+already resolves.
 
 An `ideation-error` terminator submits a chapter-3 `IdeaSubmission`
 with `status="error"`.
@@ -213,10 +215,16 @@ no free-form field; see §5).
 
    ```json
    {"status": "success", "evaluation": {"score": 0.83},
-    "artifacts_uri": "file:///…"}
+    "artifacts_uri": "eden://artifacts/…"}
    ```
 
-   or `{"status": "error" | "evaluation_error"}`.
+   or `{"status": "error" | "evaluation_error"}`. When the subprocess
+   produces artifact bytes rather than a ready-made URI, it stages them
+   under the worktree and the host **deposits** them over the wire
+   (`deposit_artifact`, [chapter 7 §16](../07-wire-protocol.md)),
+   stamping the returned opaque `eden://artifacts/<id>` URI; a subprocess
+   that names an `artifacts_uri` directly MUST name one the deployment's
+   artifact store already resolves (see §10).
 5. Validate evaluation against `evaluation_schema` via
    `Store.validate_evaluation`. Validation failures route to
    `evaluation_error`.
@@ -596,50 +604,44 @@ implementations may expose a different read substrate
 all. The env var contract is what user code targets; the
 backing technology is operator-chosen.
 
-## 10. Reference artifact layout (issue #168)
+## 10. Reference artifact transfer (issue #166)
 
-The reference deployment groups artifacts under `<artifacts_dir>`
-(surfaced as `/var/lib/eden/artifacts/` inside containers) by the
-durable entity that owns them and the role that produced them:
+Under wire-level artifact transfer (issue #166), a role producer no
+longer writes artifact bytes to a shared filesystem. Instead it **builds
+the artifact blob in memory** and **deposits** it over the wire
+(`deposit_artifact`, [chapter 7 §16](../07-wire-protocol.md)); the
+task-store-server mints an opaque `eden://artifacts/<opaque-id>` URI,
+persists the bytes behind a private blob backend, and the producer stamps
+that opaque URI onto the idea / variant / submission it creates. Reads go
+through `fetch_artifact` ([chapter 7 §16.2](../07-wire-protocol.md))
+against the same opaque id. The physical storage layout is **server-internal**
+and never exposed to clients — there is no client-named path, so the
+opaque single-segment id can carry no path-traversal payload.
 
-```text
-artifacts/
-  ideas/<idea_id>/                    # ideator-produced
-    content.md                        #   text-only idea
-    <sanitized-upload>                #   single uploaded file
-    bundle.tar.gz                     #   text + uploads / multi-file
-  variants/<variant_id>/
-    executor/                         # executor-produced
-      exec-<uuid>.{md,<ext>,tar.gz}
-    evaluator/                        # evaluator-produced
-      eval-<uuid>.{md,<ext>,tar.gz}
-```
+The blob the producer builds preserves the issue-#120 bundle shape:
 
-The top-level directories use the **artifact noun** (`ideas` /
-`variants`); the variant sub-directories use the **producing-role
-noun** (`executor` / `evaluator`) because a variant aggregates
-artifacts from two sources. The ideator's `ideas/<idea_id>/` directory
-is write-once, so its leaf files take clean fixed names (`content.md`,
-the upload's own name, or `bundle.tar.gz`). The `executor/` and
-`evaluator/` directories are keyed only by the stable `variant_id` and
-**accumulate** across (re)submissions, so each submission mints a fresh
-`exec-<uuid>` / `eval-<uuid>` stem — no two submissions for one variant
-ever target the same path (chapter 8 §5.4 no-overwrite).
+- A **text-only** artifact is a single `content.md` / `evaluation.md` /
+  `variant.md` blob.
+- A **single uploaded file** is deposited as-is under its own (sanitized)
+  name.
+- **Text + uploads**, or **multiple uploads**, are packed into a
+  `tar.gz` bundle carrying a `manifest.json` plus the entries. Within a
+  bundle the text headline entry is role-coherent (`content.md` for
+  ideas, `evaluation.md` for evaluations, `variant.md` for executor
+  artifacts) regardless of the deposited blob's content type.
 
-Within a `.tar.gz` bundle, the text headline entry is role-coherent
-(`content.md` for ideas, `evaluation.md` for evaluations, `variant.md`
-for executor artifacts) regardless of the tarball's own stem-derived
-filename.
+The bundle viewer reads one entry out of a fetched bundle in memory; it
+no longer streams entries off a shared disk. In subprocess mode the host
+deposits the ideator's `content` bytes (§2.3); a per-task executor or
+evaluator subprocess that produces artifact bytes stages them under the
+worktree and the host deposits them (§3, §4), stamping the returned
+opaque URI — a subprocess no longer mints `file://` URIs against a shared
+mount.
 
-In subprocess mode the **only** bytes the host itself writes are the
-ideator's `ideas/<idea_id>/content.md` (§2.3); the per-task executor and
-evaluator subprocesses supply their own `artifacts_uri` (§3, §4) and
-choose where to write. The `variants/<variant_id>/{executor,evaluator}/`
-convention is what the reference web-UI upload writers target and what a
-future subprocess byte-writer SHOULD follow.
-
-This layout is a **reference-binding detail**, not a normative protocol
-requirement: chapter 8 §5.1 keeps the artifact-store naming scheme
-"implementation-defined" and chapter 2 §1.5 keeps `artifacts_uri` an
-opaque deployment-local URI. Conforming alternative implementations may
-lay out artifacts however they like.
+This transfer mechanism is a **reference-binding detail**, not a
+normative protocol requirement: chapter 8 §5.1 keeps the artifact-store
+naming scheme "implementation-defined" and chapter 2 §1.5 keeps
+`artifacts_uri` an opaque deployment-local URI. Conforming alternative
+implementations may transfer and lay out artifacts however they like, so
+long as they satisfy the chapter 7 §16 Upload / Fetch binding and the
+chapter 8 §5 artifact-store contract.

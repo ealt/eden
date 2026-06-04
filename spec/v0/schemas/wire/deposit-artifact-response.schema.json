@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "EDEN wire — deposit artifact response",
+  "description": "Response body for a successful POST /v0/experiments/{E}/artifacts (07-wire-protocol.md §16.1). Carries the opaque, server-issued artifacts_uri the depositor stamps onto the idea / variant / submission it subsequently creates, plus the recorded byte size and content type.",
+  "type": "object",
+  "required": ["artifacts_uri", "size_bytes", "content_type"],
+  "additionalProperties": false,
+  "properties": {
+    "artifacts_uri": {
+      "type": "string",
+      "format": "uri",
+      "minLength": 1,
+      "description": "The opaque, deployment-local artifact URI (reference deployment: eden://artifacts/<opaque-id>). Opaque to clients (02-data-model.md §1.5) — resolved only by presenting it to fetch_artifact."
+    },
+    "size_bytes": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "content_type": {
+      "type": "string",
+      "minLength": 1
+    }
+  }
+}

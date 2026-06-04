@@ -182,7 +182,7 @@ A conforming artifact store MUST support:
 
 URIs MUST be RFC 3986–conformant ([`schemas/idea.schema.json`](schemas/idea.schema.json) enforces this on the idea side).
 
-> *Reference deployment note (informative).* The naming scheme stays implementation-defined here; the reference deployment pins a concrete entity-hierarchical layout (`ideas/<idea_id>/`, `variants/<variant_id>/{executor,evaluator}/`) documented in the [worker-host-subprocess binding](reference-bindings/worker-host-subprocess.md) §10. That layout is a reference-binding detail, not a normative requirement.
+> *Reference deployment note (informative).* The naming scheme stays implementation-defined here. The reference deployment exposes Upload / Fetch as the two wire endpoints in [`07-wire-protocol.md`](07-wire-protocol.md) §16 (`deposit_artifact` / `fetch_artifact`), issues an **opaque** `eden://artifacts/<opaque-id>` URI from each deposit ([`02-data-model.md`](02-data-model.md) §1.5), and resolves it server-side behind a private blob backend (a local-file backend today; an S3 / GCS backend is deferred to Phase 13d). The physical storage layout is server-internal and never exposed to clients — there is no client-supplied path, so the opaque single-segment id can carry no path-traversal payload. That binding is a reference detail, not a normative requirement: the abstract Upload / Fetch operations above and the §5.2–§5.4 contracts are scheme-agnostic.
 
 ### 5.2 Durability
 
@@ -197,6 +197,10 @@ When the optional per-file `artifacts` inventory ([`06-integrator.md`](06-integr
 ### 5.4 No protocol-owned mutation after the fact
 
 Once a protocol-owned object (idea, variant, evaluation manifest) references an artifact URI, a conforming deployment MUST NOT overwrite the content at that URI. Overwriting would break reproducibility guarantees that subscribers reading the event log rely on.
+
+### 5.5 Reference metadata row (informative)
+
+The protocol's artifact-store contract (§5.1–§5.4) is byte-level: it mandates Upload, Fetch, durability, content integrity, and no-overwrite, but does not mandate any metadata sidecar. The reference deployment records a per-artifact metadata row ([`schemas/artifact-metadata.schema.json`](schemas/artifact-metadata.schema.json)) alongside the bytes — the minted opaque id, the depositing principal (`created_by`), the byte size, and the content type. The `created_by` field is the sole key for the [`07-wire-protocol.md`](07-wire-protocol.md) §16.2 fetch ACL (a depositor or an admin-class principal may fetch); the size and content type drive delivery. Because each deposit mints a fresh id, no client request can target an existing id for overwrite, which is how the reference store satisfies §5.4 without a versioning layer. The metadata row is a reference-binding detail; a conforming alternative store MAY carry different metadata or none.
 
 ## 6. Transactional guarantees
 

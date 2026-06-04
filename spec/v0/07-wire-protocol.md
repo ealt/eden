@@ -325,6 +325,7 @@ The `type` URI is the authoritative machine-readable error code. Clients MUST ke
 | `eden://error/worker-not-eligible` | 403 | the authenticated worker is registered but does not satisfy `Task.target` ([`04-task-protocol.md`](04-task-protocol.md) §3.5 step 3, §11) |
 | `eden://error/wrong-claimant` | 403 | submit's authenticated `worker_id` does not match `task.claim.worker_id` ([`04-task-protocol.md`](04-task-protocol.md) §4.1, §11) |
 | `eden://error/not-found` | 404 | referenced entity does not exist |
+| `eden://error/payload-too-large` | 413 | a `deposit_artifact` upload exceeds the server's configured maximum artifact size (§16.1) |
 | `eden://error/already-exists` | 409 | insert collided with existing id |
 | `eden://error/illegal-transition` | 409 | state-machine violation |
 | `eden://error/not-claimed` | 409 | submit against a task whose claim has been cleared ([`04-task-protocol.md`](04-task-protocol.md) §4.1, §11) |
@@ -375,6 +376,7 @@ Future phases MAY integrate individual helpers into the normative binding if con
 A conforming server:
 
 - Implements §§2–8 with the normative semantics of [`04-task-protocol.md`](04-task-protocol.md), [`05-event-protocol.md`](05-event-protocol.md), [`06-integrator.md`](06-integrator.md) §3.4, and [`08-storage.md`](08-storage.md).
+- Implements the §16 artifact operations binding the [`08-storage.md`](08-storage.md) §5 artifact-store Upload / Fetch contract (`deposit_artifact` / `fetch_artifact`).
 - Exposes `/v0/` with the exact URL shapes listed above.
 - Returns problem+json with `type` from the §9 vocabulary on every non-2xx response.
 - Preserves the task-protocol, event-protocol, and integrator-atomicity invariants unchanged by the HTTP transport.
@@ -414,10 +416,11 @@ Every `/v0/` endpoint MUST be classified as **admin-gated**, **worker-gated**, o
 Summary of the v0 classifications:
 
 - **admin-gated** — registry mutations: `register_worker`, `reissue_credential`, `register_group`, `add_to_group` / `remove_from_group` / `delete_group`. Plus the §14 portable-checkpoint mutation endpoints (`export_checkpoint`, `import_checkpoint`); see §14 for the bootstrap-class rationale. The §14 `read_experiment` endpoint is either-auth (not admin-gated) so the orchestrator's per-iteration policy view can read `created_at` over its worker bearer; see §14.3 for the rationale.
-- **worker-gated, no group-gate** — `claim`, `submit`, `reclaim`, `create_idea`, `mark_idea_ready`, `create_variant`, `declare_variant_evaluation_error`, and the `whoami` probe (`verify_worker_credential`).
+- **worker-gated, no group-gate** — `claim`, `submit`, `reclaim`, `create_idea`, `mark_idea_ready`, `create_variant`, `declare_variant_evaluation_error`, `deposit_artifact` (§16.1; an admin bearer MAY also deposit and is attributed `created_by = admin`), and the `whoami` probe (`verify_worker_credential`).
 - **worker-gated, `orchestrators` group required** — `accept`, `reject`, `integrate_variant`, and `create_task(kind="execution")` per [`03-roles.md`](03-roles.md) §6.
 - **worker-gated, `admins` group required** — `reassign_task`, `update_dispatch_mode`, `create_task(kind="ideation")`, `create_task(kind="evaluation")` ([`02-data-model.md`](02-data-model.md) §7.5; [`04-task-protocol.md`](04-task-protocol.md) §6.2, §7.2). Note that `create_task(kind="ideation")` and `create_task(kind="evaluation")` admit `orchestrators` in addition to `admins` per the per-kind authority in §2.1.
 - **either** — every read endpoint: `list_tasks` / `read_task` / `read_submission`, `list_ideas` / `read_idea`, `list_variants` / `read_variant`, `list_workers` / `read_worker`, `list_groups` / `read_group`, `read_range` / `subscribe`.
+- **either + per-row ACL** — `fetch_artifact` (§16.2). This is the first endpoint whose authorization is **row-scoped** rather than purely principal-class: the dispatcher admits both principal classes past the bearer check, but the handler then authorizes the request against the target artifact's `created_by` — the request succeeds only if the authenticated principal is that depositor OR is an admin-class principal (the literal `admin` bearer, or a member of the `admins` group per [`02-data-model.md`](02-data-model.md) §7.5). An authenticated principal who is neither — including a *different* registered worker — receives 403 `eden://error/forbidden`. The cross-role grant (e.g. an evaluator reading the executor artifact of the variant it is evaluating) is **out of scope for v0** and deferred to a follow-up; secure-by-default deny is the v0 posture.
 
 The §15 control-plane endpoints follow the same classification framework with their own per-endpoint `Auth` column. The deployment-scoped `orchestrators` group used by §15.2 lease ops is a distinct registry from any per-experiment `orchestrators` group — per [`11-control-plane.md`](11-control-plane.md) §6 — so membership in one does NOT imply membership in the other.
 
@@ -592,7 +595,48 @@ The `/v0/control/workers/...`, `/v0/control/groups/...`, and `/v0/control/whoami
 
 `GET /v0/control/whoami` returns 200 with `{"worker_id": "<id>"}` for the authenticated worker, mirroring §6.4. Used by the orchestrator's startup credential verification.
 
-## 16. Implementation latitude
+## 16. Artifact operations
+
+Artifacts are the byte payloads roles produce (plan text, code diffs, evaluator outputs, logs, screenshots, multi-file bundles) referenced by the `artifacts_uri` field on ideas and variants ([`02-data-model.md`](02-data-model.md) §1.5, §5.1, §9.1). The wire binding exposes the [`08-storage.md`](08-storage.md) §5.1 **Upload** and **Fetch** artifact-store operations as two HTTP endpoints hosted by the task-store-server.
+
+| Operation | HTTP | Path | Auth |
+|---|---|---|---|
+| `deposit_artifact` | `POST` | `/v0/experiments/{E}/artifacts` | worker (admin MAY also deposit) |
+| `fetch_artifact` | `GET` | `/v0/experiments/{E}/artifacts/{A}` | either + per-row ACL (depositor or admin; §13.3) |
+
+The `artifacts_uri` a deposit returns is **opaque** to clients ([`02-data-model.md`](02-data-model.md) §1.5): a client MUST NOT parse it for structure, MUST NOT assume it maps to a filesystem path or any other storage layout, and MUST resolve it only by presenting it to `fetch_artifact`. The reference deployment issues `eden://artifacts/<opaque-id>` where `<opaque-id>` is a server-minted, unguessable, single-segment token; the scheme is documented per the [`08-storage.md`](08-storage.md) §5.1 "MUST document which schemes it issues" requirement and reuses the `eden://` authority (role-disjoint from the non-resolvable `eden://error/...` type URIs of §9).
+
+### 16.1 Deposit
+
+`POST /v0/experiments/{E}/artifacts` accepts `Content-Type: multipart/form-data` carrying a single `file` part (the artifact bytes, its filename, and its content type). On success the server MUST:
+
+1. Mint an opaque, unguessable artifact id and persist the bytes durably (the [`08-storage.md`](08-storage.md) §5.1 Upload operation; durability per [`08-storage.md`](08-storage.md) §5.2). The persisted bytes MUST be byte-for-byte identical to the uploaded bytes ([`08-storage.md`](08-storage.md) §5.3).
+2. Record the artifact's attribution — the `created_by` principal — stamped from the authenticated bearer (§13.3), NOT from any client-asserted body field: a worker bearer is attributed its `worker_id`; an admin bearer is attributed the literal `admin` principal ([`02-data-model.md`](02-data-model.md) §3.1).
+3. Return `201 Created` with a JSON body matching [`schemas/wire/deposit-artifact-response.schema.json`](schemas/wire/deposit-artifact-response.schema.json):
+
+```json
+{
+  "artifacts_uri": "eden://artifacts/<opaque-id>",
+  "size_bytes": 12345,
+  "content_type": "application/gzip"
+}
+```
+
+The server MUST enforce a configurable maximum artifact size and MUST reject an over-cap deposit with 413 `eden://error/payload-too-large` (§9). The server MUST enforce the cap **during** the streamed read — it MUST NOT require buffering the entire upload in memory before the size check — so that a hostile over-cap upload cannot exhaust server memory.
+
+**Deposit precedes reference; no read-back ladder.** A deposit happens before the `create_idea` / `create_variant` / `submit` that records the returned `artifacts_uri`. A deposit therefore carries no client-asserted identity to reconcile and does NOT participate in the §10 idempotency contract: each call mints a fresh id. A lost deposit response or a failed subsequent create simply leaves an unreferenced artifact (an orphan), which a deployment MAY garbage-collect out of band; a client MUST NOT treat a transport-indeterminate `deposit_artifact` failure the way §5 treats `integrate_variant` (there is no client-asserted identity whose server-side commit must be reconciled — the client just re-deposits and gets a new id).
+
+### 16.2 Fetch
+
+`GET /v0/experiments/{E}/artifacts/{A}`, where `{A}` is the opaque artifact id carried in a prior deposit's `artifacts_uri`. The server MUST:
+
+1. Resolve `{A}` to its recorded artifact; an unknown id returns 404 `eden://error/not-found`.
+2. Enforce the §13.3 per-row ACL: the request is authorized only if the authenticated principal is the artifact's `created_by` depositor OR is an admin-class principal (the literal `admin` bearer, or a member of the `admins` group per [`02-data-model.md`](02-data-model.md) §7.5). An authenticated-but-unauthorized principal — including a *different* registered worker — receives 403 `eden://error/forbidden`. The ACL is evaluated AFTER the existence check only insofar as a 404 for a truly-absent id does not leak; an implementation MAY return 404 for an id the principal is not authorized to learn the existence of, but the reference deployment returns 404 for absent ids and 403 for present-but-unauthorized ones.
+3. Return `200 OK` with the exact deposited bytes ([`08-storage.md`](08-storage.md) §5.3) and the recorded `content_type`. The response MUST carry `Content-Disposition: attachment` and `X-Content-Type-Options: nosniff` (the safe-delivery posture defeating stored-XSS via `.html` / `.svg` artifacts).
+
+A conforming deployment MUST NOT serve byte content that differs from what `deposit_artifact` persisted for that id ([`08-storage.md`](08-storage.md) §5.3), and MUST NOT overwrite an artifact's bytes once the id is issued ([`08-storage.md`](08-storage.md) §5.4) — because each deposit mints a fresh id, no client request can target an existing id for overwrite.
+
+## 17. Implementation latitude
 
 The binding leaves to implementations:
 
@@ -604,8 +648,9 @@ The binding leaves to implementations:
 
 What the binding does **not** leave to implementations:
 
-- The URL shapes (§§2–8).
+- The URL shapes (§§2–8, §16).
 - The problem+json error vocabulary (§9).
 - The same-value idempotency on `integrate_variant` (§5).
+- The §16 artifact-operation contract: the opaque-URI requirement, the streamed size-cap enforcement, the safe-delivery headers, and the §13.3 per-row fetch ACL.
 - The §13 authentication scheme (per-worker bearer + admin bearer; verified before Store invocation).
 - Preservation of the [`04-task-protocol.md`](04-task-protocol.md), [`05-event-protocol.md`](05-event-protocol.md), [`06-integrator.md`](06-integrator.md) §3.4, and [`08-storage.md`](08-storage.md) invariants through the HTTP transport.

@@ -1,6 +1,7 @@
 """Pydantic bindings for the EDEN protocol wire formats (spec/v0)."""
 
 from ._common import CommitSha, DateTimeStr, DurationStr, WorkerId
+from .artifact import ArtifactMetadata
 from .config import (
     BaselineConfig,
     ConvergenceWindowTerminationConfig,
@@ -71,6 +72,7 @@ from .worker import Worker, WorkerLabels
 
 __all__ = [
     "REGISTERED_EVENT_TYPES",
+    "ArtifactMetadata",
     "CommitSha",
     "DateTimeStr",
     "DurationStr",
