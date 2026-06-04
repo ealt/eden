@@ -1,0 +1,99 @@
+#!/usr/bin/env bash
+# pre-push hook — run the fast pre-push validation gate.
+#
+# Catches ~80% of recent CI failures (rename-discipline, complexity-gate,
+# docs-lint, pyright, ruff) without paying the 5-10 min compose-smoke cost.
+#
+# Total runtime: ~50 seconds on a warm cache.
+#
+# Bypass (rare, e.g., known-clean-but-failing-locally):
+#   git push --no-verify
+#
+# Install (once per clone):
+#   git config --local core.hooksPath scripts/git-hooks
+#
+# Worktrees: each worktree shares its parent clone's git config; setting
+# core.hooksPath in the main repo applies to all worktrees.
+
+set -uo pipefail
+
+# Find the repo root (works from any cwd in any worktree)
+REPO_ROOT=$(git rev-parse --show-toplevel) || {
+  echo "pre-push: not in a git repo" >&2
+  exit 1
+}
+cd "$REPO_ROOT"
+
+# Don't run on tag pushes — those are typically release ops, not code changes
+while read -r _local_ref _local_sha remote_ref _remote_sha; do
+  case "$remote_ref" in
+    refs/heads/*) ;;
+    *) exit 0 ;;
+  esac
+done
+
+echo "pre-push: running fast validation gate..."
+
+fail=0
+declare -a failed_checks=()
+
+# Helper — emit a clear pass/fail line per check
+run_check() {
+  local name="$1"; shift
+  local start=$(date +%s)
+  if "$@"; then
+    local elapsed=$(( $(date +%s) - start ))
+    echo "  ✓ $name (${elapsed}s)"
+  else
+    local elapsed=$(( $(date +%s) - start ))
+    echo "  ✗ $name (${elapsed}s) — FAILED"
+    failed_checks+=("$name")
+    fail=1
+  fi
+}
+
+# 1. rename-discipline (~2s)
+if [[ -x scripts/check-rename-discipline.py ]]; then
+  run_check "rename-discipline" python3 scripts/check-rename-discipline.py
+fi
+
+# 2. complexity-gate (~5s)
+if [[ -x scripts/check-complexity.py ]]; then
+  run_check "complexity-gate" python3 scripts/check-complexity.py
+fi
+
+# 3. ruff lint (~3s)
+if command -v uv >/dev/null 2>&1; then
+  run_check "ruff lint" uv run ruff check . --quiet
+fi
+
+# 4. pyright typecheck (~30s) — slowest; skip if "fast" mode requested
+if [[ "${EDEN_PREPUSH_FAST:-0}" != "1" ]] && command -v uv >/dev/null 2>&1; then
+  # Pyright across the whole tree is slow; scope to reference/ which has the
+  # actual production code. Tests use per-file `# pyright:` disables.
+  run_check "pyright" uv run pyright reference/ --outputjson=/dev/null
+fi
+
+# 5. docs-lint (markdownlint) — fast, catches the cite-marker-in-table gotcha
+if command -v npx >/dev/null 2>&1; then
+  run_check "docs-lint" npx --yes markdownlint-cli2@0.14.0 \
+    '**/*.md' '#node_modules' '#.venv' '#docs/archive/**' '#docs/plans/review/**'
+fi
+
+if [[ $fail -ne 0 ]]; then
+  cat >&2 <<EOF
+
+pre-push: FAILED — the following checks must be clean before push:
+$(printf '  - %s\n' "${failed_checks[@]}")
+
+Fix the issues and re-push, or bypass with:
+  git push --no-verify  (only when you've already validated some other way)
+
+To skip pyright for a faster gate (under ~15s), prefix with:
+  EDEN_PREPUSH_FAST=1 git push
+EOF
+  exit 1
+fi
+
+echo "pre-push: all fast checks clean — pushing."
+exit 0
