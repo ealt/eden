@@ -133,6 +133,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--artifact-blob-dir",
+        default=None,
+        help=(
+            "Server-PRIVATE, writable directory for the §16 artifact blob "
+            "backend (07-wire-protocol.md §16; issue #166). Distinct from "
+            "--artifacts-dir (which backs the read-only legacy /_reference "
+            "serve route). When set, deposits persist durably here; when "
+            "unset, the deposit endpoint falls back to a NON-DURABLE "
+            "in-memory backend (a warning is logged). Issue #166."
+        ),
+    )
+    parser.add_argument(
         "--max-artifact-bytes",
         type=int,
         default=None,
@@ -278,11 +290,21 @@ def main(argv: list[str] | None = None) -> int:
             if args.checkpoint_import_credentials_dir
             else None
         )
+        artifact_blob_dir = (
+            Path(args.artifact_blob_dir) if args.artifact_blob_dir else None
+        )
+        if artifact_blob_dir is None:
+            log.warning(
+                "no --artifact-blob-dir set: the §16 artifact deposit "
+                "endpoint will use a NON-DURABLE in-memory backend; "
+                "deposited bytes are lost on restart (issue #166)"
+            )
         app = build_app(
             store=store,
             admin_token=args.admin_token,
             subscribe_timeout=args.subscribe_timeout,
             artifacts_dir=artifacts_dir,
+            artifact_blob_dir=artifact_blob_dir,
             max_artifact_bytes=args.max_artifact_bytes,
             checkpoint_experiment_config=experiment_config_text,
             checkpoint_repo_path=args.repo_path,

@@ -28,7 +28,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from eden_checkpoint import CheckpointError
-from eden_storage import ArtifactBackend, FileArtifactBackend, InMemoryArtifactBackend, Store
+from eden_storage import ArtifactBackend, InMemoryArtifactBackend, Store
 from eden_storage.errors import StorageError
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
@@ -117,16 +117,18 @@ def make_app(
     ``spec/v0/reference-bindings/worker-host-subprocess.md`` §9 for the
     substrate-access posture this route supports.
 
-    ``artifact_backend`` is the §16 blob store (issue #166); when omitted
-    it defaults to a ``FileArtifactBackend`` rooted at ``artifacts_dir``
-    (else in-memory). ``max_artifact_bytes`` is the §16.1 deposit cap.
+    ``artifact_backend`` is the §16 blob store (issue #166); defaults to
+    an in-process ``InMemoryArtifactBackend`` (test posture). A deployed
+    server passes a server-private ``FileArtifactBackend`` — NOT
+    ``artifacts_dir`` (see ``_resolve_artifact_backend``).
+    ``max_artifact_bytes`` is the §16.1 deposit cap.
     """
     app = FastAPI(
         title=f"EDEN task store — {store.experiment_id}",
         version="0",
     )
 
-    artifact_backend = _resolve_artifact_backend(artifact_backend, artifacts_dir)
+    artifact_backend = _resolve_artifact_backend(artifact_backend)
 
     deps = RouterDeps(
         store=store,
@@ -174,19 +176,26 @@ def make_app(
 
 
 def _resolve_artifact_backend(
-    artifact_backend: ArtifactBackend | None, artifacts_dir: Path | str | None
+    artifact_backend: ArtifactBackend | None,
 ) -> ArtifactBackend:
     """Pick the §16 blob backend (issue #166).
 
-    An explicit ``artifact_backend`` wins; otherwise default to a
-    :class:`FileArtifactBackend` rooted at ``artifacts_dir`` when one was
-    supplied, else an in-process :class:`InMemoryArtifactBackend` (the
-    test / in-process posture).
+    An explicit ``artifact_backend`` (a server-private, writable
+    :class:`FileArtifactBackend` in a deployed server) wins; otherwise
+    default to an in-process :class:`InMemoryArtifactBackend` — the
+    test / in-process posture.
+
+    The backend deliberately does NOT default to ``artifacts_dir``: that
+    directory backs the legacy ``/_reference/...`` serve route (mounted
+    read-only in the reference Compose stack, and shared with legacy
+    ``file://`` writers — reusing it would both break writes and let a
+    worker who learns an opaque id read deposited bytes through the path
+    route, bypassing the §16.2 row ACL). The §16 backend needs its own
+    private writable root, supplied explicitly by the caller (the
+    task-store-server's ``--artifact-blob-dir``).
     """
     if artifact_backend is not None:
         return artifact_backend
-    if artifacts_dir is not None:
-        return FileArtifactBackend(artifacts_dir)
     return InMemoryArtifactBackend()
 
 

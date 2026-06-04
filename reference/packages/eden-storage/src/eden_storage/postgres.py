@@ -75,6 +75,7 @@ _READONLY_GRANT_TABLES: tuple[str, ...] = (
     "worker_group",
     "group_membership",
     "schema_version",
+    "artifact",
 )
 """Tables the 12a-1f readonly role gets full-table SELECT on.
 

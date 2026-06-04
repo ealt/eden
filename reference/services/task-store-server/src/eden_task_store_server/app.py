@@ -15,6 +15,7 @@ from eden_contracts import ExperimentConfig
 from eden_git import GitError, GitRepo
 from eden_service_common import load_experiment_config
 from eden_storage import (
+    FileArtifactBackend,
     InMemoryStore,
     PostgresStore,
     SqliteStore,
@@ -135,6 +136,7 @@ def build_app(
     admin_token: str | None = None,
     subscribe_timeout: float = 30.0,
     artifacts_dir: Path | str | None = None,
+    artifact_blob_dir: Path | str | None = None,
     max_artifact_bytes: int | None = None,
     checkpoint_experiment_config: str | None = None,
     checkpoint_repo_path: Path | str | None = None,
@@ -179,9 +181,15 @@ def build_app(
     make_app_kwargs: dict[str, Any] = {}
     if max_artifact_bytes is not None:
         # Issue #166: the §16.1 deposit size cap. When unset, make_app's
-        # DEFAULT_MAX_ARTIFACT_BYTES applies. The §16 FileArtifactBackend
-        # is rooted at artifacts_dir by make_app's default resolution.
+        # DEFAULT_MAX_ARTIFACT_BYTES applies.
         make_app_kwargs["max_artifact_bytes"] = max_artifact_bytes
+    if artifact_blob_dir is not None:
+        # Issue #166: the §16 blob backend's server-PRIVATE writable root,
+        # distinct from --artifacts-dir (which backs the read-only legacy
+        # /_reference serve route). Without it the deposit endpoint falls
+        # back to a non-durable in-memory backend — see the warning the
+        # CLI logs.
+        make_app_kwargs["artifact_backend"] = FileArtifactBackend(artifact_blob_dir)
     return make_app(
         store,
         admin_token=admin_token,
