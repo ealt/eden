@@ -34,7 +34,7 @@ CONFORMANCE_GROUP = "Artifact transfer"
 # that it is a non-empty RFC-3986 URI (a scheme prefix + non-empty rest),
 # NOT the reference `eden://artifacts/` scheme; resolvability is proven by
 # the fetch round-trip below.
-_URI_RE = re.compile(r"^[a-z][a-z0-9+.-]*:\S+$")
+_URI_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9+.-]*:\S+$")
 
 
 def _artifacts_path(client: WireClient, suffix: str = "") -> str:

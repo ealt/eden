@@ -199,8 +199,21 @@ addressed (plus the two standing declines, unchanged):
 
 ## Round 9
 
-Re-ran `codex review --base main` after the round-8 fixes — only re-raises of the two
-standing declines (per-part streaming cap; durable-store deposit posture), no new
-actionable findings. **Converged:** every actionable defect is fixed; the two open
-items are deliberate, documented scoping decisions for this additive PR (the durable
+Re-ran `codex review --base main` after the round-8 fixes — two doc-accuracy findings
+(the standing declines were NOT re-raised), both fixed:
+
+- **[P2] Case-insensitive URI scheme.** The conformance URI regex was lowercase-only,
+  rejecting RFC-3986-valid uppercase schemes (`URN:`, `S3://`). Relaxed to
+  `[a-zA-Z][a-zA-Z0-9+.-]*:`.
+- **[P2] §5 matrix over-promised 413.** The chapter-9 §5 Artifact-transfer row listed
+  "over-cap → 413" as covered, but the suite doesn't drive over-cap (the cap is
+  operator-configured latitude; `payload-too-large` is IUT-optional). Reworded the row
+  to state 413 is **not portably asserted** (reference unit-test coverage), and added
+  the safe-delivery-header assertion to the row's scope.
+
+## Round 10
+
+Re-ran `codex review --base main` after the round-9 fixes — no new actionable findings.
+**Converged:** every actionable defect across ten rounds is fixed; the only open items
+are the two deliberate, documented scoping declines (per-part streaming cap; durable
 blob volume + writer adoption are the #290 cutover's work).
