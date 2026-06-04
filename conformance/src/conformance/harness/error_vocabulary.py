@@ -55,6 +55,13 @@ IUT_OPTIONAL_TYPES: frozenset[str] = frozenset(
         "eden://error/lease-not-held",
         "eden://error/lease-expired",
         "eden://error/lease-instance-mismatch",
+        # spec/v0/07-wire-protocol.md §9 + §16.1 (issue #166) — the
+        # deposit size cap is operator-configured latitude, so a
+        # portable suite cannot reliably trigger it (a third-party IUT
+        # may set the cap above any payload the suite is willing to
+        # upload). In-vocabulary; reference 413 coverage lives in the
+        # eden-wire unit tests.
+        "eden://error/payload-too-large",
     }
 )
 

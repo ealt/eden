@@ -100,6 +100,7 @@ class WireClient:
         headers: Mapping[str, str] | None = None,
         timeout: float | None = None,
         as_worker: str | None = None,
+        files: Any | None = None,
     ) -> httpx.Response:
         kwargs: dict[str, Any] = {}
         if json is not None:
@@ -109,6 +110,18 @@ class WireClient:
         request_headers: dict[str, str] = {}
         if headers is not None:
             request_headers.update(headers)
+        if files is not None:
+            # Multipart deposit (chapter 07 §16.1). The client carries a
+            # default ``Content-Type: application/json`` header, which
+            # httpx will NOT override for a ``files=`` request — so the
+            # server would see JSON and find no multipart parts. Encode
+            # the multipart body via a standalone ``httpx.Request`` (no
+            # client defaults applied) to capture the generated boundary
+            # Content-Type, then send the raw content with that header
+            # overriding the JSON default.
+            encoded = httpx.Request(method, self._client.base_url.join(path), files=files)
+            kwargs["content"] = encoded.read()
+            request_headers["Content-Type"] = encoded.headers["content-type"]
         if as_worker is not None:
             # Per-call bearer swap. Look up the worker's credential and
             # override the Authorization header for this single
