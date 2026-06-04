@@ -94,5 +94,16 @@ both addressed:
 
 ## Round 3
 
-Re-ran `codex review --base main` after the round-2 fixes — no further findings
+Re-ran `codex review --base main` after the round-2 fixes — one more finding,
+addressed:
+
+- **[P2] Reject ambiguous multi-part deposits.** §16.1 defines the body as exactly
+  one `file` part; `form.get("file")` would silently pick one if a client sent
+  multiple parts (or a `file` part plus stray fields), risking persisting bytes the
+  caller didn't intend. The handler now requires `form.multi_items()` to be exactly
+  one entry keyed `file` → else `BadRequest`. Added a regression test.
+
+## Round 4
+
+Re-ran `codex review --base main` after the round-3 fix — no further findings
 (convergence).

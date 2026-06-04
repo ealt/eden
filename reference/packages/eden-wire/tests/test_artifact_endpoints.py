@@ -140,6 +140,21 @@ class TestDepositFetchNoAuth:
         assert resp.status_code == 400
         assert resp.json()["type"] == "eden://error/bad-request"
 
+    def test_multiple_parts_rejected(self, store: InMemoryStore) -> None:
+        # §16.1: exactly one 'file' part. A second part (or a stray field)
+        # makes the body ambiguous → 400, not a silent pick.
+        client = TestClient(make_app(store))
+        resp = client.post(
+            _artifacts_url(),
+            headers=_hdr(),
+            files={
+                "file": ("a", b"first", "text/plain"),
+                "file2": ("b", b"second", "text/plain"),
+            },
+        )
+        assert resp.status_code == 400
+        assert resp.json()["type"] == "eden://error/bad-request"
+
     def test_malformed_multipart_returns_problem_json_400(
         self, store: InMemoryStore
     ) -> None:

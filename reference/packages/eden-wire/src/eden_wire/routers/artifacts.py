@@ -166,12 +166,19 @@ def _deposit_artifact(deps: RouterDeps):  # noqa: ANN202 — FastAPI handler fac
         except Exception as exc:  # noqa: BLE001 — untrusted multipart body
             raise BadRequest(f"malformed multipart deposit body: {exc}") from exc
         try:
-            upload = form.get("file")
-            if not isinstance(upload, UploadFile):
+            # §16.1: the body is EXACTLY one part named `file`. Reject
+            # ambiguous bodies (multiple parts, extra fields, a different
+            # key) rather than silently picking one — otherwise the server
+            # could persist bytes the caller did not intend.
+            items = form.multi_items()
+            if len(items) != 1 or items[0][0] != "file":
                 raise BadRequest(
-                    "deposit body must be multipart/form-data with a single "
-                    "'file' part"
+                    "deposit body must be multipart/form-data with exactly "
+                    "one 'file' part"
                 )
+            upload = items[0][1]
+            if not isinstance(upload, UploadFile):
+                raise BadRequest("the 'file' part must be a file upload")
             data = await upload.read()
             content_type = _sanitize_content_type(upload.content_type)
         finally:
