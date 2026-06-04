@@ -14,6 +14,7 @@ from ._common import (
     mint_ulid,
 )
 from .config import (
+    AutoCheckpointConfig,
     BaselineConfig,
     ConvergenceWindowTerminationConfig,
     Direction,
@@ -88,6 +89,7 @@ __all__ = [
     "DateTimeStr",
     "DisplayName",
     "DurationStr",
+    "AutoCheckpointConfig",
     "BaselineConfig",
     "ExperimentId",
     "GroupId",

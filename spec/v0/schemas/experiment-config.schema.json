@@ -180,6 +180,31 @@
         }
       ]
     },
+    "auto_checkpoint": {
+      "type": "object",
+      "description": "Implementation-defined deployment behavior (NOT a protocol contract): when enabled, the reference orchestrator periodically exports a portable checkpoint (07-wire-protocol.md §14.1) and, optionally, one on experiment termination. Opt-in; absent is equivalent to {enabled: false}. The destination directory is deployment wiring (orchestrator --auto-checkpoint-dir / $EDEN_AUTO_CHECKPOINT_DIR), not part of this portable block, because a host filesystem path means nothing on a different deployment.",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Master switch. Default false (absent block is equivalent to {enabled: false})."
+        },
+        "interval_seconds": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Cadence in seconds between periodic checkpoints (matches the *_task_deadline seconds convention). Default 3600 (60 minutes). The first periodic checkpoint fires one full interval after orchestrator startup."
+        },
+        "retention_count": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Ring-buffer depth for periodic checkpoints; the oldest periodic archives beyond this count are pruned. Default 6. Does not bound terminal checkpoints (those are kept outside the ring)."
+        },
+        "on_terminate": {
+          "type": "boolean",
+          "description": "Take a terminal checkpoint when the experiment reaches state=terminated. Default true."
+        }
+      },
+      "additionalProperties": false
+    },
     "max_quiescent_iterations": {
       "type": "integer",
       "minimum": 2,

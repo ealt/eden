@@ -32,9 +32,18 @@ from eden_dispatch import (
     maintain_pending,
     never_terminate,
 )
+from eden_orchestrator.checkpoint_scheduler import CheckpointScheduler
 from eden_orchestrator.cli import _ensure_orchestrators_membership
 from eden_orchestrator.loop import _read_dispatch_mode, run_orchestrator_loop
 from eden_service_common import StopFlag
+
+
+def _disabled_scheduler() -> CheckpointScheduler:
+    """No-op auto-checkpoint scheduler for loop tests that don't exercise it."""
+    return CheckpointScheduler.from_config(
+        None, experiment_id=_EXP_ID, destination=None, export_fn=None
+    )
+
 
 _EXP_ID = "exp_01kt5e4vh7h10w9fsb2pbkmt6s"
 
@@ -141,6 +150,7 @@ def test_loop_invokes_ideation_policy_and_creates_tasks(
         poll_interval=0.0,
         max_quiescent_iterations=5,
         stop=stop,
+        scheduler=_disabled_scheduler(),
     )
     tasks = store.list_tasks(kind="ideation")
     assert len(tasks) == 3
@@ -189,6 +199,7 @@ def test_loop_honors_manual_ideation_creation(store: InMemoryStore) -> None:
         poll_interval=0.0,
         max_quiescent_iterations=2,  # quiesces after 2 no-progress iters
         stop=stop,
+        scheduler=_disabled_scheduler(),
     )
     # Manual mode → policy never invoked.
     assert calls == []
@@ -229,6 +240,7 @@ def test_loop_picks_up_mode_changes_between_iterations(
         poll_interval=0.0,
         max_quiescent_iterations=3,
         stop=stop,
+        scheduler=_disabled_scheduler(),
     )
     # Exactly 2 ideation tasks from iter-1; iter-2+ gate prevents more.
     assert len(store.list_tasks(kind="ideation")) == 2

@@ -265,6 +265,7 @@ Units and chunking to be named closer to execution — too far ahead to estimate
 - [#122](plans/issue-122-baseline-variant.md) — Evaluatable baseline variant (seed becomes a `kind="baseline"` Variant) — **shipped 2026-06-02** (see [CHANGELOG](../CHANGELOG.md))
 - [#273](https://github.com/ealt/eden/issues/273) — Fix spec/impl drift: align prose + integrator manifest to the `evaluation` field name (Option 1) — **shipped 2026-06-03** (see [CHANGELOG](../CHANGELOG.md))
 - [#128](plans/identity-id-name-disambiguation.md) — Disambiguate user-facing names from system ids (cluster-identity foundation; unblocks #140 / #141 / #143 / #144) — **shipped 2026-06-03** (see [CHANGELOG](../CHANGELOG.md))
+- [#131](plans/issue-131-auto-checkpointing.md) — Automatic checkpointing (cadence + on-terminate; optional safety net) — **shipped 2026-06-04** (see [CHANGELOG](../CHANGELOG.md))
 
 ---
 

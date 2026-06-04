@@ -222,6 +222,39 @@ class BaselineConfig(BaseModel):
         return self
 
 
+class AutoCheckpointConfig(BaseModel):
+    """Automatic-checkpointing block (issue #131).
+
+    Implementation-defined *deployment* behavior, NOT a protocol
+    contract: when ``enabled`` the reference orchestrator periodically
+    exports a portable checkpoint (``07-wire-protocol.md`` §14.1) and,
+    optionally, one when the experiment reaches ``state=terminated``.
+    Opt-in; an absent block is equivalent to ``{enabled: false}``. The
+    *destination directory* is deployment wiring (orchestrator
+    ``--auto-checkpoint-dir`` / ``$EDEN_AUTO_CHECKPOINT_DIR``), NOT a
+    field here, because a host filesystem path is meaningless on a
+    different deployment (the portable config round-trips through
+    checkpoints; deployment paths do not).
+
+    Reference defaults (``enabled=false``, ``interval_seconds=3600``,
+    ``retention_count=6``, ``on_terminate=true``) are applied by the
+    orchestrator, not baked into this model — so
+    ``model_dump(exclude_none=True)`` round-trips an absent field as
+    absent for schema parity (mirrors ``BaselineConfig``). Inner
+    optional fields are ``NotNone``-wrapped: explicit ``null`` is
+    rejected (the JSON Schema's ``type`` rejects it too), absent is
+    accepted. ``extra="forbid"`` matches the schema's
+    ``additionalProperties: false``.
+    """
+
+    model_config = ConfigDict(strict=True, extra="forbid")
+
+    enabled: Annotated[bool | None, NotNone] = None
+    interval_seconds: Annotated[float | None, NotNone, Field(gt=0)] = None
+    retention_count: Annotated[int | None, NotNone, Field(ge=1)] = None
+    on_terminate: Annotated[bool | None, NotNone] = None
+
+
 class ExperimentConfig(BaseModel):
     """Declarative experiment input.
 
@@ -258,6 +291,7 @@ class ExperimentConfig(BaseModel):
     ideation_policy: Annotated[IdeationPolicyConfig | None, NotNone] = None
     termination_policy: Annotated[TerminationPolicyConfig | None, NotNone] = None
     baseline: Annotated[BaselineConfig | None, NotNone] = None
+    auto_checkpoint: Annotated[AutoCheckpointConfig | None, NotNone] = None
     max_quiescent_iterations: Annotated[int | None, NotNone, Field(ge=2)] = None
     ideation_task_deadline: Annotated[float | None, NotNone, Field(gt=0)] = None
     execution_task_deadline: Annotated[float | None, NotNone, Field(gt=0)] = None

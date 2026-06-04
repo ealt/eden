@@ -33,6 +33,10 @@ from eden_service_common import (
 from eden_wire import StoreClient
 from eden_wire.errors import Unauthorized
 
+from .auto_checkpoint import (
+    build_auto_checkpoint_scheduler,
+    validate_auto_checkpoint,
+)
 from .baseline import ensure_baseline_variant
 from .control_plane_bootstrap import (
     bootstrap_control_plane_worker,
@@ -217,6 +221,23 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "non-default CLI value triggers a startup-warning and is "
             "ignored. In --control-plane-url multi-experiment mode the CLI "
             "value is consulted (deferred to #214)."
+        ),
+    )
+    parser.add_argument(
+        "--auto-checkpoint-dir",
+        default=os.environ.get("EDEN_AUTO_CHECKPOINT_DIR") or None,
+        help=(
+            "Destination directory for automatic checkpoints (issue "
+            "#131). Defaults to $EDEN_AUTO_CHECKPOINT_DIR. The "
+            "experiment-config ``auto_checkpoint`` block carries the "
+            "portable intent (enabled / cadence / retention / "
+            "on_terminate); this flag is the deployment-local path where "
+            "the archives land (a host path is not portable, so it is "
+            "NOT a config field). Required when "
+            "``auto_checkpoint.enabled`` is true in single-experiment "
+            "mode; the orchestrator fails fast at startup if the "
+            "directory is missing/unwritable or no admin token is "
+            "available for the admin-gated export endpoint."
         ),
     )
     parser.add_argument(
@@ -470,6 +491,14 @@ def _run_single_experiment(
             "--experiment-id is required when --control-plane-url is not set"
         )
 
+    # Fail fast (plan §3.3) on auto-checkpoint misconfiguration BEFORE any
+    # store work: validate the destination dir + admin-token availability
+    # here so a missing/unwritable path surfaces as a clear startup error,
+    # never as post-startup warning churn that silently drops every export.
+    auto_checkpoint_dir = validate_auto_checkpoint(
+        args=args, config=config, admin_token=admin_token
+    )
+
     log.info("waiting_for_task_store", url=args.task_store_url)
     wait_for_task_store(
         base_url=args.task_store_url,
@@ -514,19 +543,31 @@ def _run_single_experiment(
             admin_token=admin_token,
             log=log,
         )
-        run_orchestrator_loop(
-            store=client,
-            integrator=integrator,
-            ideation_policy=ideation_policy,
-            termination_policy=termination_policy,
-            terminated_by=args.worker_id,
-            ideation_task_prefix=args.ideation_task_prefix,
-            execution_task_prefix=args.execution_task_prefix,
-            evaluation_task_prefix=args.evaluation_task_prefix,
-            poll_interval=args.poll_interval,
-            max_quiescent_iterations=max_quiescent_iterations,
-            stop=stop,
+        scheduler, export_client = build_auto_checkpoint_scheduler(
+            args=args,
+            config=config,
+            admin_token=admin_token,
+            destination=auto_checkpoint_dir,
+            log=log,
         )
+        try:
+            run_orchestrator_loop(
+                store=client,
+                integrator=integrator,
+                ideation_policy=ideation_policy,
+                termination_policy=termination_policy,
+                terminated_by=args.worker_id,
+                ideation_task_prefix=args.ideation_task_prefix,
+                execution_task_prefix=args.execution_task_prefix,
+                evaluation_task_prefix=args.evaluation_task_prefix,
+                poll_interval=args.poll_interval,
+                max_quiescent_iterations=max_quiescent_iterations,
+                stop=stop,
+                scheduler=scheduler,
+            )
+        finally:
+            if export_client is not None:
+                export_client.close()
     log.info("orchestrator exited")
     return 0
 

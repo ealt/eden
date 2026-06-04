@@ -23,6 +23,8 @@ from eden_git import Identity, Integrator
 from eden_service_common import StopFlag, get_logger
 from eden_storage import Store
 
+from .checkpoint_scheduler import CheckpointScheduler
+
 log = get_logger(__name__)
 
 
@@ -78,6 +80,25 @@ def _read_dispatch_mode(store: Store) -> DispatchMode:
         return _ALL_MANUAL
 
 
+def _observed_terminated(store: Store) -> bool:
+    """Best-effort read of whether the experiment is in ``terminated`` state.
+
+    Gating the on-terminate checkpoint on an *observed* ``terminated``
+    state (plan D6) keeps a healthy quiescent-but-running exit from
+    dropping a misleading ``-terminated-`` archive. Best-effort (plan
+    D5): any read exception is logged and treated as "not terminated"
+    so a transport blip skips the terminal check this iteration rather
+    than crashing the loop.
+    """
+    try:
+        return store.read_experiment_state() == "terminated"
+    except Exception:  # noqa: BLE001 — defensive at iteration boundary
+        log.exception(
+            "read_experiment_state_failed; skipping terminal checkpoint check"
+        )
+        return False
+
+
 def run_orchestrator_loop(
     *,
     store: Store,
@@ -91,6 +112,7 @@ def run_orchestrator_loop(
     poll_interval: float,
     max_quiescent_iterations: int,
     stop: StopFlag,
+    scheduler: CheckpointScheduler,
 ) -> None:
     """Loop finalize + dispatch + integrate to quiescence (or termination).
 
@@ -112,6 +134,17 @@ def run_orchestrator_loop(
     quiescence counter — no special-case exit path is needed because
     integration drain is exact-finite, so the post-terminate loop
     naturally quiesces.
+
+    ``scheduler`` is the auto-checkpoint scheduler (issue #131). After
+    each iteration the loop fires its cadence checkpoint and — when a
+    terminal checkpoint is still wanted — reads the experiment state and
+    fires the terminal checkpoint on an *observed* ``terminated`` state
+    (plan D6). Both calls are best-effort and never perturb the
+    ``quiescent`` counter (plan D5). All loop-exit paths funnel through
+    a single final terminal re-check so a terminate-then-immediate-
+    quiescence still emits the terminal archive; a healthy
+    quiescent-but-running exit emits none (its state read returns
+    ``running``). A disabled scheduler makes every hook a no-op.
     """
     ideation_factory = make_id_factory(ideation_task_prefix)
     implement_factory = make_id_factory(execution_task_prefix)
@@ -139,15 +172,30 @@ def run_orchestrator_loop(
             termination_policy=termination_policy,
             terminated_by=terminated_by,
         )
+        # Auto-checkpoint hooks (issue #131) — best-effort, never
+        # perturb the quiescent counter. The terminal-state read is
+        # gated on the scheduler still wanting it, so the common
+        # disabled deployment pays no extra wire roundtrip.
+        scheduler.maybe_checkpoint_periodic(wall_now=datetime.now(UTC))
+        if scheduler.should_check_terminal and _observed_terminated(store):
+            scheduler.maybe_checkpoint_terminal()
         if reclaimed or progress:
             quiescent = 0
         else:
             quiescent += 1
             if quiescent >= max_quiescent_iterations:
                 log.info("quiescent", iterations=quiescent)
-                return
+                break
         if stop.wait(poll_interval):
-            return
+            break
+
+    # Single exit path: a final best-effort terminal re-check, gated on
+    # an observed ``terminated`` state (plan D6) so a quiescent-but-
+    # running exit never emits a ``-terminated-`` archive. Covers
+    # terminate-then-immediate-quiescence where the in-loop check raced
+    # the exit.
+    if scheduler.should_check_terminal and _observed_terminated(store):
+        scheduler.maybe_checkpoint_terminal()
 
 
 _INTEGRATOR_IDENTITY = Identity(
