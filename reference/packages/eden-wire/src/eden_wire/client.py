@@ -25,6 +25,7 @@ from __future__ import annotations
 import io
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -66,7 +67,21 @@ __all__ = [
     "IndeterminateReassign",
     "IndeterminateTermination",
     "StoreClient",
+    "WhoamiResult",
 ]
+
+
+@dataclass(frozen=True)
+class WhoamiResult:
+    """The identity returned by ``GET /v0/experiments/{E}/whoami`` (§6.4).
+
+    Carries the opaque ``worker_id`` the bearer authenticates as plus the
+    OPTIONAL operator-supplied display ``name`` the server echoes back
+    (``None`` when the worker was registered without a name).
+    """
+
+    worker_id: str
+    name: str | None = None
 
 
 class IndeterminateImport(RuntimeError):
@@ -554,12 +569,22 @@ class StoreClient:
 
     def register_worker(
         self,
-        worker_id: str,
+        name: str | None = None,
         *,
         labels: dict[str, str] | None = None,
         registered_by: str | None = None,  # noqa: ARG002 — set by server-side principal
     ) -> tuple[Worker, str | None]:
-        body: dict[str, Any] = {"worker_id": worker_id}
+        """Register a worker; the server mints the opaque ``worker_id``.
+
+        The caller supplies only an optional display ``name`` + deployment
+        ``labels``. The minted ``worker_id`` (and one-time
+        ``registration_token``) come back in the response. ``registered_by``
+        is stamped server-side from the authenticated principal; the
+        parameter exists for ``Store``-Protocol signature parity.
+        """
+        body: dict[str, Any] = {}
+        if name is not None:
+            body["name"] = name
         if labels:
             body["labels"] = dict(labels)
         resp = self._request("POST", f"{self._base}/workers", json=body)
@@ -637,27 +662,53 @@ class StoreClient:
         )
         raise RuntimeError(msg)
 
-    def whoami(self) -> str:
-        """Return the ``worker_id`` the bearer authenticates as (§6.4)."""
+    def whoami(self) -> WhoamiResult:
+        """Return the identity the bearer authenticates as (§6.4).
+
+        Returns a :class:`WhoamiResult` carrying both the opaque
+        ``worker_id`` and the OPTIONAL display ``name`` echoed by the
+        server. Callers that only need the id read ``.worker_id``.
+        """
         resp = self._request("GET", f"{self._base}/whoami")
-        return str(resp.json()["worker_id"])
+        body = resp.json()
+        return WhoamiResult(
+            worker_id=str(body["worker_id"]),
+            name=body.get("name"),
+        )
 
     def read_worker(self, worker_id: str) -> Worker:
         resp = self._request("GET", f"{self._base}/workers/{worker_id}")
         return Worker.model_validate(resp.json())
 
-    def list_workers(self) -> list[Worker]:
-        resp = self._request("GET", f"{self._base}/workers")
+    def list_workers(self, name: str | None = None) -> list[Worker]:
+        """List workers, optionally filtered by exact display ``name`` (§6.2)."""
+        params = {"name": name} if name is not None else None
+        resp = self._request("GET", f"{self._base}/workers", params=params)
         return [Worker.model_validate(w) for w in resp.json()["workers"]]
 
     def register_group(
         self,
-        group_id: str,
+        name: str | None = None,
         *,
         members: Iterable[str] | None = None,
         created_by: str | None = None,  # noqa: ARG002 — set by server-side principal
+        allow_reserved: bool = False,  # noqa: ARG002 — server derives this from the authenticated principal
     ) -> Group:
-        body: dict[str, Any] = {"group_id": group_id}
+        """Register a group; the server mints the opaque ``group_id``.
+
+        The caller supplies only an optional display ``name`` + initial
+        ``members`` list (each an opaque ``wkr_*`` / ``grp_*`` id). The
+        minted ``group_id`` comes back in the response. ``created_by`` is
+        stamped server-side from the authenticated principal.
+
+        ``allow_reserved`` exists for ``Store``-Protocol signature parity;
+        over the wire the server derives the reserved-name allowance from
+        the authenticated principal (admin), so the client cannot grant
+        it by passing this flag.
+        """
+        body: dict[str, Any] = {}
+        if name is not None:
+            body["name"] = name
         if members is not None:
             body["members"] = list(members)
         resp = self._request("POST", f"{self._base}/groups", json=body)
@@ -685,8 +736,10 @@ class StoreClient:
         resp = self._request("GET", f"{self._base}/groups/{group_id}")
         return Group.model_validate(resp.json())
 
-    def list_groups(self) -> list[Group]:
-        resp = self._request("GET", f"{self._base}/groups")
+    def list_groups(self, name: str | None = None) -> list[Group]:
+        """List groups, optionally filtered by exact display ``name`` (§7.2)."""
+        params = {"name": name} if name is not None else None
+        resp = self._request("GET", f"{self._base}/groups", params=params)
         return [Group.model_validate(g) for g in resp.json()["groups"]]
 
     def resolve_worker_in_group(self, worker_id: str, group_id: str) -> bool:
@@ -1170,7 +1223,7 @@ class StoreClient:
            whether our POST landed. Raise :class:`IndeterminateImport`;
            operator intervention is required.
         """
-        target_id, local_exported_at, local_format_version = (
+        target_id, source_experiment_id, local_exported_at, local_format_version = (
             self._parse_recovery_manifest(
                 archive_bytes,
                 as_experiment_id=as_experiment_id,
@@ -1181,6 +1234,7 @@ class StoreClient:
         imported = body.get("imported_from")
         if (
             isinstance(imported, dict)
+            and imported.get("source_experiment_id") == source_experiment_id
             and imported.get("checkpoint_exported_at") == local_exported_at
             and imported.get("checkpoint_format_version") == local_format_version
         ):
@@ -1202,13 +1256,13 @@ class StoreClient:
             "by a different import."
         ) from original
 
-    @staticmethod
     def _parse_recovery_manifest(
+        self,
         archive_bytes: bytes,
         *,
         as_experiment_id: str | None,
         original: BaseException,
-    ) -> tuple[str, str, str]:
+    ) -> tuple[str, str, str, str]:
         """Stream-walk the archive's tar entries to read ``manifest.json``.
 
         Codex round-2 finding: don't extract the whole archive just to
@@ -1216,7 +1270,11 @@ class StoreClient:
         disk/I/O on the very path that's supposed to harden a dropped-
         response recovery.
 
-        Returns ``(target_id, exported_at, format_version)``. Raises
+        Returns ``(probe_target_id, source_experiment_id, exported_at,
+        format_version)`` where ``probe_target_id`` is the receiver's own
+        experiment id (where a #128 import lands) and
+        ``source_experiment_id`` is the manifest's id (matched against the
+        receiver's ``imported_from.source_experiment_id``). Raises
         :class:`IndeterminateImport` from ``original`` when the archive
         is unparseable.
         """
@@ -1249,9 +1307,18 @@ class StoreClient:
                 f"({type(original).__name__}) and the local archive "
                 f"could not be parsed for recovery-probe: {parse_exc}"
             ) from original
-        target_id = as_experiment_id or manifest_obj.experiment_id
+        # Post-#128: an unkeyed import lands under the RECEIVER's own
+        # minted experiment_id (this StoreClient's experiment), NOT the
+        # source manifest id — the source id survives only as
+        # ``imported_from.source_experiment_id`` for provenance
+        # (``10-checkpoints.md`` §10, ``07-wire-protocol.md`` §14.2). So the
+        # probe targets ``self._experiment_id`` and confirms the landing by
+        # matching the source id + exported_at. ``as_experiment_id``, when
+        # supplied, must equal ``self._experiment_id`` (the only experiment
+        # this server serves), so it is not the probe target.
         return (
-            target_id,
+            self._experiment_id,
+            manifest_obj.experiment_id,
             manifest_obj.exported_at,
             manifest_obj.checkpoint_format_version,
         )

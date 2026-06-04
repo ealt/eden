@@ -1,7 +1,8 @@
 {% extends "base.html" %}
+{% from "_macros.html" import name_id, attribution %}
 {% block title %}EDEN — admin control group {{ group.group_id }}{% endblock %}
 {% block main %}
-<h1>deployment group <code>{{ group.group_id }}</code></h1>
+<h1>deployment group {{ name_id(group.name, group.group_id) }}</h1>
 
 <p class="lead">
     (<a href="/admin/control/groups/">back to deployment groups</a>)
@@ -11,10 +12,19 @@
 <div class="banner banner-{{ outcome.level }}">{{ outcome.message }}</div>
 {% endif %}
 
+{% if is_reserved %}
+<div class="banner banner-warn">
+    This is a reserved group (<code>{{ group.name }}</code>) seeded by
+    setup-experiment; its name governs access and cannot be reused.
+</div>
+{% endif %}
+
 <dl>
+    <dt>group_id</dt><dd><code>{{ group.group_id }}</code></dd>
+    <dt>name</dt><dd>{% if group.name %}{{ group.name }}{% else %}—{% endif %}</dd>
     <dt>scope</dt><dd><code>{{ group.experiment_id }}</code> (deployment)</dd>
     <dt>created_at</dt><dd>{{ group.created_at }}</dd>
-    <dt>created_by</dt><dd>{% if group.created_by %}<code>{{ group.created_by }}</code>{% else %}—{% endif %}</dd>
+    <dt>created_by</dt><dd>{{ attribution(group.created_by, worker_names) }}</dd>
     <dt>direct member count</dt><dd>{{ group.members | length }}</dd>
 </dl>
 
@@ -22,11 +32,11 @@
     <h2>direct members</h2>
     {% if group.members %}
     <table>
-        <thead><tr><th>member_id</th><th>actions</th></tr></thead>
+        <thead><tr><th>member</th><th>actions</th></tr></thead>
         <tbody>
         {% for m in group.members %}
             <tr>
-                <td><code>{{ m }}</code></td>
+                <td>{{ name_id(member_names.get(m), m) }}</td>
                 <td>
                     <form method="post" action="/admin/control/groups/{{ group.group_id }}/members/{{ m }}/remove">
                         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
@@ -47,9 +57,10 @@
     <form method="post" action="/admin/control/groups/{{ group.group_id }}/members">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <p>
-            <label>member_id (worker_id or group_id)
-                <input type="text" name="member_id" required maxlength="64"
-                       pattern="[a-z0-9][a-z0-9_-]{0,63}">
+            <label>member_id (opaque <code>wkr_*</code> or <code>grp_*</code> id)
+                <input type="text" name="member_id" required maxlength="30"
+                       pattern="(wkr|grp)_[0-9a-hjkmnp-tv-z]{26}"
+                       title="opaque worker (wkr_*) or group (grp_*) id">
             </label>
             <button type="submit">add</button>
         </p>
@@ -82,7 +93,7 @@
         <tbody>
         {% for w in transitive.workers %}
             <tr>
-                <td><a href="/admin/control/workers/{{ w.worker_id }}/"><code>{{ w.worker_id }}</code></a></td>
+                <td><a href="/admin/control/workers/{{ w.worker_id }}/">{{ name_id(worker_names.get(w.worker_id), w.worker_id) }}</a></td>
                 <td>
                     {% if w.via | length > 3 %}
                         <code>{{ w.via[0] }}</code> → … → <code>{{ w.via[-1] }}</code>

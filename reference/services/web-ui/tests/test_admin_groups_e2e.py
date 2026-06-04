@@ -105,7 +105,8 @@ def test_admin_groups_register_and_target_claim(tmp_path: Path) -> None:
     artifacts_dir.mkdir()
     credentials_dir = tmp_path / "credentials"
     credentials_dir.mkdir()
-    experiment_id = "exp-admin-groups-e2e"
+    # Identity rename (#128): opaque experiment id.
+    experiment_id = "exp_0123456789abcdefghjkmnpqrs"
     admin_token = "z" * 64
     logs_dir = tmp_path / "logs"
     logs_dir.mkdir()
@@ -134,6 +135,44 @@ def test_admin_groups_register_and_target_claim(tmp_path: Path) -> None:
     server_port = _read_port(server_log, server, _TASK_STORE_RE)
     task_store_url = f"http://127.0.0.1:{server_port}"
 
+    # Identity rename (#128): mint all workers (server-minted opaque
+    # ids) + the admins group BEFORE spawning the web-ui, so the web-ui
+    # session principal (its minted id) passes the /admin/* gate and its
+    # credential can be persisted for startup bootstrap.
+    from eden_service_common.auth import credential_path
+    from eden_wire import StoreClient
+
+    admin = StoreClient(
+        base_url=task_store_url,
+        experiment_id=experiment_id,
+        bearer=f"admin:{admin_token}",
+    )
+    try:
+        ui_worker, ui_token = admin.register_worker("ui-admin-groups")
+        ui_worker_id = ui_worker.worker_id
+        assert ui_token is not None
+        exp_cred_dir = credentials_dir / experiment_id
+        exp_cred_dir.mkdir(parents=True, exist_ok=True)
+        credential_path(exp_cred_dir, ui_worker_id).write_text(ui_token)
+
+        member_worker, member_token = admin.register_worker("member-w")
+        assert member_token is not None
+        member_id = member_worker.worker_id
+        other_worker, other_token = admin.register_worker("non-member-w")
+        assert other_token is not None
+        other_id = other_worker.worker_id
+        # 12a-2 wave 3 §3.7: create_task(kind=ideation) requires the
+        # caller to be a transitive member of `admins` / `orchestrators`.
+        # Seed the reserved `admins` group with the seed-creator and the
+        # web-ui worker (issue #144 /admin/* gate).
+        admin.register_group(
+            "admins",
+            members=[member_id, ui_worker_id],
+            allow_reserved=True,
+        )
+    finally:
+        admin.close()
+
     web_ui_log = logs_dir / "web-ui.log"
     web_ui = _spawn(
         [
@@ -147,7 +186,7 @@ def test_admin_groups_register_and_target_claim(tmp_path: Path) -> None:
             "--session-secret",
             "z" * 32,
             "--worker-id",
-            "ui-admin-groups",
+            ui_worker_id,
             "--admin-token",
             admin_token,
             "--credentials-dir",
@@ -172,41 +211,7 @@ def test_admin_groups_register_and_target_claim(tmp_path: Path) -> None:
     }
 
     try:
-        # Seed two workers via an admin StoreClient — we need their
-        # registration tokens to exercise the target-claim assertion.
-        from eden_wire import StoreClient
-
-        admin = StoreClient(
-            base_url=task_store_url,
-            experiment_id=experiment_id,
-            bearer=f"admin:{admin_token}",
-        )
-        try:
-            member_worker, member_token = admin.register_worker("member-w")
-            assert member_token is not None
-            other_worker, other_token = admin.register_worker("non-member-w")
-            assert other_token is not None
-            # 12a-2 wave 3 §3.7: create_task(kind=ideation) requires the
-            # caller to be a transitive member of `admins` or
-            # `orchestrators`. The test creates the seed task as
-            # ``member-w``, so register the `admins` group (idempotent on
-            # existing) and add ``member-w`` to it. Doesn't affect the
-            # downstream group-target claim assertion — `e2e-group`
-            # (created below) is the target gate, not `admins`.
-            import contextlib
-
-            from eden_storage.errors import AlreadyExists
-
-            with contextlib.suppress(AlreadyExists):
-                admin.register_group("admins")
-            admin.add_to_group("admins", "member-w")
-            # Issue #144: also add the web-ui worker to admins so its
-            # /admin/* page loads pass the route-layer gate.
-            admin.add_to_group("admins", "ui-admin-groups")
-        finally:
-            admin.close()
-
-        group_id = "e2e-group"
+        group_id: str = ""  # set after the UI register-group POST
         with httpx.Client(base_url=web_url, timeout=10.0) as ui:
             resp = ui.post("/signin", follow_redirects=False)
             assert resp.status_code == 303
@@ -219,7 +224,8 @@ def test_admin_groups_register_and_target_claim(tmp_path: Path) -> None:
             csrf = m.group(1)
             resp = ui.post(
                 "/admin/groups/",
-                content=urlencode({"csrf_token": csrf, "group_id": group_id}),
+                # Register BY NAME; the server mints the opaque group id.
+                content=urlencode({"csrf_token": csrf, "name": "e2e-group"}),
                 headers={"content-type": "application/x-www-form-urlencoded"},
                 follow_redirects=False,
             )
@@ -228,9 +234,15 @@ def test_admin_groups_register_and_target_claim(tmp_path: Path) -> None:
                     f"register-group returned {resp.status_code}: {resp.text}\n"
                     + _dump_logs(procs_logs)
                 )
-            assert f"/admin/groups/{group_id}/?ok=registered" in resp.headers["location"]
+            loc = resp.headers["location"]
+            assert loc.endswith("/?ok=registered")
+            # Recover the minted group id from the redirect target.
+            group_id = loc.removeprefix("/admin/groups/").removesuffix(
+                "/?ok=registered"
+            )
+            assert group_id.startswith("grp_")
 
-            # Add the member through the UI.
+            # Add the member (by opaque id) through the UI.
             resp = ui.get(f"/admin/groups/{group_id}/")
             assert resp.status_code == 200
             m = re.search(r'name="csrf_token"\s+value="([^"]+)"', resp.text)
@@ -239,7 +251,7 @@ def test_admin_groups_register_and_target_claim(tmp_path: Path) -> None:
             resp = ui.post(
                 f"/admin/groups/{group_id}/members",
                 content=urlencode(
-                    {"csrf_token": csrf, "member_id": "member-w"}
+                    {"csrf_token": csrf, "member_id": member_id}
                 ),
                 headers={"content-type": "application/x-www-form-urlencoded"},
                 follow_redirects=False,
@@ -263,7 +275,7 @@ def test_admin_groups_register_and_target_claim(tmp_path: Path) -> None:
         creator = StoreClient(
             base_url=task_store_url,
             experiment_id=experiment_id,
-            bearer=f"member-w:{member_token}",
+            bearer=f"{member_id}:{member_token}",
         )
         try:
             creator.create_task(
@@ -288,11 +300,11 @@ def test_admin_groups_register_and_target_claim(tmp_path: Path) -> None:
         non_member = StoreClient(
             base_url=task_store_url,
             experiment_id=experiment_id,
-            bearer=f"non-member-w:{other_token}",
+            bearer=f"{other_id}:{other_token}",
         )
         try:
             with pytest.raises(WorkerNotEligible):
-                non_member.claim("task-group-target", "non-member-w")
+                non_member.claim("task-group-target", other_id)
         finally:
             non_member.close()
 
@@ -300,11 +312,11 @@ def test_admin_groups_register_and_target_claim(tmp_path: Path) -> None:
         member = StoreClient(
             base_url=task_store_url,
             experiment_id=experiment_id,
-            bearer=f"member-w:{member_token}",
+            bearer=f"{member_id}:{member_token}",
         )
         try:
-            claim = member.claim("task-group-target", "member-w")
-            assert claim.worker_id == "member-w"
+            claim = member.claim("task-group-target", member_id)
+            assert claim.worker_id == member_id
         finally:
             member.close()
     finally:

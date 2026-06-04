@@ -1,7 +1,8 @@
 {% extends "base.html" %}
+{% from "_macros.html" import name_id, attribution %}
 {% block title %}EDEN — admin control worker {{ worker.worker_id }}{% endblock %}
 {% block main %}
-<h1>deployment worker <code>{{ worker.worker_id }}</code></h1>
+<h1>deployment worker {{ name_id(worker.name, worker.worker_id) }}</h1>
 
 <p class="lead">
     (<a href="/admin/control/workers/">back to deployment workers</a>)
@@ -20,13 +21,15 @@
 {% endif %}
 
 <dl>
+    <dt>worker_id</dt><dd><code>{{ worker.worker_id }}</code></dd>
+    <dt>name</dt><dd>{% if worker.name %}{{ worker.name }}{% else %}—{% endif %}</dd>
     <dt>scope</dt><dd><code>{{ worker.experiment_id }}</code> (deployment)</dd>
     <dt>registered_at</dt><dd>{{ worker.registered_at }}</dd>
-    <dt>registered_by</dt><dd>{% if worker.registered_by %}<code>{{ worker.registered_by }}</code>{% else %}—{% endif %}</dd>
+    <dt>registered_by</dt><dd>{{ attribution(worker.registered_by, worker_names) }}</dd>
     <dt>labels</dt><dd>{% if labels_preview %}{{ labels_preview }}{% else %}—{% endif %}</dd>
     <dt>groups (transitive)</dt>
     <dd>
-        {% for gid in groups %}<a href="/admin/control/groups/{{ gid }}/"><code>{{ gid }}</code></a>{% if not loop.last %}, {% endif %}{% endfor %}
+        {% for gid in groups %}<a href="/admin/control/groups/{{ gid }}/">{{ name_id(group_names.get(gid), gid) }}</a>{% if not loop.last %}, {% endif %}{% endfor %}
         {% if not groups %}—{% endif %}
     </dd>
 </dl>

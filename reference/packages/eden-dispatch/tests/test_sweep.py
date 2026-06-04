@@ -18,17 +18,25 @@ from eden_dispatch import (
     sweep_expired_claims,
 )
 
+# A valid opaque exp_* id (Crockford-base32 ULID suffix) for these
+# in-memory store fixtures since #128 enforces the exp_* grammar.
+_EXP_ID = "exp_0123456789abcdefghjkmnpqrs"
 
-def _make_store() -> InMemoryStore:
+
+def _make_store() -> tuple[InMemoryStore, dict[str, str]]:
+    """Return an in-memory store plus a name → minted worker_id map.
+
+    Since #128 ``register_worker`` MINTS an opaque ``wkr_*`` id; the
+    §3.5 step-2 registration check matches on that minted id, so tests
+    look up the claimant's minted id via the returned map keyed by the
+    friendly registration name.
+    """
     store = InMemoryStore(
-        experiment_id="exp-sweep",
+        experiment_id=_EXP_ID,
         evaluation_schema=EvaluationSchema({"loss": "real"}),
     )
-    # 12a-1 wave 5: §3.5 step-2 registration check requires every
-    # claimant to exist in the registry. Pre-register the common
-    # sweep-test worker_ids; specific tests register additional
-    # ids inline as needed.
-    for wid in (
+    workers: dict[str, str] = {}
+    for friendly in (
         "worker-a",
         "worker-b",
         "ideator-1",
@@ -36,8 +44,9 @@ def _make_store() -> InMemoryStore:
         "evaluator-1",
         "ui-1",
     ):
-        store.register_worker(wid)
-    return store
+        worker, _token = store.register_worker(friendly)
+        workers[friendly] = worker.worker_id
+    return store, workers
 
 
 def _claim_with_expiry(
@@ -52,10 +61,10 @@ def _claim_with_expiry(
 
 
 def test_expired_claim_is_reclaimed() -> None:
-    store = _make_store()
+    store, workers = _make_store()
     now = datetime(2026, 4, 24, 12, 0, tzinfo=UTC)
     expired = now - timedelta(seconds=1)
-    _claim_with_expiry(store, "t-1", worker_id="ui-1", expires_at=expired)
+    _claim_with_expiry(store, "t-1", worker_id=workers["ui-1"], expires_at=expired)
 
     count = sweep_expired_claims(store, now=now)
 
@@ -69,10 +78,10 @@ def test_expired_claim_is_reclaimed() -> None:
 
 
 def test_unexpired_claim_left_alone() -> None:
-    store = _make_store()
+    store, workers = _make_store()
     now = datetime(2026, 4, 24, 12, 0, tzinfo=UTC)
     fresh = now + timedelta(seconds=60)
-    _claim_with_expiry(store, "t-1", worker_id="ui-1", expires_at=fresh)
+    _claim_with_expiry(store, "t-1", worker_id=workers["ui-1"], expires_at=fresh)
 
     count = sweep_expired_claims(store, now=now)
 
@@ -82,9 +91,9 @@ def test_unexpired_claim_left_alone() -> None:
 
 
 def test_claim_without_expires_at_left_alone() -> None:
-    store = _make_store()
+    store, workers = _make_store()
     now = datetime(2026, 4, 24, 12, 0, tzinfo=UTC)
-    _claim_with_expiry(store, "t-1", worker_id="ui-1", expires_at=None)
+    _claim_with_expiry(store, "t-1", worker_id=workers["ui-1"], expires_at=None)
 
     count = sweep_expired_claims(store, now=now)
 
@@ -94,9 +103,9 @@ def test_claim_without_expires_at_left_alone() -> None:
 
 def test_at_deadline_left_alone() -> None:
     """``expires_at == now`` is not yet expired; only strictly-before is."""
-    store = _make_store()
+    store, workers = _make_store()
     now = datetime(2026, 4, 24, 12, 0, tzinfo=UTC)
-    _claim_with_expiry(store, "t-1", worker_id="ui-1", expires_at=now)
+    _claim_with_expiry(store, "t-1", worker_id=workers["ui-1"], expires_at=now)
 
     count = sweep_expired_claims(store, now=now)
 
@@ -108,11 +117,11 @@ def test_per_task_failure_does_not_abort_sweep(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A failure on one task must not stop the others from being swept."""
-    store = _make_store()
+    store, workers = _make_store()
     now = datetime(2026, 4, 24, 12, 0, tzinfo=UTC)
     expired = now - timedelta(seconds=1)
-    _claim_with_expiry(store, "t-good", worker_id="ui-1", expires_at=expired)
-    _claim_with_expiry(store, "t-bad", worker_id="ui-1", expires_at=expired)
+    _claim_with_expiry(store, "t-good", worker_id=workers["ui-1"], expires_at=expired)
+    _claim_with_expiry(store, "t-bad", worker_id=workers["ui-1"], expires_at=expired)
 
     real_reclaim = store.reclaim
 
@@ -133,11 +142,11 @@ def test_per_task_failure_does_not_abort_sweep(
 
 def test_only_claimed_tasks_are_inspected() -> None:
     """A pending task with no claim is not inspected (state filter honored)."""
-    store = _make_store()
+    store, workers = _make_store()
     now = datetime(2026, 4, 24, 12, 0, tzinfo=UTC)
     store.create_ideation_task("t-pending")
     expired = now - timedelta(seconds=1)
-    _claim_with_expiry(store, "t-claimed", worker_id="ui-1", expires_at=expired)
+    _claim_with_expiry(store, "t-claimed", worker_id=workers["ui-1"], expires_at=expired)
 
     count = sweep_expired_claims(store, now=now)
 

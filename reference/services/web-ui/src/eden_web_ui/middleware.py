@@ -26,7 +26,29 @@ from starlette.responses import RedirectResponse, Response
 
 from .routes._helpers import ActiveContext, get_session, resolve_active_context
 
-ADMINS_GROUP_ID = "admins"
+# The reserved display NAME of the admins group (identity rename #128).
+# Group ids are now opaque (``grp_*``); the gate resolves this name to
+# the group's minted id via ``list_groups(name=…)`` before checking
+# transitive membership. Multiple groups MAY share a name in principle
+# (names are not unique), so the gate treats a worker as an admin if it
+# is a transitive member of ANY group named ``admins``.
+ADMINS_GROUP_NAME = "admins"
+
+
+def _worker_in_admins(store: object, worker_id: str) -> bool:
+    """Return True iff ``worker_id`` is a transitive member of an ``admins`` group.
+
+    Resolves the reserved ``admins`` NAME to its opaque ``grp_*`` id(s)
+    via ``list_groups(name=…)`` (identity rename #128), then runs the
+    existing transitive ``resolve_worker_in_group`` membership probe
+    against each. Raises on transport/store failures (the caller maps
+    that to a 502); returns False when no group named ``admins`` exists.
+    """
+    admins_groups = store.list_groups(name=ADMINS_GROUP_NAME)  # type: ignore[attr-defined]
+    return any(
+        store.resolve_worker_in_group(worker_id, group.group_id)  # type: ignore[attr-defined]
+        for group in admins_groups
+    )
 
 
 def _is_admin_path(path: str) -> bool:
@@ -135,9 +157,7 @@ class AdminGateMiddleware(BaseHTTPMiddleware):
                 return active
             store = active.store
         try:
-            in_admins = store.resolve_worker_in_group(
-                session.worker_id, ADMINS_GROUP_ID
-            )
+            in_admins = _worker_in_admins(store, session.worker_id)
         except Exception:  # noqa: BLE001 — transport/store-domain
             return _membership_check_failure_response(request)
         if not in_admins:
@@ -145,4 +165,4 @@ class AdminGateMiddleware(BaseHTTPMiddleware):
         return await call_next(request)
 
 
-__all__ = ["AdminGateMiddleware", "ADMINS_GROUP_ID"]
+__all__ = ["AdminGateMiddleware", "ADMINS_GROUP_NAME"]

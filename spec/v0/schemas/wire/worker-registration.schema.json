@@ -8,13 +8,20 @@
   "properties": {
     "worker_id": {
       "type": "string",
+      "pattern": "^wkr_[0-9a-hjkmnp-tv-z]{26}$",
+      "description": "Opaque, system-minted worker identifier (spec/v0/02-data-model.md §1.6)."
+    },
+    "name": {
+      "type": "string",
+      "format": "display-name",
       "minLength": 1,
-      "maxLength": 64,
-      "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
+      "maxLength": 128,
+      "description": "OPTIONAL operator-supplied display label echoed back from registration (spec/v0/02-data-model.md §1.7)."
     },
     "experiment_id": {
       "type": "string",
-      "minLength": 1
+      "pattern": "^exp_[0-9a-hjkmnp-tv-z]{26}$",
+      "description": "Opaque, system-minted experiment identifier (spec/v0/02-data-model.md §1.6)."
     },
     "registered_at": {
       "type": "string",
@@ -23,7 +30,8 @@
     },
     "registered_by": {
       "type": "string",
-      "minLength": 1
+      "pattern": "^(admin|wkr_[0-9a-hjkmnp-tv-z]{26})$",
+      "description": "Actor identifier of the credential that performed the registration: the admin sentinel `admin` or a worker_id (spec/v0/02-data-model.md §1.6)."
     },
     "labels": {
       "type": "object",

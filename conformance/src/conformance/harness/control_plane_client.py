@@ -5,6 +5,20 @@ raw `httpx.Response` so scenarios assert on status codes + problem+json
 `type` strings — no exception-class shortcuts that would couple the
 suite to a reference Python package (chapter 9 §6 makes the chapter-7
 binding the only IUT contract; the suite MUST stay IUT-agnostic).
+
+Identity rename (#128): after the rename the control-plane registries
+mint opaque ids. `register_experiment` mints an `exp_*`,
+`register_worker` mints a `wkr_*`, `register_group` mints a `grp_*`
+([`spec/v0/02-data-model.md`] §1.6); the caller supplies only an
+optional display `name` ([`02-data-model.md`] §1.7). Scenarios still
+want to refer to an entity by a stable human handle, so this client
+mirrors :class:`WireClient`'s name<->minted-id registry pattern: each
+``register_*`` call records the minted id under the display name it
+was created with, and the ``*_id_for`` resolvers map a handle to the
+minted opaque id (returning the argument unchanged when it is unknown,
+so deliberate "never-registered" probes still flow the literal
+through). Lease / read ops resolve their experiment / holder / member
+arguments through those registries before building the wire payload.
 """
 
 from __future__ import annotations
@@ -46,6 +60,15 @@ class ControlPlaneWireClient:
         self.observed_problem_types: set[str] = (
             observed_problem_types if observed_problem_types is not None else set()
         )
+        # Identity registries (display name -> minted opaque id). Since
+        # the identity rename (#128) the control plane mints `exp_*` /
+        # `wkr_*` / `grp_*` ids; scenarios refer to entities by a stable
+        # display handle and resolve to the minted id via the helpers
+        # below when building wire payloads (lease `holder`, member
+        # refs, experiment-scoped paths).
+        self._experiment_id_by_name: dict[str, str] = {}
+        self._worker_id_by_name: dict[str, str] = {}
+        self._group_id_by_name: dict[str, str] = {}
         self._client = httpx.Client(
             base_url=self.base_url,
             headers=headers,
@@ -60,6 +83,26 @@ class ControlPlaneWireClient:
 
     def __exit__(self, *_: object) -> None:
         self.close()
+
+    # ------------------------------------------------------------------
+    # Identity registry (name <-> minted opaque id)
+    # ------------------------------------------------------------------
+
+    def experiment_id_for(self, name: str) -> str:
+        """Resolve an experiment display name to its minted ``exp_*`` id.
+
+        Returns ``name`` unchanged when unknown, so a deliberate
+        "never-registered" probe flows the literal through.
+        """
+        return self._experiment_id_by_name.get(name, name)
+
+    def worker_id_for(self, name: str) -> str:
+        """Resolve a worker display name to its minted ``wkr_*`` id (else unchanged)."""
+        return self._worker_id_by_name.get(name, name)
+
+    def group_id_for(self, name: str) -> str:
+        """Resolve a group display name to its minted ``grp_*`` id (else unchanged)."""
+        return self._group_id_by_name.get(name, name)
 
     # ------------------------------------------------------------------
     # Generic request plumbing
@@ -99,36 +142,52 @@ class ControlPlaneWireClient:
     # ------------------------------------------------------------------
 
     def register_experiment(
-        self, experiment_id: str, config_uri: str
+        self, name: str | None, config_uri: str
     ) -> httpx.Response:
-        return self.request(
-            "POST",
-            f"{self._base}/experiments",
-            json={"experiment_id": experiment_id, "config_uri": config_uri},
-        )
+        """Register an experiment; the control plane MINTS the ``exp_*`` id.
 
-    def unregister_experiment(self, experiment_id: str) -> httpx.Response:
-        return self.request(
-            "DELETE", f"{self._base}/experiments/{experiment_id}"
-        )
+        ``name`` is the optional operator-supplied display label
+        (scenarios pass a stable handle here). On success the minted
+        ``experiment_id`` is recorded under ``name`` so later calls can
+        resolve the handle via :meth:`experiment_id_for`.
+        """
+        body: dict[str, Any] = {"config_uri": config_uri}
+        if name is not None:
+            body["name"] = name
+        resp = self.request("POST", f"{self._base}/experiments", json=body)
+        if name is not None and 200 <= resp.status_code < 300:
+            minted = resp.json().get("experiment_id")
+            if isinstance(minted, str):
+                self._experiment_id_by_name[name] = minted
+        return resp
 
-    def list_experiments(self) -> httpx.Response:
-        return self.request("GET", f"{self._base}/experiments")
+    def unregister_experiment(self, experiment: str) -> httpx.Response:
+        eid = self.experiment_id_for(experiment)
+        return self.request("DELETE", f"{self._base}/experiments/{eid}")
 
-    def read_experiment_metadata(self, experiment_id: str) -> httpx.Response:
-        return self.request("GET", f"{self._base}/experiments/{experiment_id}")
+    def list_experiments(self, *, name: str | None = None) -> httpx.Response:
+        params: dict[str, str] | None = {"name": name} if name is not None else None
+        return self.request("GET", f"{self._base}/experiments", params=params)
+
+    def read_experiment_metadata(self, experiment: str) -> httpx.Response:
+        eid = self.experiment_id_for(experiment)
+        return self.request("GET", f"{self._base}/experiments/{eid}")
 
     # ------------------------------------------------------------------
     # §15.2 lease operations
     # ------------------------------------------------------------------
 
     def acquire_lease(
-        self, experiment_id: str, holder: str, holder_instance: str
+        self, experiment: str, holder: str, holder_instance: str
     ) -> httpx.Response:
+        eid = self.experiment_id_for(experiment)
         return self.request(
             "POST",
-            f"{self._base}/experiments/{experiment_id}/leases",
-            json={"holder": holder, "holder_instance": holder_instance},
+            f"{self._base}/experiments/{eid}/leases",
+            json={
+                "holder": self.worker_id_for(holder),
+                "holder_instance": holder_instance,
+            },
         )
 
     def renew_lease(self, lease_id: str, holder_instance: str) -> httpx.Response:
@@ -147,7 +206,9 @@ class ControlPlaneWireClient:
 
     def list_active_leases(self, holder: str) -> httpx.Response:
         return self.request(
-            "GET", f"{self._base}/leases", params={"holder": holder}
+            "GET",
+            f"{self._base}/leases",
+            params={"holder": self.worker_id_for(holder)},
         )
 
     # ------------------------------------------------------------------
@@ -156,35 +217,77 @@ class ControlPlaneWireClient:
 
     def register_worker(
         self,
-        worker_id: str,
+        name: str | None,
         *,
         labels: dict[str, str] | None = None,
     ) -> httpx.Response:
-        body: dict[str, Any] = {"worker_id": worker_id}
+        """Register a deployment-scoped worker; the control plane MINTS ``wkr_*``.
+
+        ``name`` is the optional display handle; on success the minted
+        ``worker_id`` is recorded under it for :meth:`worker_id_for`.
+        """
+        body: dict[str, Any] = {}
+        if name is not None:
+            body["name"] = name
         if labels is not None:
             body["labels"] = labels
-        return self.request("POST", f"{self._base}/workers", json=body)
+        resp = self.request("POST", f"{self._base}/workers", json=body)
+        if name is not None and 200 <= resp.status_code < 300:
+            minted = resp.json().get("worker_id")
+            if isinstance(minted, str):
+                self._worker_id_by_name[name] = minted
+        return resp
 
     def register_group(
         self,
-        group_id: str,
+        name: str | None,
         *,
         members: list[str] | None = None,
     ) -> httpx.Response:
-        body: dict[str, Any] = {"group_id": group_id}
-        if members is not None:
-            body["members"] = members
-        return self.request("POST", f"{self._base}/groups", json=body)
+        """Register a deployment-scoped group; the control plane MINTS ``grp_*``.
 
-    def add_to_group(self, group_id: str, worker_id: str) -> httpx.Response:
+        ``name`` is the optional display handle; ``members`` are
+        worker / group display handles resolved to their minted opaque
+        ids before dispatch. On success the minted ``group_id`` is
+        recorded under ``name`` for :meth:`group_id_for`.
+        """
+        body: dict[str, Any] = {}
+        if name is not None:
+            body["name"] = name
+        if members is not None:
+            body["members"] = [self._member_id_for(m) for m in members]
+        resp = self.request("POST", f"{self._base}/groups", json=body)
+        if name is not None and 200 <= resp.status_code < 300:
+            minted = resp.json().get("group_id")
+            if isinstance(minted, str):
+                self._group_id_by_name[name] = minted
+        return resp
+
+    def add_to_group(self, group: str, member: str) -> httpx.Response:
+        gid = self.group_id_for(group)
         return self.request(
             "POST",
-            f"{self._base}/groups/{group_id}/members",
-            json={"worker_id": worker_id},
+            f"{self._base}/groups/{gid}/members",
+            json={"member_id": self._member_id_for(member)},
         )
 
-    def remove_from_group(self, group_id: str, worker_id: str) -> httpx.Response:
+    def remove_from_group(self, group: str, member: str) -> httpx.Response:
+        gid = self.group_id_for(group)
+        mid = self._member_id_for(member)
         return self.request(
             "DELETE",
-            f"{self._base}/groups/{group_id}/members/{worker_id}",
+            f"{self._base}/groups/{gid}/members/{mid}",
         )
+
+    def _member_id_for(self, name: str) -> str:
+        """Resolve a member handle (worker OR group) to its minted opaque id.
+
+        A member of a group may itself be a worker or a nested group
+        (chapter 02 §7), so consult both registries; fall back to the
+        literal when unknown.
+        """
+        if name in self._worker_id_by_name:
+            return self._worker_id_by_name[name]
+        if name in self._group_id_by_name:
+            return self._group_id_by_name[name]
+        return name

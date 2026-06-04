@@ -17,10 +17,38 @@ from eden_web_ui.store_factory import StaticStoreFactory
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-EXPERIMENT_ID = "exp-web-ui"
+# Identity rename (#128): experiment / worker / group ids are opaque,
+# system-minted, immutable. Tests register workers BY NAME and capture
+# the minted opaque ``wkr_*`` id; ``WORKER_IDS`` maps the conventional
+# display name → minted id for tests that need to drive claims, build
+# attribution, etc.
+EXPERIMENT_ID = "exp_0123456789abcdefghjkmnpqrs"
 SESSION_SECRET = "test-session-secret-padding-padding-padding"
 SHARED_TOKEN = "test-bearer-do-not-leak"
-WORKER_ID = "ui-w"
+
+# The conventional worker display names the web-ui suite seeds. The
+# first entry is the web-ui's own worker (the session principal +
+# admins member). Tests resolve a name → minted opaque id via the
+# ``worker_ids`` fixture (or the module-level ``register_named_workers``
+# helper when constructing a store directly).
+WEB_UI_WORKER_NAME = "ui-w"
+TEST_WORKER_NAMES = (
+    WEB_UI_WORKER_NAME,  # "ui-w" — the web-ui session principal
+    "ui-w-other",
+    "another-worker",
+    "evaluator-other",
+    "evaluator-w",
+    "executor-other",
+    "executor-other-1",
+    "executor-w",
+    "ideator-1",
+    "ideator-w",
+    "impl-worker",
+    "other-w",
+    "other-worker",
+    "w-1",
+    "worker-other",
+)
 
 _FIXTURE_CONFIG = (
     Path(__file__).resolve().parents[4]
@@ -55,42 +83,59 @@ def _one_experiment_factory(
     )
 
 
+def register_named_workers(store: Store) -> dict[str, str]:
+    """Mint the conventional web-ui test workers by name (issue #128).
+
+    Returns a ``{display_name: minted_worker_id}`` map. 12a-1 wave 5:
+    ``Store.claim`` enforces the §3.5 step-2 registration check, so every
+    worker the web-ui tests hand to ``claim`` must exist in the registry.
+    Post-rename the id is minted server-side, so we register by name and
+    capture the opaque ``wkr_*`` id.
+
+    Also seeds an ``admins`` group (via the privileged ``allow_reserved``
+    seed path, mirroring setup-experiment) containing every minted
+    worker — issue #144's /admin/* middleware gates on admins membership.
+    """
+    worker_ids: dict[str, str] = {}
+    for name in TEST_WORKER_NAMES:
+        worker, _token = store.register_worker(name)
+        worker_ids[name] = worker.worker_id
+    store.register_group(
+        "admins", members=list(worker_ids.values()), allow_reserved=True
+    )
+    return worker_ids
+
+
 @pytest.fixture
 def store() -> InMemoryStore:
     cfg = _config()
     store = InMemoryStore(
         experiment_id=EXPERIMENT_ID, evaluation_schema=cfg.evaluation_schema
     )
-    # 12a-1 wave 5: Store.claim enforces the §3.5 step-2 registration
-    # check, so every worker_id the web-ui tests hand to `claim` must
-    # exist in the registry. Register the conventional ids here so
-    # each test starts with a fresh-but-seeded store.
-    test_workers = (
-        WORKER_ID,  # "ui-w"
-        "ui-w-other",
-        "another-worker",
-        "evaluator-other",
-        "evaluator-w",
-        "executor-other",
-        "executor-other-1",
-        "executor-w",
-        "ideator-1",
-        "ideator-w",
-        "impl-worker",
-        "other-w",
-        "other-worker",
-        "w-1",
-        "worker-other",
-    )
-    for wid in test_workers:
-        store.register_worker(wid)
-    # Issue #144: the web-ui /admin/* middleware gates on admins-group
-    # membership. The default test posture mirrors the setup-experiment
-    # script, which seeds an admins group and adds the web-ui worker to
-    # it. Tests that exercise the non-admin posture explicitly use the
-    # ``store_non_admin`` fixture.
-    store.register_group("admins", members=list(test_workers))
+    worker_ids = register_named_workers(store)
+    # Stash the name → minted-id map on the store so the app fixtures
+    # (and tests that take the ``store`` fixture) can resolve the
+    # web-ui's own worker id without re-querying.
+    store._test_worker_ids = worker_ids  # type: ignore[attr-defined]
     return store
+
+
+@pytest.fixture
+def worker_ids(store: InMemoryStore) -> dict[str, str]:
+    """The ``{display_name: minted wkr_* id}`` map for the seeded store."""
+    return store._test_worker_ids  # type: ignore[attr-defined]
+
+
+def web_ui_worker_id(store: InMemoryStore) -> str:
+    """The minted opaque id of the web-ui's own (`ui-w`) worker."""
+    return store._test_worker_ids[WEB_UI_WORKER_NAME]  # type: ignore[attr-defined]
+
+
+def group_id_by_name(store: Store, name: str) -> str:
+    """Resolve a group display name → its minted opaque ``grp_*`` id (#128)."""
+    matches = store.list_groups(name=name)
+    assert matches, f"no group named {name!r}"
+    return matches[0].group_id
 
 
 @pytest.fixture
@@ -110,7 +155,7 @@ def app(store: InMemoryStore, artifacts_dir: Path) -> FastAPI:
         store_factory=_one_experiment_factory(store, admin_store=store),
         experiment_id=EXPERIMENT_ID,
         experiment_config=_config(),
-        worker_id=WORKER_ID,
+        worker_id=web_ui_worker_id(store),
         session_secret=SESSION_SECRET,
         claim_ttl_seconds=3600,
         artifacts_dir=artifacts_dir,
@@ -132,7 +177,7 @@ def app_no_admin(store: InMemoryStore, artifacts_dir: Path) -> FastAPI:
         store_factory=_one_experiment_factory(store, admin_store=None),
         experiment_id=EXPERIMENT_ID,
         experiment_config=_config(),
-        worker_id=WORKER_ID,
+        worker_id=web_ui_worker_id(store),
         session_secret=SESSION_SECRET,
         claim_ttl_seconds=3600,
         artifacts_dir=artifacts_dir,
@@ -167,7 +212,7 @@ def app_with_base_sha(
         store_factory=_one_experiment_factory(store),
         experiment_id=EXPERIMENT_ID,
         experiment_config=_config(),
-        worker_id=WORKER_ID,
+        worker_id=web_ui_worker_id(store),
         session_secret=SESSION_SECRET,
         claim_ttl_seconds=3600,
         artifacts_dir=artifacts_dir,
@@ -258,7 +303,7 @@ def exec_app(
         store_factory=_one_experiment_factory(store),
         experiment_id=EXPERIMENT_ID,
         experiment_config=_config(),
-        worker_id=WORKER_ID,
+        worker_id=web_ui_worker_id(store),
         session_secret=SESSION_SECRET,
         claim_ttl_seconds=3600,
         artifacts_dir=artifacts_dir,
@@ -280,7 +325,7 @@ def exec_app_with_clone_url(
         store_factory=_one_experiment_factory(store),
         experiment_id=EXPERIMENT_ID,
         experiment_config=_config(),
-        worker_id=WORKER_ID,
+        worker_id=web_ui_worker_id(store),
         session_secret=SESSION_SECRET,
         claim_ttl_seconds=3600,
         artifacts_dir=artifacts_dir,
@@ -324,7 +369,7 @@ def exec_app_with_clone_url_fixture(
         store_factory=_one_experiment_factory(store),
         experiment_id=EXPERIMENT_ID,
         experiment_config=_config(),
-        worker_id=WORKER_ID,
+        worker_id=web_ui_worker_id(store),
         session_secret=SESSION_SECRET,
         claim_ttl_seconds=3600,
         artifacts_dir=artifacts_dir,
@@ -442,7 +487,9 @@ def seed_evaluate_task(
     store.mark_idea_ready(idea_id)
     exec_task_id = f"execute-{slug}"
     store.create_execution_task(exec_task_id, idea_id)
-    exec_claim = store.claim(exec_task_id, "executor-w")
+    exec_claim = store.claim(
+        exec_task_id, store._test_worker_ids["executor-w"]  # type: ignore[attr-defined]
+    )
 
     from typing import Any
 

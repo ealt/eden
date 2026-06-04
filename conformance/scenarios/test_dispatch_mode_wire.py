@@ -79,8 +79,8 @@ def test_update_emits_event_with_full_state_and_diff(
     assert payload["dispatch_mode"]["evaluation_dispatch"] == "auto"
     assert payload["dispatch_mode"]["integration"] == "manual"
     # `updated_by` is stamped from the authenticated principal
-    # (the bearer registered for ``actor_id``).
-    assert payload["updated_by"] == "admin-eric"
+    # (the minted wkr_* id of the bearer registered for ``actor_id``).
+    assert payload["updated_by"] == wire_client.worker_id_for("admin-eric")
 
 
 def test_idempotent_update_does_not_record_a_change(

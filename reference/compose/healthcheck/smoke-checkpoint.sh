@@ -54,7 +54,19 @@ ENV_FILE="$(mktemp)"
 SMOKE_DATA_ROOT="$(mktemp -d -t eden-smoke-ckpt-XXXXXX)"
 CHECKPOINT_TAR="$(mktemp -t eden-checkpoint-XXXXXX.tar)"
 IMPORT_BODY="$(mktemp -t eden-import-resp-XXXXXX.json)"
-EXPERIMENT_ID="smoke-checkpoint-exp"
+# #128: mint an opaque `exp_*` experiment id (the wire grammar rejects
+# the old typed "smoke-checkpoint-exp" mnemonic). The round-trip read-
+# back at this id holds because the receiver task-store-server is
+# brought up against the SAME `.env` (EDEN_EXPERIMENT_ID), so import-
+# without-`as_experiment_id` targets the receiver's configured id,
+# which equals this one — the imported data lands at ${EXPERIMENT_ID}.
+EXPERIMENT_ID="$(python3 - <<'PY'
+import secrets, time
+alphabet = "0123456789abcdefghjkmnpqrstvwxyz"
+value = ((int(time.time() * 1000) & ((1 << 48) - 1)) << 80) | secrets.randbits(80)
+print("exp_" + "".join(alphabet[(value >> (5 * i)) & 31] for i in range(26))[::-1])
+PY
+)"
 
 cleanup() {
     local rc=$?

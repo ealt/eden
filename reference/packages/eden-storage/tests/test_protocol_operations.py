@@ -5,6 +5,7 @@ payload; §2.1 lists ``read_range`` and ``replay`` on the event log.
 These scenarios exercise both paths; they run against every backend
 via the parametrized ``make_store`` fixture.
 """
+# pyright: reportAttributeAccessIssue=false
 
 from __future__ import annotations
 
@@ -20,6 +21,7 @@ from eden_contracts import (
     IdeationPayload,
     IdeationTask,
     Variant,
+    mint_opaque_id,
 )
 from eden_storage import (
     AlreadyExists,
@@ -94,7 +96,7 @@ def _starting_variant_with_commit(store: Store, variant_id: str, idea_id: str) -
     from eden_storage import VariantSubmission
 
     store.create_execution_task(f"t-bootstrap-{variant_id}", idea_id)
-    c = store.claim(f"t-bootstrap-{variant_id}", "execution-bootstrap")
+    c = store.claim(f"t-bootstrap-{variant_id}", store.seeded_workers["execution-bootstrap"])
     store.submit(
         f"t-bootstrap-{variant_id}",
         c.worker_id,
@@ -163,8 +165,8 @@ class TestCreateTaskSpecLiteral:
         silent cross-experiment inconsistency (caught in Phase 6
         round-1 review).
         """
-        store = make_store("exp-a")
-        task = _ideation_task("exp-b", "t-ideation")
+        store = make_store(mint_opaque_id("exp"))
+        task = _ideation_task(mint_opaque_id("exp"), "t-ideation")
         with pytest.raises(InvalidPrecondition, match="experiment"):
             store.create_task(task)
 

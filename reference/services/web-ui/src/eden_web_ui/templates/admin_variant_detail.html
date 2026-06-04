@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_macros.html" import attribution %}
 {% block title %}EDEN — admin variant {{ variant.variant_id }}{% endblock %}
 {% block main %}
 <h1>variant <code>{{ variant.variant_id }}</code></h1>
@@ -6,6 +7,8 @@
 <dl>
     <dt>status</dt><dd>{{ variant.status }}</dd>
     <dt>idea_id</dt><dd><code>{{ variant.idea_id }}</code></dd>
+    <dt>executed_by</dt><dd>{{ attribution(variant.executed_by, worker_names) }}</dd>
+    <dt>evaluated_by</dt><dd>{{ attribution(variant.evaluated_by, worker_names) }}</dd>
     <dt>branch</dt><dd>{% if variant.branch %}<code>{{ variant.branch }}</code>{% else %}—{% endif %}</dd>
     <dt>commit_sha</dt><dd>{% if variant.commit_sha %}<code>{{ variant.commit_sha }}</code>{% else %}—{% endif %}</dd>
     <dt>variant_commit_sha</dt><dd>{% if variant.variant_commit_sha %}<code>{{ variant.variant_commit_sha }}</code>{% else %}—{% endif %}</dd>

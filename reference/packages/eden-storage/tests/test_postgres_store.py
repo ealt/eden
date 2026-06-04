@@ -17,7 +17,7 @@ import secrets
 from collections.abc import Iterator
 
 import pytest
-from eden_contracts import EvaluationSchema, Variant
+from eden_contracts import EvaluationSchema, Variant, mint_opaque_id
 from eden_storage import InvalidPrecondition, PostgresStore
 from eden_storage._postgres_views import (
     _COMMON_COLUMN_EXPRS,
@@ -25,6 +25,15 @@ from eden_storage._postgres_views import (
 )
 
 _DSN = os.environ.get("EDEN_TEST_POSTGRES_DSN") or None
+
+# Opaque identity ids for the postgres-only tests (issue #128). The same
+# `_EXP1` flows into a test's source + reopen so the §4.2 identity check
+# sees a match; `_EXP_A` / `_EXP_B` are distinct for the mismatch test.
+_EXP1 = mint_opaque_id("exp")
+_EXP_A = mint_opaque_id("exp")
+_EXP_B = mint_opaque_id("exp")
+_WKR_EXEC = mint_opaque_id("wkr")
+_WKR_EVAL = mint_opaque_id("wkr")
 
 pytestmark = pytest.mark.skipif(
     _DSN is None,
@@ -73,12 +82,12 @@ def test_reopen_on_non_default_schema_does_not_re_run_migrations(
     re-ran v1 migrations and failed on duplicate-table.
     """
     evaluation=EvaluationSchema.model_validate({"score": "real"})
-    store = PostgresStore("exp-1", schema_dsn, evaluation_schema=evaluation)
+    store = PostgresStore(_EXP1, schema_dsn, evaluation_schema=evaluation)
     store.create_ideation_task("ideation-0001")
     store.close()
 
     # Reopen — must succeed and see the persisted task.
-    reopened = PostgresStore("exp-1", schema_dsn, evaluation_schema=evaluation)
+    reopened = PostgresStore(_EXP1, schema_dsn, evaluation_schema=evaluation)
     try:
         task = reopened.read_task("ideation-0001")
         assert task is not None
@@ -90,23 +99,23 @@ def test_reopen_on_non_default_schema_does_not_re_run_migrations(
 def test_reopen_with_different_experiment_id_rejected(schema_dsn: str) -> None:
     """Chapter 8 §4.2 — experiment_id is part of the database identity."""
     evaluation=EvaluationSchema.model_validate({"score": "real"})
-    PostgresStore("exp-A", schema_dsn, evaluation_schema=evaluation).close()
+    PostgresStore(_EXP_A, schema_dsn, evaluation_schema=evaluation).close()
 
     with pytest.raises(InvalidPrecondition):
-        PostgresStore("exp-B", schema_dsn, evaluation_schema=evaluation)
+        PostgresStore(_EXP_B, schema_dsn, evaluation_schema=evaluation)
 
 
 def test_reopen_with_changed_evaluation_schema_rejected(schema_dsn: str) -> None:
     """Chapter 8 §4.2 — evaluation_schema MUST NOT change for the lifetime of an experiment."""
     PostgresStore(
-        "exp-1",
+        _EXP1,
         schema_dsn,
         evaluation_schema=EvaluationSchema.model_validate({"score": "real"}),
     ).close()
 
     with pytest.raises(InvalidPrecondition):
         PostgresStore(
-            "exp-1",
+            _EXP1,
             schema_dsn,
             evaluation_schema=EvaluationSchema.model_validate(
                 {"score": "real", "extra": "integer"}
@@ -124,9 +133,9 @@ def test_reopen_inherits_persisted_evaluation_schema(schema_dsn: str) -> None:
     name raises `InvalidPrecondition`.
     """
     evaluation=EvaluationSchema.model_validate({"score": "real"})
-    PostgresStore("exp-1", schema_dsn, evaluation_schema=evaluation).close()
+    PostgresStore(_EXP1, schema_dsn, evaluation_schema=evaluation).close()
 
-    reopened = PostgresStore("exp-1", schema_dsn)
+    reopened = PostgresStore(_EXP1, schema_dsn)
     try:
         # The persisted schema knows only `score`; an unknown
         # metric name should raise.
@@ -145,12 +154,12 @@ def test_event_id_counter_resumes_across_reopen(schema_dsn: str) -> None:
     duplicate ``event_id`` values and violate the UNIQUE constraint.
     """
     evaluation=EvaluationSchema.model_validate({"score": "real"})
-    store = PostgresStore("exp-1", schema_dsn, evaluation_schema=evaluation)
+    store = PostgresStore(_EXP1, schema_dsn, evaluation_schema=evaluation)
     store.create_ideation_task("ideation-0001")
     first_event_count = len(list(store.events()))
     store.close()
 
-    reopened = PostgresStore("exp-1", schema_dsn, evaluation_schema=evaluation)
+    reopened = PostgresStore(_EXP1, schema_dsn, evaluation_schema=evaluation)
     try:
         # Create another task — exercising another event insert. If
         # the counter restarted from 1, the second store would
@@ -186,11 +195,11 @@ def _insert_variant_row(conn: object, variant: Variant) -> None:
 def test_variant_unpacked_view_unpacks_common_columns(schema_dsn: str) -> None:
     """The view exposes every public Variant field as a scalar column."""
     schema = EvaluationSchema.model_validate({"score": "real"})
-    store = PostgresStore("exp-1", schema_dsn, evaluation_schema=schema)
+    store = PostgresStore(_EXP1, schema_dsn, evaluation_schema=schema)
     try:
         variant = Variant(
             variant_id="var-001",
-            experiment_id="exp-1",
+            experiment_id=_EXP1,
             idea_id="idea-001",
             status="success",
             parent_commits=["a" * 40],
@@ -202,8 +211,8 @@ def test_variant_unpacked_view_unpacks_common_columns(schema_dsn: str) -> None:
             evaluation={"score": 0.875},
             started_at="2026-01-01T00:00:00Z",
             completed_at="2026-01-01T00:05:00Z",
-            executed_by="worker-exec",
-            evaluated_by="worker-eval",
+            executed_by=_WKR_EXEC,
+            evaluated_by=_WKR_EVAL,
         )
         _insert_variant_row(store._conn, variant)
 
@@ -219,15 +228,15 @@ def test_variant_unpacked_view_unpacks_common_columns(schema_dsn: str) -> None:
 
         assert row["variant_id"] == "var-001"
         assert row["status"] == "success"
-        assert row["experiment_id"] == "exp-1"
+        assert row["experiment_id"] == _EXP1
         assert row["idea_id"] == "idea-001"
         assert row["branch"] == "work/idea-001"
         assert row["commit_sha"] == "b" * 40
         assert row["variant_commit_sha"] == "c" * 40
         assert row["artifacts_uri"] == "file:///tmp/artifacts/var-001"
         assert row["description"] == "canonical test variant"
-        assert row["executed_by"] == "worker-exec"
-        assert row["evaluated_by"] == "worker-eval"
+        assert row["executed_by"] == _WKR_EXEC
+        assert row["evaluated_by"] == _WKR_EVAL
         assert row["started_at"] == "2026-01-01T00:00:00Z"
         assert row["completed_at"] == "2026-01-01T00:05:00Z"
         # parent_commits and evaluation are JSONB sub-trees.
@@ -248,11 +257,11 @@ def test_variant_unpacked_view_unpacks_metric_columns_with_types(
             "notes": "text",
         }
     )
-    store = PostgresStore("exp-1", schema_dsn, evaluation_schema=schema)
+    store = PostgresStore(_EXP1, schema_dsn, evaluation_schema=schema)
     try:
         variant = Variant(
             variant_id="var-001",
-            experiment_id="exp-1",
+            experiment_id=_EXP1,
             idea_id="idea-001",
             status="success",
             parent_commits=["a" * 40],
@@ -305,7 +314,7 @@ def test_variant_unpacked_view_unpacks_metric_columns_with_types(
 
 def test_variant_unpacked_view_without_evaluation_schema(schema_dsn: str) -> None:
     """When no schema is declared, the view still exists with only the common columns."""
-    store = PostgresStore("exp-1", schema_dsn)
+    store = PostgresStore(_EXP1, schema_dsn)
     try:
         with store._conn.cursor() as cur:
             cur.execute(
@@ -329,7 +338,7 @@ def test_variant_unpacked_view_is_replaced_on_reopen(schema_dsn: str) -> None:
     experiment row so the second open re-INSERTs with a different schema.
     """
     schema_v1 = EvaluationSchema.model_validate({"score": "real"})
-    PostgresStore("exp-1", schema_dsn, evaluation_schema=schema_v1).close()
+    PostgresStore(_EXP1, schema_dsn, evaluation_schema=schema_v1).close()
 
     # Reset the experiment row so __init__ accepts a different schema.
     import psycopg
@@ -340,7 +349,7 @@ def test_variant_unpacked_view_is_replaced_on_reopen(schema_dsn: str) -> None:
     schema_v2 = EvaluationSchema.model_validate(
         {"accuracy": "real", "label": "text"}
     )
-    store = PostgresStore("exp-1", schema_dsn, evaluation_schema=schema_v2)
+    store = PostgresStore(_EXP1, schema_dsn, evaluation_schema=schema_v2)
     try:
         with store._conn.cursor() as cur:
             cur.execute(

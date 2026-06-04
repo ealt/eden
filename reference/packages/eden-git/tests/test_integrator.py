@@ -62,7 +62,7 @@ def seed_sha(repo: GitRepo) -> str:
 
 @pytest.fixture
 def store() -> Store:
-    return InMemoryStore(experiment_id="exp-1")
+    return InMemoryStore(experiment_id="exp_0123456789abcdefghjkmnpqrs")
 
 
 @pytest.fixture
@@ -633,7 +633,7 @@ class TestMetricsRevalidation:
         seed_sha: str,
     ) -> None:
         store: Store = InMemoryStore(
-            experiment_id="exp-1",
+            experiment_id="exp_0123456789abcdefghjkmnpqrs",
             evaluation_schema=EvaluationSchema({"score": "integer"}),
         )
         integrator = Integrator(
@@ -987,7 +987,7 @@ class TestNonFiniteMetricsRejected:
         seed_sha: str,
     ) -> None:
         store: Store = InMemoryStore(
-            experiment_id="exp-nan",
+            experiment_id="exp_0123456789abcdefghjkmnpqrt",
             evaluation_schema=EvaluationSchema({"score": "real"}),
         )
         integ = Integrator(

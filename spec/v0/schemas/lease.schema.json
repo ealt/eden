@@ -12,15 +12,13 @@
     },
     "experiment_id": {
       "type": "string",
-      "minLength": 1,
-      "description": "The experiment this lease binds. Matches the chapter 02 §1.1 identifier grammar."
+      "pattern": "^exp_[0-9a-hjkmnp-tv-z]{26}$",
+      "description": "The experiment this lease binds. Opaque, system-minted experiment identifier (spec/v0/02-data-model.md §1.6)."
     },
     "holder": {
       "type": "string",
-      "minLength": 1,
-      "maxLength": 64,
-      "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
-      "description": "The deployment-scoped worker_id of the orchestrator replica holding the lease (spec/v0/11-control-plane.md §6). Matches the chapter 02 §6.1 identifier grammar. Distinct from any per-experiment worker_id."
+      "pattern": "^wkr_[0-9a-hjkmnp-tv-z]{26}$",
+      "description": "The deployment-scoped worker_id of the orchestrator replica holding the lease (spec/v0/11-control-plane.md §6). Opaque, system-minted worker identifier (spec/v0/02-data-model.md §1.6). Distinct from any per-experiment worker_id."
     },
     "holder_instance": {
       "type": "string",

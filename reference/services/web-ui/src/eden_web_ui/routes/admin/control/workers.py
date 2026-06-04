@@ -15,14 +15,15 @@ posture here. When `control_plane` is unset, the parent
 
 from __future__ import annotations
 
-import re
 from collections.abc import Iterable
 from typing import Any
 
 from eden_contracts import Group, Worker
+from eden_contracts._common import _check_display_name
 from eden_control_plane import ControlPlaneClient
+from eden_storage import RESERVED_WORKER_NAMES
 from eden_storage.errors import (
-    AlreadyExists,
+    InvalidName,
     InvalidPrecondition,
     ReservedIdentifier,
 )
@@ -33,32 +34,26 @@ from eden_wire.errors import BadRequest
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
+from ..._display import sort_by_name_then_id
 from ..._helpers import csrf_ok, get_session
 
 router = APIRouter(prefix="/admin/control/workers")
-
-
-# Worker / group identifier grammar per spec/v0/02-data-model.md §6.1.
-_WORKER_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
-_RESERVED_IDENTIFIERS = frozenset({"admin", "system", "internal"})
 
 # Per-render cap on label rendering width (used in list view).
 _LABEL_PREVIEW_MAX = 120
 
 
 _WORKER_OUTCOMES: dict[str, tuple[str, str]] = {
-    "ok": ("ok", "worker registered — token shown below (only time)"),
-    "idempotent": ("warn", "worker already existed; no new token issued"),
+    "ok": ("ok", "worker registered — id + token shown below (only time)"),
     "reissued": ("ok", "credential reissued — token shown below (only time)"),
-    "reserved-identifier": ("error", "this identifier is reserved"),
-    "id-collides-with-group": (
+    "reserved-name": (
         "error",
-        "a group already has this identifier; worker_ids and "
-        "group_ids share a namespace per spec ch02 §7.1",
+        "this name is reserved (admin / system / internal)",
     ),
-    "invalid-worker-id": (
+    "invalid-name": (
         "error",
-        "worker_id must match [a-z0-9][a-z0-9_-]{0,63}",
+        "name must be 1–128 visible characters (no control chars; "
+        "no leading/trailing whitespace)",
     ),
     "invalid-labels": (
         "error",
@@ -124,11 +119,14 @@ def _parse_labels(raw: str) -> dict[str, str]:
     return labels
 
 
-def _validate_worker_id(value: str) -> str | None:
-    if value in _RESERVED_IDENTIFIERS:
-        return "reserved-identifier"
-    if not _WORKER_ID_RE.match(value):
-        return "invalid-worker-id"
+def _validate_worker_name(value: str) -> str | None:
+    """Return a banner-key for an invalid display ``name``, else ``None`` (#128)."""
+    if value in RESERVED_WORKER_NAMES:
+        return "reserved-name"
+    try:
+        _check_display_name(value)
+    except ValueError:
+        return "invalid-name"
     return None
 
 
@@ -181,7 +179,7 @@ def _filter_workers(
         labels = " ".join(
             f"{k}={v}" for k, v in (w.labels or {}).items()
         )
-        if _filter_match(q, w.worker_id, labels):
+        if _filter_match(q, w.worker_id, w.name or "", labels):
             out.append(w)
     return out
 
@@ -272,17 +270,24 @@ async def workers_index(request: Request) -> HTMLResponse | RedirectResponse:
 
     q_raw = request.query_params.get("q") or ""
     q = q_raw[:64].lower() if q_raw else None
+    name_raw = request.query_params.get("name") or ""
+    name_filter = name_raw[:128] if name_raw else None
 
     try:
-        workers = cp.list_workers()
+        workers = (
+            cp.list_workers(name=name_filter)
+            if name_filter is not None
+            else cp.list_workers()
+        )
         all_groups = cp.list_groups()
     except Exception:  # noqa: BLE001 — transport-shaped
         return _read_failure_response(request, "could not load workers")
 
     filtered = _filter_workers(workers, q)
+    ordered = sort_by_name_then_id(filtered, id_attr="worker_id")
     rows: list[dict[str, Any]] = []
     total_transport_errors = 0
-    for w in filtered:
+    for w in ordered:
         groups, te = _groups_containing(
             cp, w.worker_id, all_groups=all_groups
         )
@@ -290,6 +295,7 @@ async def workers_index(request: Request) -> HTMLResponse | RedirectResponse:
         rows.append(
             {
                 "worker_id": w.worker_id,
+                "name": w.name,
                 "registered_at": w.registered_at,
                 "registered_by": w.registered_by,
                 "labels_preview": _labels_preview(w.labels),
@@ -306,6 +312,7 @@ async def workers_index(request: Request) -> HTMLResponse | RedirectResponse:
             "csrf_token": session.csrf,
             "rows": rows,
             "q": q_raw,
+            "name_filter": name_raw,
             "membership_transport_errors": total_transport_errors,
             "outcome": _outcome(request, _WORKER_OUTCOMES),
         },
@@ -316,7 +323,7 @@ async def workers_index(request: Request) -> HTMLResponse | RedirectResponse:
 async def workers_register(
     request: Request,
     csrf_token: str = Form(""),
-    worker_id: str = Form(""),
+    name: str = Form(""),
     labels: str = Form(""),
 ) -> RedirectResponse | HTMLResponse:
     session = get_session(request)
@@ -326,11 +333,16 @@ async def workers_register(
         return _csrf_failure_response()
     cp = _control_plane(request)
 
-    bad = _validate_worker_id(worker_id)
-    if bad is not None:
-        return RedirectResponse(
-            url=f"/admin/control/workers/?error={bad}", status_code=303
-        )
+    # The control plane mints the opaque worker_id; the operator
+    # supplies only an OPTIONAL display name (#128). Empty/whitespace-only
+    # → nameless; otherwise the RAW name is validated.
+    name = name if name.strip() else ""
+    if name:
+        bad = _validate_worker_name(name)
+        if bad is not None:
+            return RedirectResponse(
+                url=f"/admin/control/workers/?error={bad}", status_code=303
+            )
 
     try:
         parsed_labels = _parse_labels(labels)
@@ -344,20 +356,20 @@ async def workers_register(
         )
 
     try:
-        raw = cp.register_worker(worker_id, labels=parsed_labels or None)
+        raw = cp.register_worker(name or None, labels=parsed_labels or None)
     except ReservedIdentifier:
         return RedirectResponse(
-            url="/admin/control/workers/?error=reserved-identifier",
+            url="/admin/control/workers/?error=reserved-name",
             status_code=303,
         )
-    except AlreadyExists:
+    except InvalidName:
         return RedirectResponse(
-            url="/admin/control/workers/?error=id-collides-with-group",
+            url="/admin/control/workers/?error=invalid-name",
             status_code=303,
         )
     except (BadRequest, InvalidPrecondition):
         return RedirectResponse(
-            url="/admin/control/workers/?error=invalid-worker-id",
+            url="/admin/control/workers/?error=invalid-name",
             status_code=303,
         )
     except Exception:  # noqa: BLE001 — transport-shaped
@@ -392,6 +404,7 @@ async def worker_detail(
 
     try:
         worker = cp.read_worker(worker_id)
+        all_workers = cp.list_workers()
         all_groups = cp.list_groups()
     except StorageNotFound:
         raise
@@ -402,6 +415,9 @@ async def worker_detail(
         cp, worker_id, all_groups=all_groups
     )
 
+    worker_names = {w.worker_id: w.name for w in all_workers if w.name}
+    group_names = {g.group_id: g.name for g in all_groups if g.name}
+
     return request.app.state.templates.TemplateResponse(
         request,
         "admin_control_worker_detail.html",
@@ -411,6 +427,8 @@ async def worker_detail(
             "worker": worker,
             "labels_preview": _labels_preview(worker.labels),
             "groups": groups_of_worker,
+            "worker_names": worker_names,
+            "group_names": group_names,
             "membership_transport_errors": membership_transport_errors,
             "outcome": _outcome(request, _WORKER_OUTCOMES),
         },

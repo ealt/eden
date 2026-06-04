@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_macros.html" import attribution %}
 {% block title %}EDEN — admin tasks{% endblock %}
 {% block main %}
 <h1>tasks</h1>
@@ -54,7 +55,7 @@
             <td><a href="/admin/tasks/{{ r.task_id }}/"><code>{{ r.task_id }}</code></a></td>
             <td>{{ r.kind }}</td>
             <td>{{ r.state }}{% if r.claim_expired %} <span class="badge badge-warn">&#9888; claim expired</span>{% endif %}</td>
-            <td>{% if r.worker_id %}<code>{{ r.worker_id }}</code>{% else %}—{% endif %}</td>
+            <td>{{ attribution(r.worker_id, worker_names) }}</td>
             <td>{% if r.claim_age is not none %}{{ "%.1f"|format(r.claim_age) }}{% else %}—{% endif %}</td>
             <td>{% if r.expires_at %}{{ r.expires_at }}{% else %}—{% endif %}</td>
             <td>{{ r.updated_at }}</td>

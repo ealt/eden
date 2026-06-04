@@ -8,9 +8,8 @@
   "properties": {
     "worker_id": {
       "type": "string",
-      "minLength": 1,
-      "maxLength": 64,
-      "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
+      "pattern": "^wkr_[0-9a-hjkmnp-tv-z]{26}$",
+      "description": "Opaque, system-minted worker identifier of the claimant (spec/v0/02-data-model.md §1.6)."
     },
     "claimed_at": {
       "type": "string",

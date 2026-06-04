@@ -46,7 +46,7 @@ def _make_plan_task(task_id: str = "ideation-1") -> Any:
         state="pending",
         created_at=_TS,
         updated_at=_TS,
-        payload=IdeationPayload(experiment_id="exp"),
+        payload=IdeationPayload(experiment_id="exp_0123456789abcdefghjkmnpqrs"),
     )
 
 
@@ -101,7 +101,7 @@ def test_make_execution_fn_writes_real_commit(tmp_path: Path) -> None:
     task = _make_impl_task()
     idea = Idea(
         idea_id="idea-1",
-        experiment_id="exp",
+        experiment_id="exp_0123456789abcdefghjkmnpqrs",
         slug="feat-x",
         priority=1.0,
         parent_commits=[base],
@@ -125,7 +125,7 @@ def test_make_evaluate_fn_emits_schema_matching_evaluation() -> None:
     task = _make_eval_task()
     variant = Variant(
         variant_id="variant-1",
-        experiment_id="exp",
+        experiment_id="exp_0123456789abcdefghjkmnpqrs",
         idea_id="idea-1",
         status="starting",
         parent_commits=["a" * 40],

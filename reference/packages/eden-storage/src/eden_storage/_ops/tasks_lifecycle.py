@@ -474,12 +474,12 @@ class _TaskLifecycleOpsMixin(_StoreCore):
 
         Reason text must be non-empty (``05-event-protocol.md`` §3.1
         carries it in the event payload). ``reassigned_by`` must match
-        the §6.1 grammar; binding-layer authorization is the caller's
-        responsibility.
+        the ActorId (``admin`` | ``wkr_*``) grammar; binding-layer
+        authorization is the caller's responsibility.
         """
         if not reason:
             raise InvalidPrecondition("reassign_task requires a non-empty reason")
-        self._validate_registry_id(reassigned_by, kind="actor")
+        self._validate_actor_id(reassigned_by, kind="reassigned_by")
         with self._atomic_operation():
             task = self._require_task(task_id)
             if task.state not in {"pending", "claimed"}:

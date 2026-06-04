@@ -34,7 +34,7 @@ from eden_wire.errors import (
 )
 from fastapi.testclient import TestClient
 
-EXPERIMENT_ID = "exp-12a-1f"
+EXPERIMENT_ID = "exp_6x1cwsbncertng98jdcg5qwmg1"
 ADMIN_TOKEN = "test-admin-token-1f"
 
 
@@ -62,17 +62,19 @@ def _route_url(path: str = "") -> str:
     return f"/_reference/experiments/{EXPERIMENT_ID}/artifacts/{path}"
 
 
-def _register_worker(client: TestClient, worker_id: str = "alice") -> str:
+def _register_worker(client: TestClient, name: str = "alice") -> tuple[str, str]:
+    """Register a worker by name; return its minted ``wkr_*`` id + token."""
     resp = client.post(
         f"/v0/experiments/{EXPERIMENT_ID}/workers",
         headers={
             "X-Eden-Experiment-Id": EXPERIMENT_ID,
             "Authorization": f"Bearer admin:{ADMIN_TOKEN}",
         },
-        json={"worker_id": worker_id},
+        json={"name": name},
     )
     assert resp.status_code == 200
-    return resp.json()["registration_token"]
+    body = resp.json()
+    return body["worker_id"], body["registration_token"]
 
 
 # ----------------------------------------------------------------------
@@ -136,10 +138,10 @@ def test_admin_bearer_succeeds(store: InMemoryStore, artifacts: Path) -> None:
 def test_worker_bearer_succeeds(store: InMemoryStore, artifacts: Path) -> None:
     app = make_app(store, admin_token=ADMIN_TOKEN, artifacts_dir=artifacts)
     client = TestClient(app)
-    token = _register_worker(client, "alice")
+    worker_id, token = _register_worker(client, "alice")
     resp = client.get(
         _route_url("hello.md"),
-        headers={"Authorization": f"Bearer alice:{token}"},
+        headers={"Authorization": f"Bearer {worker_id}:{token}"},
     )
     assert resp.status_code == 200
     assert resp.content == b"hello world\n"

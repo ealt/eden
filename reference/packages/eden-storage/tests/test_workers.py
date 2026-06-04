@@ -1,35 +1,41 @@
-"""Worker-registry conformance scenarios (12a-1 wave 2).
+"""Worker-registry conformance scenarios (issue #128 identity rename).
 
-Drives every backend through the new ``register_worker`` /
-``read_worker`` / ``list_workers`` / ``reissue_credential`` /
-``verify_worker_credential`` operations. The Store-layer contract
-those ops implement is in [`spec/v0/02-data-model.md`](
-../../../../spec/v0/02-data-model.md) §6 + §6.3 (idempotent
-re-registration; credential rotation as a separate explicit op) and
+Drives every backend through the ``register_worker`` / ``read_worker``
+/ ``list_workers`` / ``reissue_credential`` / ``verify_worker_credential``
+operations. Since the rename, ``register_worker`` MINTS an opaque
+``wkr_*`` id and takes an optional display ``name``; there is no
+id-based idempotency (every call mints a fresh row + credential).
+Reserved values moved to NAME-space. The Store-layer contract is in
+[`spec/v0/02-data-model.md`](../../../../spec/v0/02-data-model.md)
+§1.6/§1.7 + §6 and
 [`spec/v0/08-storage.md`](../../../../spec/v0/08-storage.md) §9.
 """
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 
 import pytest
 from eden_contracts import Worker
 from eden_storage import (
-    InvalidPrecondition,
+    InvalidName,
     NotFound,
     ReservedIdentifier,
     Store,
 )
 
+_WORKER_ID_RE = re.compile(r"^wkr_[0-9a-hjkmnp-tv-z]{26}$")
 
-def test_register_worker_returns_token_first_time(
+
+def test_register_worker_mints_opaque_id_and_token(
     make_store: Callable[..., Store],
 ) -> None:
     store = make_store(seed_workers=False)
-    worker, token = store.register_worker("eric")
+    worker, token = store.register_worker(name="eric")
     assert isinstance(worker, Worker)
-    assert worker.worker_id == "eric"
+    assert _WORKER_ID_RE.fullmatch(worker.worker_id)
+    assert worker.name == "eric"
     assert worker.experiment_id == store.experiment_id
     assert token is not None
     # ≥256 bits of entropy = 64 hex chars per `_generate_credential_token`.
@@ -37,65 +43,95 @@ def test_register_worker_returns_token_first_time(
     assert all(c in "0123456789abcdef" for c in token)
 
 
-def test_register_worker_idempotent_returns_no_new_token(
+def test_register_worker_without_name_mints_bare_id(
     make_store: Callable[..., Store],
 ) -> None:
     store = make_store(seed_workers=False)
-    first, first_token = store.register_worker("eric")
-    second, second_token = store.register_worker("eric")
-    # The wire-visible record is unchanged.
-    assert second.worker_id == first.worker_id
-    assert second.registered_at == first.registered_at
-    # Idempotent re-register MUST NOT mint a new token; the original
-    # credential remains valid.
-    assert second_token is None
+    worker, token = store.register_worker()
+    assert _WORKER_ID_RE.fullmatch(worker.worker_id)
+    assert worker.name is None
+    assert token is not None
+
+
+def test_register_worker_always_mints_fresh_row_and_credential(
+    make_store: Callable[..., Store],
+) -> None:
+    """Post-#128 there is no id-based idempotency: a second register with the
+    same name mints a distinct worker_id and a distinct credential."""
+    store = make_store(seed_workers=False)
+    first, first_token = store.register_worker(name="eric")
+    second, second_token = store.register_worker(name="eric")
+    assert first.worker_id != second.worker_id
     assert first_token is not None
-    assert store.verify_worker_credential("eric", first_token) is True
+    assert second_token is not None
+    assert first_token != second_token
+    # Each credential authenticates only its own worker.
+    assert store.verify_worker_credential(first.worker_id, first_token) is True
+    assert store.verify_worker_credential(second.worker_id, second_token) is True
+    assert store.verify_worker_credential(first.worker_id, second_token) is False
 
 
-def test_register_worker_grammar_rejected(
+def test_register_worker_invalid_name_rejected(
     make_store: Callable[..., Store],
 ) -> None:
     store = make_store(seed_workers=False)
-    for bad in ["Eric", "-eric", "_eric", "eric:secret", "eric/agent", "a" * 65]:
-        with pytest.raises(InvalidPrecondition):
-            store.register_worker(bad)
+    for bad in [" eric", "eric ", "  ", "a" * 129, "bad\x00name"]:
+        with pytest.raises(InvalidName):
+            store.register_worker(name=bad)
 
 
-def test_register_worker_reserved_rejected(
+def test_register_worker_reserved_name_rejected(
     make_store: Callable[..., Store],
 ) -> None:
     store = make_store(seed_workers=False)
     for reserved in ["admin", "system", "internal"]:
         with pytest.raises(ReservedIdentifier):
-            store.register_worker(reserved)
+            store.register_worker(name=reserved)
 
 
-def test_register_worker_persists_labels(
+def test_register_worker_persists_labels_and_name(
     make_store: Callable[..., Store],
 ) -> None:
     store = make_store(seed_workers=False)
-    store.register_worker(
-        "agent-claude", labels={"role": "executor", "model": "claude-opus-4-7"}
+    worker, _ = store.register_worker(
+        name="agent-claude",
+        labels={"role": "executor", "model": "claude-opus-4-7"},
     )
-    worker = store.read_worker("agent-claude")
-    assert worker.labels == {"role": "executor", "model": "claude-opus-4-7"}
+    read = store.read_worker(worker.worker_id)
+    assert read.name == "agent-claude"
+    assert read.labels == {"role": "executor", "model": "claude-opus-4-7"}
 
 
 def test_read_worker_not_found(make_store: Callable[..., Store]) -> None:
     store = make_store(seed_workers=False)
     with pytest.raises(NotFound):
-        store.read_worker("eric")
+        store.read_worker("wkr_00000000000000000000000000")
 
 
 def test_list_workers_returns_sorted_snapshot(
     make_store: Callable[..., Store],
 ) -> None:
     store = make_store(seed_workers=False)
-    for wid in ["zara", "alice", "bob"]:
-        store.register_worker(wid)
+    ids = [store.register_worker(name=n)[0].worker_id for n in ["zara", "alice", "bob"]]
     workers = store.list_workers()
-    assert [w.worker_id for w in workers] == ["alice", "bob", "zara"]
+    assert [w.worker_id for w in workers] == sorted(ids)
+
+
+def test_list_workers_name_filter(
+    make_store: Callable[..., Store],
+) -> None:
+    """`list_workers(name=...)` filters to exact, case-sensitive matches."""
+    store = make_store(seed_workers=False)
+    a1, _ = store.register_worker(name="alice")
+    a2, _ = store.register_worker(name="alice")
+    store.register_worker(name="bob")
+    matches = store.list_workers(name="alice")
+    assert {w.worker_id for w in matches} == {a1.worker_id, a2.worker_id}
+    assert all(w.name == "alice" for w in matches)
+    # Case-sensitive: a different case does not match.
+    assert store.list_workers(name="Alice") == []
+    # Default returns every worker.
+    assert len(store.list_workers()) == 3
 
 
 def test_list_workers_excludes_credential(
@@ -103,9 +139,8 @@ def test_list_workers_excludes_credential(
 ) -> None:
     """The wire-visible Worker shape MUST NOT carry a credential or hash."""
     store = make_store(seed_workers=False)
-    store.register_worker("eric")
-    workers = store.list_workers()
-    [worker] = workers
+    store.register_worker(name="eric")
+    [worker] = store.list_workers()
     serialized = worker.model_dump(mode="json", exclude_none=True)
     assert "auth_credential_hash" not in serialized
     assert "credential_hash" not in serialized
@@ -116,17 +151,17 @@ def test_verify_worker_credential_accepts_current_token(
     make_store: Callable[..., Store],
 ) -> None:
     store = make_store(seed_workers=False)
-    _, token = store.register_worker("eric")
+    worker, token = store.register_worker(name="eric")
     assert token is not None
-    assert store.verify_worker_credential("eric", token) is True
+    assert store.verify_worker_credential(worker.worker_id, token) is True
 
 
 def test_verify_worker_credential_rejects_wrong_token(
     make_store: Callable[..., Store],
 ) -> None:
     store = make_store(seed_workers=False)
-    store.register_worker("eric")
-    assert store.verify_worker_credential("eric", "wrong-token") is False
+    worker, _ = store.register_worker(name="eric")
+    assert store.verify_worker_credential(worker.worker_id, "wrong-token") is False
 
 
 def test_verify_worker_credential_rejects_unknown_worker(
@@ -138,19 +173,21 @@ def test_verify_worker_credential_rejects_unknown_worker(
     wrong secret) into a single 401 without leaking which arm hit.
     """
     store = make_store(seed_workers=False)
-    assert store.verify_worker_credential("ghost", "tok") is False
+    assert (
+        store.verify_worker_credential("wkr_00000000000000000000000000", "tok") is False
+    )
 
 
 def test_reissue_credential_invalidates_prior(
     make_store: Callable[..., Store],
 ) -> None:
     store = make_store(seed_workers=False)
-    _, first_token = store.register_worker("eric")
+    worker, first_token = store.register_worker(name="eric")
     assert first_token is not None
-    second_token = store.reissue_credential("eric")
+    second_token = store.reissue_credential(worker.worker_id)
     assert second_token != first_token
-    assert store.verify_worker_credential("eric", first_token) is False
-    assert store.verify_worker_credential("eric", second_token) is True
+    assert store.verify_worker_credential(worker.worker_id, first_token) is False
+    assert store.verify_worker_credential(worker.worker_id, second_token) is True
 
 
 def test_reissue_credential_unknown_worker(
@@ -158,11 +195,11 @@ def test_reissue_credential_unknown_worker(
 ) -> None:
     store = make_store(seed_workers=False)
     with pytest.raises(NotFound):
-        store.reissue_credential("ghost")
+        store.reissue_credential("wkr_00000000000000000000000000")
 
 
 # ---------------------------------------------------------------------
-# Store.claim §3.5 RBAC enforcement (12a-1 wave 5)
+# Store.claim §3.5 RBAC enforcement
 # ---------------------------------------------------------------------
 
 
@@ -175,7 +212,7 @@ def test_claim_by_unregistered_worker_rejected(
     store = make_store(seed_workers=False)
     store.create_ideation_task("t1")
     with pytest.raises(WorkerNotRegistered):
-        store.claim("t1", "ghost")
+        store.claim("t1", "wkr_00000000000000000000000000")
 
 
 def test_claim_by_registered_worker_accepted_when_target_absent(
@@ -183,10 +220,10 @@ def test_claim_by_registered_worker_accepted_when_target_absent(
 ) -> None:
     """§3.5 — target=null permits any registered worker."""
     store = make_store(seed_workers=False)
-    store.register_worker("eric")
+    eric, _ = store.register_worker(name="eric")
     store.create_ideation_task("t1")
-    claim = store.claim("t1", "eric")
-    assert claim.worker_id == "eric"
+    claim = store.claim("t1", eric.worker_id)
+    assert claim.worker_id == eric.worker_id
 
 
 def test_claim_with_worker_target_accepts_matching_worker(
@@ -196,8 +233,8 @@ def test_claim_with_worker_target_accepts_matching_worker(
     from eden_contracts import IdeationPayload, IdeationTask, TaskTarget
 
     store = make_store(seed_workers=False)
-    store.register_worker("eric")
-    target = TaskTarget(kind="worker", id="eric")
+    eric, _ = store.register_worker(name="eric")
+    target = TaskTarget(kind="worker", id=eric.worker_id)
     task = IdeationTask.model_validate(
         {
             "task_id": "t1",
@@ -212,8 +249,8 @@ def test_claim_with_worker_target_accepts_matching_worker(
         }
     )
     store.create_task(task)
-    claim = store.claim("t1", "eric")
-    assert claim.worker_id == "eric"
+    claim = store.claim("t1", eric.worker_id)
+    assert claim.worker_id == eric.worker_id
 
 
 def test_claim_with_worker_target_rejects_other_worker(
@@ -224,9 +261,9 @@ def test_claim_with_worker_target_rejects_other_worker(
     from eden_storage import WorkerNotEligible
 
     store = make_store(seed_workers=False)
-    store.register_worker("eric")
-    store.register_worker("alice")
-    target = TaskTarget(kind="worker", id="eric")
+    eric, _ = store.register_worker(name="eric")
+    alice, _ = store.register_worker(name="alice")
+    target = TaskTarget(kind="worker", id=eric.worker_id)
     task = IdeationTask.model_validate(
         {
             "task_id": "t1",
@@ -242,7 +279,7 @@ def test_claim_with_worker_target_rejects_other_worker(
     )
     store.create_task(task)
     with pytest.raises(WorkerNotEligible):
-        store.claim("t1", "alice")
+        store.claim("t1", alice.worker_id)
 
 
 def test_claim_with_group_target_accepts_transitive_member(
@@ -252,11 +289,13 @@ def test_claim_with_group_target_accepts_transitive_member(
     from eden_contracts import IdeationPayload, IdeationTask, TaskTarget
 
     store = make_store(seed_workers=False)
-    store.register_worker("eric")
-    store.register_worker("alice")
-    store.register_group("team-a", members=["eric", "alice"])
-    store.register_group("humans", members=["team-a"])
-    target = TaskTarget(kind="group", id="humans")
+    eric, _ = store.register_worker(name="eric")
+    alice, _ = store.register_worker(name="alice")
+    team_a = store.register_group(
+        name="team-a", members=[eric.worker_id, alice.worker_id]
+    )
+    humans = store.register_group(name="humans", members=[team_a.group_id])
+    target = TaskTarget(kind="group", id=humans.group_id)
     task = IdeationTask.model_validate(
         {
             "task_id": "t1",
@@ -271,8 +310,8 @@ def test_claim_with_group_target_accepts_transitive_member(
         }
     )
     store.create_task(task)
-    claim = store.claim("t1", "alice")
-    assert claim.worker_id == "alice"
+    claim = store.claim("t1", alice.worker_id)
+    assert claim.worker_id == alice.worker_id
 
 
 def test_claim_with_group_target_rejects_non_member(
@@ -283,10 +322,10 @@ def test_claim_with_group_target_rejects_non_member(
     from eden_storage import WorkerNotEligible
 
     store = make_store(seed_workers=False)
-    store.register_worker("eric")
-    store.register_worker("claude")
-    store.register_group("humans", members=["eric"])
-    target = TaskTarget(kind="group", id="humans")
+    eric, _ = store.register_worker(name="eric")
+    claude, _ = store.register_worker(name="claude")
+    humans = store.register_group(name="humans", members=[eric.worker_id])
+    target = TaskTarget(kind="group", id=humans.group_id)
     task = IdeationTask.model_validate(
         {
             "task_id": "t1",
@@ -302,7 +341,7 @@ def test_claim_with_group_target_rejects_non_member(
     )
     store.create_task(task)
     with pytest.raises(WorkerNotEligible):
-        store.claim("t1", "claude")
+        store.claim("t1", claude.worker_id)
 
 
 def test_submit_by_deregistered_worker_rejected(
@@ -324,18 +363,18 @@ def test_submit_by_deregistered_worker_rejected(
     from eden_storage import IdeaSubmission, WorkerNotRegistered
 
     store = make_store(seed_workers=False)
-    store.register_worker("eric")
+    eric, _ = store.register_worker(name="eric")
     store.create_ideation_task("t1")
-    store.claim("t1", "eric")
+    store.claim("t1", eric.worker_id)
 
     original_get_worker = store._get_worker  # type: ignore[attr-defined]
 
     def _missing_eric(worker_id: str):
-        if worker_id == "eric":
+        if worker_id == eric.worker_id:
             return None
         return original_get_worker(worker_id)
 
     monkeypatch.setattr(store, "_get_worker", _missing_eric)
 
     with pytest.raises(WorkerNotRegistered):
-        store.submit("t1", "eric", IdeaSubmission(status="success", idea_ids=()))
+        store.submit("t1", eric.worker_id, IdeaSubmission(status="success", idea_ids=()))

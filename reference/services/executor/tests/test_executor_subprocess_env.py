@@ -34,10 +34,14 @@ def _common(*extra: str) -> list[str]:
     return [
         "--task-store-url",
         "http://store",
+        # Issue #128: experiment/worker ids are opaque, grammar-anchored.
+        # These flags are pass-through strings (parse_args does no
+        # validation), but use grammar-valid literals to stay consistent
+        # with the rename.
         "--experiment-id",
-        "exp",
+        "exp_0123456789abcdefghjkmnpqrs",
         "--worker-id",
-        "executor-1",
+        "wkr_0123456789abcdefghjkmnpqrs",
         "--repo-path",
         "/var/lib/eden/repo",
         *extra,

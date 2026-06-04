@@ -25,8 +25,8 @@
     },
     "experiment_id": {
       "type": "string",
-      "minLength": 1,
-      "description": "The source experiment's id. The receiving deployment uses this verbatim unless an as_experiment_id override is supplied at import time (spec/v0/07-wire-protocol.md §14.2)."
+      "pattern": "^exp_[0-9a-hjkmnp-tv-z]{26}$",
+      "description": "The source experiment's opaque id (spec/v0/02-data-model.md §1.6). On import without an as_experiment_id override the receiver mints a fresh exp_* and stamps this value into Experiment.imported_from.source_experiment_id (spec/v0/07-wire-protocol.md §14.2)."
     },
     "exported_at": {
       "type": "string",

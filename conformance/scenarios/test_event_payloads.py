@@ -38,7 +38,7 @@ def test_task_claimed_carries_worker_id(
     _seed.claim(wire_client, tid, worker_id="alpha")
     [event] = _by_type_for(event_log.replay_all(), "task.claimed", task_id=tid)
     assert event["data"]["task_id"] == tid
-    assert event["data"]["worker_id"] == "alpha"
+    assert event["data"]["worker_id"] == wire_client.worker_id_for("alpha")
 
 
 def test_task_submitted_carries_task_id(

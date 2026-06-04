@@ -77,7 +77,7 @@ Conforming implementations MUST validate every reported evaluation payload again
 
 ## 8. Claim ownership
 
-When a worker claims a task, the task store records the worker's `worker_id` on the task's `claim` object. Subsequent operations on the claimed task (submit, etc.) are authorized by matching the **authenticated worker's id** (verified by the binding) against `claim.worker_id` atomically with the state transition. A task store MAY reclaim a task from a worker that has become unresponsive; reclamation clears the `claim` object so any in-flight submit by the prior claimant fails the atomic match.
+When a worker claims a task, the task store records the worker's `worker_id` on the task's `claim` object. A `worker_id` is an **opaque, system-minted** identifier (the worker's optional, operator-supplied `name` is a display label only, never an authorization key — see [`02-data-model.md`](02-data-model.md) §1.6, §1.7). Subsequent operations on the claimed task (submit, etc.) are authorized by matching the **authenticated worker's id** (verified by the binding) against `claim.worker_id` atomically with the state transition. A task store MAY reclaim a task from a worker that has become unresponsive; reclamation clears the `claim` object so any in-flight submit by the prior claimant fails the atomic match.
 
 This replaces the pre-12a-1 per-claim opaque-token model: claim ownership is now identity-keyed, not token-keyed. Per-worker credentials and the binding-layer authentication that uses them are specified in [`07-wire-protocol.md`](07-wire-protocol.md) §13. As a consequence, a worker with the right credential can act on its claim from any application that authenticates as the same worker — the claim travels with the worker's identity, not with the application instance that produced it.
 
@@ -107,7 +107,7 @@ The **orchestrator** is the component that dispatches tasks to workers and advan
 
 ## 12. Workers and groups
 
-A **worker** is a registered identity that participates in the task protocol. Each experiment owns its own per-experiment worker registry; workers are not shared across experiments. A **group** is a named, recursively-resolved set of workers (and other groups) within a single experiment, used to express routing intents broader than a single worker. Both worker and group ids share the same grammar (defined in [`02-data-model.md`](02-data-model.md) §6.1), and both registries support cycle-free transitive resolution.
+A **worker** is a registered identity that participates in the task protocol. Each experiment owns its own per-experiment worker registry; workers are not shared across experiments. A **group** is a recursively-resolved set of workers (and other groups) within a single experiment, used to express routing intents broader than a single worker. A worker's `worker_id` and a group's `group_id` are **opaque, system-minted** identifiers (the registry mints them; operators never supply them); each entity also carries an OPTIONAL operator-supplied `name` that is a display label only. The opaque-id and display-name grammars are defined in [`02-data-model.md`](02-data-model.md) §1.6, §1.7. Both registries support cycle-free transitive resolution.
 
 A task's optional `target` field constrains which workers may claim it: a specific worker, a group, or unrestricted. Claim-time eligibility is enforced by the task store ([`04-task-protocol.md`](04-task-protocol.md) §3.5).
 

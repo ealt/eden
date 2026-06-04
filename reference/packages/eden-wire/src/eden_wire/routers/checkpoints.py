@@ -108,8 +108,9 @@ def _import_checkpoint(deps: RouterDeps):
         bootstrap-class because a fresh receiver has no ``admins``- group
         member). The §1.3 experiment-scoping carve-out applies: the
         ``X-Eden-Experiment-Id`` header is OPTIONAL on this endpoint, but
-        if present MUST equal the post-rewrite experiment_id (the
-        manifest's id, or ``as_experiment_id`` if supplied). The wire
+        if present MUST equal the receiving experiment's own id (a #128
+        import lands under the receiver's minted id; the manifest's id is
+        recorded as ``imported_from.source_experiment_id`` provenance). The wire
         layer's ``ExperimentIdMismatch`` covers that surface; the
         eden-checkpoint ``ExperimentIdMismatch`` covers the
         store-target-vs-manifest mismatch and is re-raised through the

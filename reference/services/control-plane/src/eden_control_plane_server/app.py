@@ -30,6 +30,7 @@ from eden_control_plane import (
 from eden_storage.errors import (
     AlreadyExists,
     CycleDetected,
+    InvalidName,
     InvalidPrecondition,
     NotFound,
     ReservedIdentifier,
@@ -125,6 +126,7 @@ _PROBLEM_JSON_EXCEPTION_TYPES: tuple[type[Exception], ...] = (
     AlreadyExists,
     InvalidPrecondition,
     ReservedIdentifier,
+    InvalidName,
     CycleDetected,
     LeaseError,
     BadRequest,
@@ -221,17 +223,26 @@ def make_app(
         return principal
 
     def _require_orchestrators(request: Request) -> Principal:
-        """Worker-gated + deployment-scoped `orchestrators` group required."""
+        """Worker-gated + deployment-scoped `orchestrators` group required.
+
+        Since the identity rename (#128), group ids are opaque,
+        system-minted `grp_*` values; the authority group is identified
+        by its reserved display NAME (`orchestrators`). Resolve that
+        name to its minted `group_id` via `list_groups(name=...)`, then
+        check transitive membership. A reserved group not yet created
+        resolves to no id and contributes no membership.
+        """
         principal = _enforce_worker(request)
         if admin_token is None:
             return principal
         assert principal.worker_id is not None
-        if not store.resolve_worker_in_group(principal.worker_id, "orchestrators"):
-            raise Forbidden(
-                f"endpoint requires membership in 'orchestrators'; "
-                f"worker {principal.worker_id!r} is not a transitive member"
-            )
-        return principal
+        for group in store.list_groups(name="orchestrators"):
+            if store.resolve_worker_in_group(principal.worker_id, group.group_id):
+                return principal
+        raise Forbidden(
+            f"endpoint requires membership in 'orchestrators'; "
+            f"worker {principal.worker_id!r} is not a transitive member"
+        )
 
     base = "/v0/control"
 
@@ -244,14 +255,14 @@ def make_app(
         request: Request, body: RegisterExperimentRequest = Body(...)
     ) -> Response:
         _enforce_admin(request)
-        # Codex round 6 MAJOR + round 7 atomicity follow-up: chapter
-        # 07 §15 mandates 201 on first registration vs 200 on
-        # idempotent replay. The `register_experiment` Protocol now
-        # returns `(entry, created)` from inside the store-side
-        # critical section — under concurrent callers, exactly one
-        # observes `created=True` and the rest observe `False`.
+        # Identity rename (#128): the caller no longer supplies an
+        # `experiment_id`; the server mints a fresh `exp_*` (chapter 11
+        # §2). Each registration is a distinct entry, so `created` is
+        # always True (the old idempotent-replay branch is moot once
+        # ids are minted). The optional `name` is an operator-supplied
+        # display label (data-model §1.7).
         entry, created = store.register_experiment(
-            body.experiment_id, body.config_uri
+            body.config_uri, name=body.name
         )
         return _registry_response(entry, status=201 if created else 200)
 
@@ -264,9 +275,13 @@ def make_app(
         return Response(status_code=204)
 
     @app.get(f"{base}/experiments")
-    def list_experiments(request: Request) -> Response:
+    def list_experiments(
+        request: Request, name: str | None = Query(default=None)
+    ) -> Response:
         _get_principal(request)
-        entries = store.list_experiments()
+        # Optional ``?name=<n>`` exact, case-sensitive filter (§2.x):
+        # resolve a registered experiment by display name.
+        entries = store.list_experiments(name=name)
         # §3.4: inject stale-state warnings per entry so the cross-
         # experiment dashboard can render them in the same single
         # round trip. The shape mirrors read_experiment_metadata's
@@ -422,17 +437,17 @@ def make_app(
     @app.post(f"{base}/workers")
     def register_worker(request: Request, body: dict[str, Any] = Body(...)) -> Response:
         _enforce_admin(request)
-        worker_id = body.get("worker_id")
-        if not isinstance(worker_id, str) or not worker_id:
-            raise BadRequest("body MUST include a non-empty 'worker_id' string")
+        # Identity rename (#128): the server mints the opaque `wkr_*`
+        # id; the caller supplies only an optional display `name` and
+        # deployment `labels`. The one-time `registration_token` is
+        # always present (every mint creates a fresh credential).
+        name = body.get("name")
+        if name is not None and not isinstance(name, str):
+            raise BadRequest("'name' MUST be a string when present")
         labels = body.get("labels")
         if labels is not None and not isinstance(labels, dict):
             raise BadRequest("'labels' MUST be an object when present")
-        # Codex round 7 MAJOR: chapter 07 §15.3 verbatim-mirrors
-        # §6.1; §6.1 returns 200 on both first-create and idempotent
-        # replay (the `registration_token` is what distinguishes the
-        # two — present on first create, absent on replay).
-        worker, token = store.register_worker(worker_id, labels=labels)
+        worker, token = store.register_worker(name, labels=labels)
         out: dict[str, Any] = _dump(worker)
         if token is not None:
             out["registration_token"] = token
@@ -450,9 +465,12 @@ def make_app(
         return JSONResponse(content=out)
 
     @app.get(f"{base}/workers")
-    def list_workers(request: Request) -> Response:
+    def list_workers(
+        request: Request, name: str | None = Query(default=None)
+    ) -> Response:
         _enforce_admin(request)
-        workers = store.list_workers()
+        # Optional ``?name=<n>`` exact, case-sensitive filter (§6.2).
+        workers = store.list_workers(name=name)
         return JSONResponse(
             content={"workers": [_dump(w) for w in workers]}
         )
@@ -468,7 +486,17 @@ def make_app(
     @app.get(f"{base}/whoami")
     def whoami(request: Request) -> Response:
         principal = _enforce_worker(request)
-        return JSONResponse(content={"worker_id": principal.worker_id})
+        body: dict[str, Any] = {"worker_id": principal.worker_id}
+        # Echo the worker's display name when one was registered (§6.4).
+        # The anonymous test-posture principal has no registry row.
+        if principal.worker_id is not None and principal.worker_id != "anonymous":
+            try:
+                worker = store.read_worker(principal.worker_id)
+            except NotFound:
+                worker = None
+            if worker is not None and worker.name is not None:
+                body["name"] = worker.name
+        return JSONResponse(content=body)
 
     # ------------------------------------------------------------------
     # §15.3 Deployment-scoped group registry
@@ -478,17 +506,22 @@ def make_app(
     def register_group(
         request: Request, body: dict[str, Any] = Body(...)
     ) -> Response:
-        _enforce_admin(request)
-        group_id = body.get("group_id")
-        if not isinstance(group_id, str) or not group_id:
-            raise BadRequest("body MUST include a non-empty 'group_id' string")
+        principal = _enforce_admin(request)
+        # Identity rename (#128): the server mints the opaque `grp_*`
+        # id; the caller supplies only an optional display `name` and
+        # initial `members`. The deployment admin may create
+        # reserved-named groups (the setup-experiment bootstrap path);
+        # ordinary workers cannot reach this admin-gated route.
+        name = body.get("name")
+        if name is not None and not isinstance(name, str):
+            raise BadRequest("'name' MUST be a string when present")
         members = body.get("members")
         if members is not None and not isinstance(members, list):
             raise BadRequest("'members' MUST be an array when present")
-        # Codex round 7 MAJOR: chapter 07 §15.3 verbatim-mirrors
-        # §6.1's idempotency contract — returns 200 on both
-        # first-create and idempotent replay.
-        group = store.register_group(group_id, members=members)
+        allow_reserved = principal.is_admin()
+        group = store.register_group(
+            name, members=members, allow_reserved=allow_reserved
+        )
         return JSONResponse(content=_dump(group))
 
     @app.post(f"{base}/groups/{{group_id}}/members")
@@ -498,10 +531,10 @@ def make_app(
         body: dict[str, Any] = Body(...),
     ) -> Response:
         _enforce_admin(request)
-        worker_id = body.get("worker_id")
-        if not isinstance(worker_id, str) or not worker_id:
-            raise BadRequest("body MUST include a non-empty 'worker_id' string")
-        group = store.add_to_group(group_id, worker_id)
+        member_id = body.get("member_id")
+        if not isinstance(member_id, str) or not member_id:
+            raise BadRequest("body MUST include a non-empty 'member_id' string")
+        group = store.add_to_group(group_id, member_id)
         return JSONResponse(content=_dump(group))
 
     @app.delete(f"{base}/groups/{{group_id}}/members/{{worker_id}}")
@@ -523,9 +556,12 @@ def make_app(
         return Response(status_code=204)
 
     @app.get(f"{base}/groups")
-    def list_groups(request: Request) -> Response:
+    def list_groups(
+        request: Request, name: str | None = Query(default=None)
+    ) -> Response:
         _enforce_admin(request)
-        groups = store.list_groups()
+        # Optional ``?name=<n>`` exact, case-sensitive filter (§7.2).
+        groups = store.list_groups(name=name)
         return JSONResponse(content={"groups": [_dump(g) for g in groups]})
 
     @app.get(f"{base}/groups/{{group_id}}")

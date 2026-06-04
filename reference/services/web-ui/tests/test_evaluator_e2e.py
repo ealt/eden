@@ -110,9 +110,30 @@ def test_evaluator_full_flow_through_ui(tmp_path: Path) -> None:
     db_path = tmp_path / "eden.sqlite"
     artifacts_dir = tmp_path / "artifacts"
     artifacts_dir.mkdir()
-    experiment_id = "exp-eval-e2e"
+    # Identity rename (#128): opaque experiment id.
+    experiment_id = "exp_0123456789abcdefghjkmnpqrs"
     logs_dir = tmp_path / "logs"
     logs_dir.mkdir()
+    creds_dir = tmp_path / "creds"
+    creds_dir.mkdir()
+
+    # Identity rename (#128): worker_ids are OPAQUE + system-minted
+    # (wkr_*); the wire collapses every auth-disabled claimant onto the
+    # un-registerable ``anonymous`` sentinel, so the claim-driving
+    # evaluator flow must run auth-ENABLED. Run the server with
+    # --admin-token and register the workers this test needs under the
+    # admin bearer (the server mints each wkr_* id):
+    #   * ``ui-eval`` — the web-ui session principal (self-bootstraps its
+    #     own per-worker credential from --admin-token at startup);
+    #   * ``seeder`` — a worker in the reserved ``orchestrators`` group,
+    #     used for the orchestrator-gated seed steps (create_*_task,
+    #     accept) and the plain-worker steps (create_idea / mark-ready /
+    #     create_variant). Worker-gated routes reject admin bearers
+    #     (§13.3), so the seed cannot use ``admin:<token>``;
+    #   * ``executor-w`` — claims + submits the execution task with its
+    #     OWN per-worker bearer (the wire takes the claimant from the
+    #     authenticated bearer, NOT the request body).
+    admin_token = "e2e-admin-secret"
 
     server_log = logs_dir / "server.log"
     server = _spawn(
@@ -130,11 +151,37 @@ def test_evaluator_full_flow_through_ui(tmp_path: Path) -> None:
             "0",
             "--subscribe-timeout",
             "1.0",
+            "--admin-token",
+            admin_token,
         ],
         server_log,
     )
     server_port = _read_port(server_log, server, _TASK_STORE_RE)
     task_store_url = f"http://127.0.0.1:{server_port}"
+
+    from eden_wire import StoreClient
+
+    admin = StoreClient(
+        base_url=task_store_url,
+        experiment_id=experiment_id,
+        bearer=f"admin:{admin_token}",
+    )
+    try:
+        ui_eval_worker, _ = admin.register_worker("ui-eval")
+        ui_eval_id = ui_eval_worker.worker_id
+        seeder_worker, seeder_token = admin.register_worker("seeder")
+        seeder_id = seeder_worker.worker_id
+        assert seeder_token is not None
+        admin.register_group(
+            "orchestrators", members=[seeder_id], allow_reserved=True
+        )
+        executor_worker, executor_token = admin.register_worker("executor-w")
+        executor_id = executor_worker.worker_id
+        assert executor_token is not None
+    finally:
+        admin.close()
+    seeder_bearer = f"{seeder_id}:{seeder_token}"
+    executor_bearer = f"{executor_id}:{executor_token}"
 
     web_ui_log = logs_dir / "web-ui.log"
     web_ui = _spawn(
@@ -149,7 +196,11 @@ def test_evaluator_full_flow_through_ui(tmp_path: Path) -> None:
             "--session-secret",
             "y" * 32,
             "--worker-id",
-            "ui-eval",
+            ui_eval_id,
+            "--admin-token",
+            admin_token,
+            "--credentials-dir",
+            str(creds_dir),
             "--artifacts-dir",
             str(artifacts_dir),
             "--host",
@@ -172,17 +223,21 @@ def test_evaluator_full_flow_through_ui(tmp_path: Path) -> None:
     try:
         # Seed: ready idea + execution task; drive it to a
         # starting variant with commit_sha so the evaluation task can be
-        # created.
-        from eden_wire import StoreClient
-
+        # created. The orchestrator-gated + plain-worker steps run under
+        # the ``seeder`` bearer; the claim/submit run under the
+        # executor's own bearer (the wire takes the claimant from the
+        # authenticated bearer, not the request body).
         seed = StoreClient(
             base_url=task_store_url,
             experiment_id=experiment_id,
+            bearer=seeder_bearer,
+        )
+        executor = StoreClient(
+            base_url=task_store_url,
+            experiment_id=experiment_id,
+            bearer=executor_bearer,
         )
         try:
-            seed.register_worker("anonymous")  # auth-disabled wire collapse
-            seed.register_worker("ui-eval")
-            seed.register_worker("executor-w")
             artifact_path = artifacts_dir / "p-eval.md"
             artifact_path.write_text("content")
             idea = Idea(
@@ -211,8 +266,8 @@ def test_evaluator_full_flow_through_ui(tmp_path: Path) -> None:
                 started_at="2026-04-24T12:00:00Z",
             )
             seed.create_variant(variant)
-            claim = seed.claim("t-exec-1", "executor-w")
-            seed.submit(
+            claim = executor.claim("t-exec-1", executor_id)
+            executor.submit(
                 "t-exec-1",
                 claim.worker_id,
                 VariantSubmission(
@@ -222,6 +277,7 @@ def test_evaluator_full_flow_through_ui(tmp_path: Path) -> None:
             seed.accept("t-exec-1")
             seed.create_evaluation_task("t-eval-1", "variant-1")
         finally:
+            executor.close()
             seed.close()
 
         with httpx.Client(base_url=web_url, timeout=10.0) as ui:

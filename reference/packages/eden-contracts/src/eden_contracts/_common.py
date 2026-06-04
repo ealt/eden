@@ -4,6 +4,9 @@ Every pattern here mirrors a pattern in the spec/v0 JSON Schemas. When a
 schema changes, the corresponding alias here changes in lockstep.
 """
 
+import secrets
+import time
+import unicodedata
 from datetime import datetime, timedelta
 from typing import Annotated, Any
 
@@ -14,8 +17,19 @@ DATETIME_PATTERN = r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0
 
 COMMIT_SHA_PATTERN = r"^[0-9a-f]{40}([0-9a-f]{24})?$"
 
-WORKER_ID_PATTERN = r"^[a-z0-9][a-z0-9_-]{0,63}$"
-"""Grammar for `worker_id` and `group_id` (spec/v0/02-data-model.md §6.1)."""
+# --- opaque entity-identifier grammars (spec/v0/02-data-model.md §1.6) ---
+# Each id is a stable type-prefix + "_" + 26-char lowercase Crockford-base32
+# ULID suffix. The Crockford lowercase alphabet excludes i/l/o/u.
+EXPERIMENT_ID_PATTERN = r"^exp_[0-9a-hjkmnp-tv-z]{26}$"
+"""Grammar for `experiment_id` (spec/v0/02-data-model.md §1.6)."""
+WORKER_ID_PATTERN = r"^wkr_[0-9a-hjkmnp-tv-z]{26}$"
+"""Grammar for `worker_id` (spec/v0/02-data-model.md §1.6)."""
+GROUP_ID_PATTERN = r"^grp_[0-9a-hjkmnp-tv-z]{26}$"
+"""Grammar for `group_id` (spec/v0/02-data-model.md §1.6)."""
+ACTOR_ID_PATTERN = r"^(admin|wkr_[0-9a-hjkmnp-tv-z]{26})$"
+"""A caller that may be the admin principal or a worker (spec §1.6)."""
+MEMBER_ID_PATTERN = r"^(wkr|grp)_[0-9a-hjkmnp-tv-z]{26}$"
+"""A worker or group id — group members / Task.target.id (spec §1.6)."""
 
 
 def _check_datetime(value: str) -> str:
@@ -72,11 +86,72 @@ DateTimeStr = Annotated[
 CommitSha = Annotated[str, StringConstraints(pattern=COMMIT_SHA_PATTERN)]
 """Lowercase hex SHA-1 (40 chars) or SHA-256 (64 chars) commit identifier."""
 
-WorkerId = Annotated[
-    str,
-    StringConstraints(pattern=WORKER_ID_PATTERN, min_length=1, max_length=64),
-]
-"""Worker / group identifier (spec/v0/02-data-model.md §6.1)."""
+ExperimentId = Annotated[str, StringConstraints(pattern=EXPERIMENT_ID_PATTERN)]
+"""Opaque, system-minted experiment identifier (spec §1.6)."""
+
+WorkerId = Annotated[str, StringConstraints(pattern=WORKER_ID_PATTERN)]
+"""Opaque, system-minted worker identifier (spec §1.6)."""
+
+GroupId = Annotated[str, StringConstraints(pattern=GROUP_ID_PATTERN)]
+"""Opaque, system-minted group identifier (spec §1.6)."""
+
+ActorId = Annotated[str, StringConstraints(pattern=ACTOR_ID_PATTERN)]
+"""Attribution caller: the admin principal or a worker (spec §1.6)."""
+
+MemberId = Annotated[str, StringConstraints(pattern=MEMBER_ID_PATTERN)]
+"""Group member / target id: a worker or a group (spec §1.6)."""
+
+
+_NAME_FORBIDDEN_CATEGORIES = frozenset({"Cc", "Cs", "Cn", "Co"})
+
+
+def _check_display_name(value: str) -> str:
+    if unicodedata.normalize("NFC", value) != value:
+        raise ValueError("display name must be NFC-normalized")
+    if not 1 <= len(value) <= 128:
+        raise ValueError("display name must be 1..128 code points")
+    if value != value.strip() or not value.strip():
+        raise ValueError("display name must not lead/trail with, or consist only of, whitespace")
+    for ch in value:
+        if unicodedata.category(ch) in _NAME_FORBIDDEN_CATEGORIES:
+            raise ValueError(
+                "display name must not contain control / surrogate / unassigned / "
+                "private-use code points"
+            )
+    return value
+
+
+DisplayName = Annotated[str, AfterValidator(_check_display_name)]
+"""Operator-supplied display label (spec/v0/02-data-model.md §1.7)."""
+
+
+# --- opaque-id minting (Crockford base32 ULID, spec §1.6) ---
+_CROCKFORD = "0123456789abcdefghjkmnpqrstvwxyz"
+
+
+def _encode_crockford(value: int, length: int) -> str:
+    chars: list[str] = []
+    for _ in range(length):
+        chars.append(_CROCKFORD[value & 0x1F])
+        value >>= 5
+    return "".join(reversed(chars))
+
+
+def mint_ulid() -> str:
+    """Mint a 26-char lowercase Crockford-base32 ULID.
+
+    48-bit millisecond timestamp followed by 80 bits of randomness, so that
+    lexicographic order approximates creation order (spec §1.6).
+    """
+    timestamp_ms = int(time.time() * 1000) & ((1 << 48) - 1)
+    value = (timestamp_ms << 80) | secrets.randbits(80)
+    return _encode_crockford(value, 26)
+
+
+def mint_opaque_id(prefix: str) -> str:
+    """Mint an opaque id ``<prefix>_<26-char-ulid>`` (prefix in exp/wkr/grp)."""
+    return f"{prefix}_{mint_ulid()}"
+
 
 UriStr = Annotated[str, AfterValidator(_check_uri)]
 """URI string — must have a scheme, per RFC 3986 (schema ``format: uri``)."""

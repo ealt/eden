@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_macros.html" import name_id %}
 {% block title %}EDEN — admin workers{% endblock %}
 {% block main %}
 <h1>workers</h1>
@@ -25,13 +26,16 @@
 
 <section>
     <h2>register a new worker</h2>
+    <p class="muted">
+        The worker_id is minted by the server. Supply an optional
+        display name; the minted id is shown after registration.
+    </p>
     <form method="post" action="/admin/workers/">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <p>
-            <label>worker_id
-                <input type="text" name="worker_id" required maxlength="64"
-                       pattern="[a-z0-9][a-z0-9_-]{0,63}"
-                       title="lowercase alphanumeric, hyphen, underscore; first char non-hyphen; max 64 chars"
+            <label>name <span class="muted">(optional)</span>
+                <input type="text" name="name" maxlength="128"
+                       title="1–128 visible characters; no control chars; no leading/trailing whitespace"
                        {% if not admin_enabled %}disabled{% endif %}>
             </label>
         </p>
@@ -53,11 +57,14 @@
 <section>
     <h2>registered workers ({{ rows | length }})</h2>
     <form method="get" action="/admin/workers/" class="filters">
-        <label>filter (worker_id or label substring)
+        <label>filter by name <span class="muted">(exact)</span>
+            <input type="text" name="name" value="{{ name_filter }}" maxlength="128">
+        </label>
+        <label>filter (id / name / label substring)
             <input type="text" name="q" value="{{ q }}" maxlength="64">
         </label>
         <button type="submit">filter</button>
-        {% if q %}
+        {% if q or name_filter %}
         <a href="/admin/workers/">clear filter</a>
         {% endif %}
     </form>
@@ -66,7 +73,7 @@
     <table>
         <thead>
             <tr>
-                <th>worker_id</th>
+                <th>worker</th>
                 <th>registered_at</th>
                 <th>registered_by</th>
                 <th>labels</th>
@@ -76,7 +83,7 @@
         <tbody>
         {% for r in rows %}
             <tr>
-                <td><a href="/admin/workers/{{ r.worker_id }}/"><code>{{ r.worker_id }}</code></a></td>
+                <td><a href="/admin/workers/{{ r.worker_id }}/">{{ name_id(r.name, r.worker_id) }}</a></td>
                 <td>{{ r.registered_at }}</td>
                 <td>{% if r.registered_by %}<code>{{ r.registered_by }}</code>{% else %}—{% endif %}</td>
                 <td>{% if r.labels_preview %}{{ r.labels_preview }}{% else %}—{% endif %}</td>

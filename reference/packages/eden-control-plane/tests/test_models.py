@@ -23,10 +23,13 @@ from eden_control_plane import (
 )
 from pydantic import ValidationError
 
+EXP_ID = "exp_0123456789abcdefghjkmnpqrs"
+WKR_ID = "wkr_0123456789abcdefghjkmnpqrs"
+
 LEASE_PAYLOAD: dict[str, Any] = {
     "lease_id": "lease-abc-123",
-    "experiment_id": "exp-1",
-    "holder": "auto-orchestrator-1",
+    "experiment_id": EXP_ID,
+    "holder": WKR_ID,
     "holder_instance": "uuid-aaaa",
     "acquired_at": "2026-05-19T12:00:00Z",
     "expires_at": "2026-05-19T12:00:30Z",
@@ -35,7 +38,7 @@ LEASE_PAYLOAD: dict[str, Any] = {
 
 
 REGISTRY_PAYLOAD: dict[str, Any] = {
-    "experiment_id": "exp-1",
+    "experiment_id": EXP_ID,
     "config_uri": "https://example.test/exp-1/config.yaml",
     "created_at": "2026-05-19T12:00:00Z",
     "last_known_state": "running",
@@ -99,21 +102,33 @@ def test_config_uri_must_be_a_real_uri() -> None:
         )
 
 
-def test_register_experiment_request_validates_uri() -> None:
+def test_register_experiment_request_drops_id_and_validates_uri() -> None:
+    """The caller no longer supplies `experiment_id`; `name` is optional."""
     body = RegisterExperimentRequest(
-        experiment_id="exp-1", config_uri="file:///path/to/config.yaml"
+        config_uri="file:///path/to/config.yaml", name="My Experiment"
     )
-    assert body.experiment_id == "exp-1"
+    assert body.name == "My Experiment"
+    assert not hasattr(body, "experiment_id")
+    # Name is optional.
+    bare = RegisterExperimentRequest(config_uri="file:///c.yaml")
+    assert bare.name is None
+    # Bad URI rejected.
     with pytest.raises(ValidationError):
-        RegisterExperimentRequest(experiment_id="", config_uri="https://x/")
+        RegisterExperimentRequest(config_uri="not a uri with spaces")
+    # Ill-formed display name rejected.
+    with pytest.raises(ValidationError):
+        RegisterExperimentRequest(config_uri="https://x/", name="   ")
 
 
 def test_lease_acquire_request_requires_holder_and_holder_instance() -> None:
     with pytest.raises(ValidationError):
         LeaseAcquireRequest.model_validate({"holder_instance": "uuid-1"})  # missing holder
     with pytest.raises(ValidationError):
-        LeaseAcquireRequest.model_validate({"holder": "w1", "holder_instance": ""})
-    LeaseAcquireRequest(holder="auto-orchestrator-1", holder_instance="uuid-1")
+        LeaseAcquireRequest.model_validate({"holder": WKR_ID, "holder_instance": ""})
+    with pytest.raises(ValidationError):
+        # Legacy kebab holder grammar retired.
+        LeaseAcquireRequest(holder="auto-orchestrator-1", holder_instance="uuid-1")
+    LeaseAcquireRequest(holder=WKR_ID, holder_instance="uuid-1")
 
 
 @pytest.mark.parametrize("cls", [LeaseRenewRequest, LeaseReleaseRequest])
@@ -130,7 +145,7 @@ def test_list_experiments_response_round_trips() -> None:
         {"experiments": [REGISTRY_PAYLOAD]}
     )
     assert len(body.experiments) == 1
-    assert body.experiments[0].experiment_id == "exp-1"
+    assert body.experiments[0].experiment_id == EXP_ID
 
 
 def test_list_leases_response_round_trips() -> None:

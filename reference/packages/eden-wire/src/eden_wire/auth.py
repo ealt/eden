@@ -26,10 +26,12 @@ inspect.
 from __future__ import annotations
 
 import hmac
+import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Literal
 
+from eden_contracts._common import WORKER_ID_PATTERN
 from eden_storage import Store
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response
@@ -60,6 +62,22 @@ class Principal:
 
     kind: PrincipalKind
     worker_id: str | None
+
+    @property
+    def actor_id(self) -> str:
+        """The ActorId this principal stamps into ``*_by`` audit fields.
+
+        The admin principal stamps the literal ``"admin"`` sentinel (it
+        has no minted ``worker_id``); a worker principal stamps its
+        opaque ``wkr_*`` id. Both satisfy the ActorId grammar
+        ``^(admin|wkr_[0-9a-hjkmnp-tv-z]{26})$``
+        ([`spec/v0/02-data-model.md`](../../../../spec/v0/02-data-model.md)
+        §1.6).
+        """
+        if self.kind == "admin":
+            return "admin"
+        assert self.worker_id is not None
+        return self.worker_id
 
     def is_admin(self) -> bool:
         """True iff this principal is the deployment-wide admin."""
@@ -93,6 +111,14 @@ def parse_bearer(header: str | None) -> tuple[str, str]:
     principal, secret = bearer.split(":", 1)
     if not principal or not secret:
         raise Unauthorized("bearer principal and secret MUST both be non-empty")
+    # §13.2: the principal is either the literal ``admin`` sentinel or an
+    # opaque ``wkr_*`` worker id (spec/v0/02-data-model.md §1.6). Reject
+    # anything else (e.g. a legacy kebab id) before consulting the store.
+    if principal != "admin" and re.fullmatch(WORKER_ID_PATTERN, principal) is None:
+        raise Unauthorized(
+            "bearer principal MUST be 'admin' or an opaque wkr_* worker id "
+            "(§13.2)"
+        )
     return principal, secret
 
 

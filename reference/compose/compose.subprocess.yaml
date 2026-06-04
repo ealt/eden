@@ -44,7 +44,8 @@ services:
       - --admin-token
       - ${EDEN_ADMIN_TOKEN:?}
       - --worker-id
-      - ideator-1
+      # #128: opaque wkr_* minted by setup-experiment (was literal ideator-1).
+      - ${EDEN_IDEATOR_HOST_WORKER_ID}
       - --mode
       - subprocess
       - --experiment-config
@@ -108,7 +109,8 @@ services:
       - --admin-token
       - ${EDEN_ADMIN_TOKEN:?}
       - --worker-id
-      - executor-1
+      # #128: opaque wkr_* minted by setup-experiment (was literal executor-1).
+      - ${EDEN_EXECUTOR_HOST_WORKER_ID}
       - --repo-path
       - /var/lib/eden/repo
       - --forgejo-url
@@ -170,7 +172,8 @@ services:
       - --admin-token
       - ${EDEN_ADMIN_TOKEN:?}
       - --worker-id
-      - evaluator-1
+      # #128: opaque wkr_* minted by setup-experiment (was literal evaluator-1).
+      - ${EDEN_EVALUATOR_HOST_WORKER_ID}
       - --experiment-config
       - /etc/eden/experiment-config.yaml
       - --mode

@@ -128,21 +128,25 @@ class ControlPlaneClient:
 
     def register_experiment(
         self,
-        experiment_id: str,
         config_uri: str,
+        *,
+        name: str | None = None,
     ) -> RegisteredExperiment:
         """`POST /v0/control/experiments`.
 
-        Admin-gated. Idempotent on (experiment_id, config_uri); a
-        differing config_uri raises `AlreadyExists`.
+        Admin-gated. The server mints a fresh `exp_*` (chapter 11 §2);
+        the caller supplies only the `config_uri` and an optional
+        display `name`. Every call creates a distinct entry.
         """
-        body = RegisterExperimentRequest(
-            experiment_id=experiment_id, config_uri=config_uri
+        body = (
+            RegisterExperimentRequest(config_uri=config_uri, name=name)
+            if name is not None
+            else RegisterExperimentRequest(config_uri=config_uri)
         )
         resp = self._request(
             "POST",
             f"{self._base}/experiments",
-            json=body.model_dump(mode="json"),
+            json=body.model_dump(mode="json", exclude_none=True),
         )
         return RegisteredExperiment.model_validate(resp.json())
 
@@ -238,20 +242,23 @@ class ControlPlaneClient:
 
     def register_worker(
         self,
-        worker_id: str,
+        name: str | None = None,
         *,
         labels: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         """`POST /v0/control/workers`.
 
-        Mints a registration token on first registration; idempotent
-        on repeat (returns the existing record without a new token).
-        Returns the raw JSON because the response shape includes the
-        one-time-emitted `registration_token` per `02-data-model.md`
-        §6 — the protocol does not surface it on subsequent reads,
-        so we don't model it as a Worker.
+        Identity rename (#128): the server mints the opaque `wkr_*` id;
+        the caller supplies only an optional display `name` and
+        deployment `labels`. Every call mints a distinct worker +
+        one-time `registration_token`. Returns the raw JSON because the
+        response includes the one-time `registration_token` per
+        `02-data-model.md` §6 (not surfaced on subsequent reads, so we
+        don't model it as a `Worker`).
         """
-        body: dict[str, Any] = {"worker_id": worker_id}
+        body: dict[str, Any] = {}
+        if name is not None:
+            body["name"] = name
         if labels is not None:
             body["labels"] = labels
         resp = self._request("POST", f"{self._base}/workers", json=body)
@@ -267,9 +274,14 @@ class ControlPlaneClient:
         )
         return resp.json()
 
-    def list_workers(self) -> list[Worker]:
-        """`GET /v0/control/workers`. Admin-gated."""
-        resp = self._request("GET", f"{self._base}/workers")
+    def list_workers(self, *, name: str | None = None) -> list[Worker]:
+        """`GET /v0/control/workers`. Admin-gated.
+
+        Optional ``name`` applies an exact, case-sensitive display-name
+        filter (§6.2); 0..N matches. Default = all.
+        """
+        params = {"name": name} if name is not None else None
+        resp = self._request("GET", f"{self._base}/workers", params=params)
         return [Worker.model_validate(w) for w in resp.json()["workers"]]
 
     def read_worker(self, worker_id: str) -> Worker:
@@ -288,23 +300,33 @@ class ControlPlaneClient:
 
     def register_group(
         self,
-        group_id: str,
+        name: str | None = None,
         *,
         members: Iterable[str] | None = None,
     ) -> Group:
-        """`POST /v0/control/groups`. Admin-gated."""
-        body: dict[str, Any] = {"group_id": group_id}
+        """`POST /v0/control/groups`. Admin-gated.
+
+        Identity rename (#128): the server mints the opaque `grp_*` id;
+        the caller supplies only an optional display `name` and initial
+        `members` (each an opaque `wkr_*` / `grp_*` id).
+        """
+        body: dict[str, Any] = {}
+        if name is not None:
+            body["name"] = name
         if members is not None:
             body["members"] = list(members)
         resp = self._request("POST", f"{self._base}/groups", json=body)
         return Group.model_validate(resp.json())
 
-    def add_to_group(self, group_id: str, worker_id: str) -> Group:
-        """`POST /v0/control/groups/{G}/members`. Admin-gated."""
+    def add_to_group(self, group_id: str, member_id: str) -> Group:
+        """`POST /v0/control/groups/{G}/members`. Admin-gated.
+
+        ``member_id`` is an opaque `wkr_*` / `grp_*` id (#128).
+        """
         resp = self._request(
             "POST",
             f"{self._base}/groups/{group_id}/members",
-            json={"worker_id": worker_id},
+            json={"member_id": member_id},
         )
         return Group.model_validate(resp.json())
 
@@ -320,9 +342,14 @@ class ControlPlaneClient:
         """`DELETE /v0/control/groups/{G}`. Admin-gated."""
         self._request("DELETE", f"{self._base}/groups/{group_id}")
 
-    def list_groups(self) -> list[Group]:
-        """`GET /v0/control/groups`. Admin-gated."""
-        resp = self._request("GET", f"{self._base}/groups")
+    def list_groups(self, *, name: str | None = None) -> list[Group]:
+        """`GET /v0/control/groups`. Admin-gated.
+
+        Optional ``name`` applies an exact, case-sensitive display-name
+        filter (§7.2); 0..N matches. Default = all.
+        """
+        params = {"name": name} if name is not None else None
+        resp = self._request("GET", f"{self._base}/groups", params=params)
         return [Group.model_validate(g) for g in resp.json()["groups"]]
 
     def read_group(self, group_id: str) -> Group:

@@ -20,9 +20,9 @@ Breaking changes to the binding produce a new root (`/v1/`), the same way breaki
 
 ### 1.3 Experiment scoping
 
-Every normative path segment below `/v0/` begins with `experiments/{experiment_id}/`, and every request MUST additionally send the header `X-Eden-Experiment-Id: {experiment_id}` with a value equal to the path segment. A server MUST reject a request whose header disagrees with its path segment with `eden://error/experiment-id-mismatch` (HTTP 400); see §9. The header is defense-in-depth against misrouted clients and proxies.
+Every normative path segment below `/v0/` begins with `experiments/{experiment_id}/`, where `{experiment_id}` is an opaque, system-minted `exp_*` id ([`02-data-model.md`](02-data-model.md) §1.6); every request MUST additionally send the header `X-Eden-Experiment-Id: {experiment_id}` with a value equal to the path segment. A server MUST reject a request whose header disagrees with its path segment with `eden://error/experiment-id-mismatch` (HTTP 400); see §9. The header is defense-in-depth against misrouted clients and proxies.
 
-**Exception: portable-checkpoint endpoints.** Paths under `/v0/checkpoints/` (currently only `POST /v0/checkpoints/import` per §14.2) are not experiment-scoped at the URL level — the experiment_id appears in the uploaded checkpoint manifest's `experiment_id` field ([`10-checkpoints.md`](10-checkpoints.md) §5), not in the URL. On these endpoints the `X-Eden-Experiment-Id` header is OPTIONAL; when present, it MUST equal the manifest's `experiment_id` after applying any `as_experiment_id` override. A mismatch MUST be rejected with `eden://error/experiment-id-mismatch` (HTTP 400). When the header is absent the server proceeds with the experiment id derived from the manifest + override.
+**Exception: portable-checkpoint endpoints.** Paths under `/v0/checkpoints/` (currently only `POST /v0/checkpoints/import` per §14.2) are not experiment-scoped at the URL level — the experiment_id appears in the uploaded checkpoint manifest's `experiment_id` field ([`10-checkpoints.md`](10-checkpoints.md) §5), not in the URL. On these endpoints the `X-Eden-Experiment-Id` header is OPTIONAL; when present, it MUST equal the **receiving** experiment's id (the server's own minted `exp_*`), since a #128 import lands under the receiver's id and records the manifest's `experiment_id` only as `imported_from.source_experiment_id` provenance (§14.2). A mismatch MUST be rejected with `eden://error/experiment-id-mismatch` (HTTP 400). When the header is absent the server proceeds with its own experiment id.
 
 **Exception: control-plane endpoints.** Paths under `/v0/control/` (§15) are deployment-rooted, not experiment-rooted. Control-plane operations target the deployment-level experiment registry, leases, and deployment-scoped worker / group registry ([`11-control-plane.md`](11-control-plane.md) §2, §4, §6). The experiment id, when relevant, appears in the path or body of the operation rather than in `/v0/experiments/{experiment_id}/...`. The `X-Eden-Experiment-Id` header is OPTIONAL on `/v0/control/` endpoints; when present it has no protocol meaning at this surface and is ignored.
 
@@ -102,10 +102,10 @@ Atomicity, idempotency, and content-equivalence rules from [`04-task-protocol.md
 `POST /v0/experiments/{E}/tasks/{T}/reassign` updates a task's `Task.target` per [`04-task-protocol.md`](04-task-protocol.md) §6. The request body shape is:
 
 ```json
-{"new_target": null | {"kind": "worker"|"group", "id": "<id>"}, "reason": "<string>"}
+{"new_target": null | {"kind": "worker"|"group", "id": "<wkr_*|grp_*>"}, "reason": "<string>"}
 ```
 
-- `new_target` is the [`02-data-model.md`](02-data-model.md) §3.5 target value to install: `null` for "any registered worker", or a tagged object for worker / group routing.
+- `new_target` is the [`02-data-model.md`](02-data-model.md) §3.5 target value to install: `null` for "any registered worker", or a tagged object whose `id` is an opaque member identifier (`wkr_*` or `grp_*`, [`02-data-model.md`](02-data-model.md) §1.6) matching `kind`.
 - `reason` is a free-form audit string (typical: `"operator"`, `"failed_worker"`, `"misrouted"`); the protocol does not enumerate the set.
 
 On success the server returns 200 with the updated task body. Per [`04-task-protocol.md`](04-task-protocol.md) §6.1, the behavior depends on the task's current state:
@@ -114,7 +114,7 @@ On success the server returns 200 with the updated task body. Per [`04-task-prot
 - `claimed` task: composite atomic commit — clear claim, update target, return to `pending`. Both `task.reclaimed` (with `cause == "operator"`) and `task.reassigned` events fire in one commit ([`05-event-protocol.md`](05-event-protocol.md) §2.2).
 - `submitted` or terminal (`completed` / `failed`): 409 `eden://error/invalid-precondition`.
 
-**Authority:** caller MUST be in the `admins` group ([`04-task-protocol.md`](04-task-protocol.md) §6.2). A caller outside the group receives 403 `eden://error/forbidden`. The caller's `worker_id` is recorded in the `task.reassigned` event's `reassigned_by` field.
+**Authority:** caller MUST be in the reserved-name `admins` group ([`04-task-protocol.md`](04-task-protocol.md) §6.2), resolved by name to its `grp_*` id and checked against the caller's opaque `worker_id`. A caller outside the group receives 403 `eden://error/forbidden`. The caller's actor identifier (`admin` or `wkr_*`) is recorded in the `task.reassigned` event's `reassigned_by` field.
 
 ### 2.8 Update dispatch mode
 
@@ -128,7 +128,7 @@ Each value MUST be either `"auto"` or `"manual"`. An unrecognized value, or an u
 
 On success the server returns 200 with the full resulting `dispatch_mode` object as the response body. A successful update emits exactly one `experiment.dispatch_mode_changed` event ([`05-event-protocol.md`](05-event-protocol.md) §3.4) whose payload carries the resulting state and the `changed` diff; a no-op patch (every supplied key already matched) MAY emit an event with empty `changed` or skip the event entirely.
 
-**Authority:** caller MUST be in the `admins` group ([`04-task-protocol.md`](04-task-protocol.md) §7.2). A caller outside the group receives 403 `eden://error/forbidden`. The caller's `worker_id` is recorded in the event's `updated_by` field.
+**Authority:** caller MUST be in the reserved-name `admins` group ([`04-task-protocol.md`](04-task-protocol.md) §7.2), resolved by name to its `grp_*` id and checked against the caller's opaque `worker_id`. A caller outside the group receives 403 `eden://error/forbidden`. The caller's actor identifier (`admin` or `wkr_*`) is recorded in the event's `updated_by` field.
 
 A companion `GET /v0/experiments/{E}/dispatch_mode` MAY be exposed by the binding for read access; v0 does not require it (the field is reachable as part of `read_experiment_config` once that op exists; for now, the event log carries the authoritative history).
 
@@ -229,24 +229,24 @@ Per-experiment worker registry endpoints. Mutating operations are admin-gated (�
 
 ### 6.1 Register
 
-`POST /v0/experiments/{E}/workers` accepts a JSON body `{worker_id, labels?}`. On success the server returns 200 with `{worker_id, registration_token, ...}` — `registration_token` is the plaintext credential, returned **exactly once**, and the client MUST persist it locally; subsequent reads MUST NOT return it. The response also carries the `Worker` shape ([`schemas/worker.schema.json`](schemas/worker.schema.json)).
+`POST /v0/experiments/{E}/workers` accepts a JSON body `{name?, labels?}`. The caller does **not** supply a `worker_id`; the server **mints** an opaque `wkr_*` id ([`02-data-model.md`](02-data-model.md) §1.6) on every call. The optional `name` is the operator-supplied display label ([`02-data-model.md`](02-data-model.md) §1.7). On success the server returns 200 with `{worker_id, name?, registration_token, ...}` — `registration_token` is the plaintext credential, returned **exactly once**, and the client MUST persist it (alongside the minted `worker_id`) locally; subsequent reads MUST NOT return it. The response also carries the `Worker` shape ([`schemas/worker.schema.json`](schemas/worker.schema.json)).
 
-If `worker_id` is already registered, the server MUST return 200 with the existing `Worker` and MUST NOT include `registration_token` (idempotent re-registration; [`02-data-model.md`](02-data-model.md) §6.3). If the supplied `worker_id` violates the §6.1 grammar in [`02-data-model.md`](02-data-model.md) or names a reserved value, the server returns 400 `eden://error/bad-request` (grammar) or 409 `eden://error/reserved-identifier` (reservation).
+Because the id is system-minted, **every** `register_worker` call mints a fresh worker + credential (names MAY collide); there is no idempotent re-registration by id. A service that must survive restart persists the minted `worker_id` and recovers its credential via `reissue_credential` (§6.3), not by re-registering. If the supplied `name` is ill-formed (the display-name grammar of [`02-data-model.md`](02-data-model.md) §1.7) the server returns 422 `eden://error/invalid-name`; if it equals a reserved worker name (`admin` / `system` / `internal`, [`02-data-model.md`](02-data-model.md) §6.1) the server returns 409 `eden://error/reserved-identifier`.
 
 ### 6.2 List and read
 
-- `GET /v0/experiments/{E}/workers` returns `{"workers": [Worker, ...]}` containing every worker registered for the experiment. The wire-visible Worker shape MUST NOT include any credential or hash field ([`02-data-model.md`](02-data-model.md) §6.2). v0 does not define query-parameter filtering on this endpoint; a future phase (Phase 12a-3, alongside the per-decision-type dispatch hints) MAY introduce label-based filtering as a backward-compatible refinement.
-- `GET /v0/experiments/{E}/workers/{W}` returns the named Worker or 404 `eden://error/not-found`.
+- `GET /v0/experiments/{E}/workers` returns `{"workers": [Worker, ...]}` containing every worker registered for the experiment. The wire-visible Worker shape MUST NOT include any credential or hash field ([`02-data-model.md`](02-data-model.md) §6.2). The endpoint accepts an OPTIONAL `?name=<n>` query parameter: when supplied, the server returns only workers whose `name` exactly matches `<n>` (case-sensitive, against the canonical NFC form), 0..N results — names MAY collide, so callers disambiguate by the opaque id. v0 does not define other query-parameter filtering; a future phase (Phase 12a-3, alongside the per-decision-type dispatch hints) MAY introduce label-based filtering as a backward-compatible refinement.
+- `GET /v0/experiments/{E}/workers/{W}` returns the named Worker (the `{W}` path segment is an opaque `wkr_*` id) or 404 `eden://error/not-found`.
 
 ### 6.3 Reissue credential
 
 `POST /v0/experiments/{E}/workers/{W}/reissue-credential` accepts an empty body. On success the server mints a fresh `registration_token`, replaces the stored credential record, and returns 200 with `{worker_id, registration_token}`. The prior credential is **invalidated** by this operation: any subsequent wire call presenting the prior bearer MUST be rejected with 401.
 
-This is the canonical credential-recovery path. Hosts MUST NOT call `register_worker` to recover a lost credential — `register_worker` is idempotent on the existing record and would not mint a new token (§6.1; [`02-data-model.md`](02-data-model.md) §6.3).
+This is the canonical credential-recovery path. Hosts MUST NOT call `register_worker` to recover a lost credential — `register_worker` mints a brand-new worker with a new opaque id every call (§6.1; [`02-data-model.md`](02-data-model.md) §6.3), so re-registering would orphan the prior identity rather than recover it. A restarting host reissues against its persisted `worker_id`.
 
 ### 6.4 Verify credential (whoami)
 
-`GET /v0/experiments/{E}/whoami` is the authenticated probe used by host startup recovery ([`02-data-model.md`](02-data-model.md) §6.3 + reference-binding flow). On success the server returns 200 with `{"worker_id": "<id>"}` — the `worker_id` the presented bearer authenticates as. Bad/missing credentials return 401 `eden://error/unauthorized`. The `read_worker` endpoint is **not** an auth probe; it returns the worker record without re-authenticating the credential against that specific worker.
+`GET /v0/experiments/{E}/whoami` is the authenticated probe used by host startup recovery ([`02-data-model.md`](02-data-model.md) §6.3 + reference-binding flow). On success the server returns 200 with `{"worker_id": "<wkr_*>", "name": "<name>" | null}` — the opaque `worker_id` the presented bearer authenticates as, plus the worker's optional display name. Bad/missing credentials return 401 `eden://error/unauthorized`. The `read_worker` endpoint is **not** an auth probe; it returns the worker record without re-authenticating the credential against that specific worker.
 
 A host whose persisted credential authenticates as a `worker_id` other than the one it expects (e.g., the registry was rebuilt with the same id but a different credential generation) MUST treat that as failure-of-equivalent-severity to a 401 and recover via `reissue_credential`.
 
@@ -265,16 +265,16 @@ Per-experiment group registry endpoints. All mutating ops are admin-gated; reads
 
 ### 7.1 Register
 
-`POST /v0/experiments/{E}/groups` accepts `{group_id, members?}`. On success returns 200 with the `Group` ([`schemas/group.schema.json`](schemas/group.schema.json)). Cycle violations return 409 `eden://error/cycle-detected`. Reserved identifiers return 409 `eden://error/reserved-identifier`. Duplicate registration returns 409 `eden://error/already-exists`.
+`POST /v0/experiments/{E}/groups` accepts `{name?, members?}`. The caller does **not** supply a `group_id`; the server **mints** an opaque `grp_*` id ([`02-data-model.md`](02-data-model.md) §1.6) on every call. The optional `name` is the operator-supplied display label ([`02-data-model.md`](02-data-model.md) §1.7); each entry of `members` is an opaque member identifier (`wkr_*` or `grp_*` per the [`02-data-model.md`](02-data-model.md) §1.6 grammar). On success returns 200 with the `Group` carrying the minted `group_id` and `name?` ([`schemas/group.schema.json`](schemas/group.schema.json)). Cycle violations return 409 `eden://error/cycle-detected`. An ill-formed `name` returns 422 `eden://error/invalid-name`. A `name` equal to a reserved group name (`admins` / `orchestrators`) already minted at setup returns 409 `eden://error/reserved-identifier` (the reserved groups are created at experiment setup through a privileged path, [`02-data-model.md`](02-data-model.md) §7.5).
 
 ### 7.2 Mutate
 
-`add_to_group`, `remove_from_group`, and `delete_group` MUST detect cycles atomically with the write per [`02-data-model.md`](02-data-model.md) §7.3. Any mutation that would close a cycle MUST be rejected with `eden://error/cycle-detected`.
+`add_to_group` accepts a body `{member_id}` where `member_id` is an opaque member identifier (`wkr_*` or `grp_*`, [`02-data-model.md`](02-data-model.md) §1.6); the `{G}` and `{M}` path segments on the group endpoints are likewise opaque `grp_*` / member ids. `add_to_group`, `remove_from_group`, and `delete_group` MUST detect cycles atomically with the write per [`02-data-model.md`](02-data-model.md) §7.3. Any mutation that would close a cycle MUST be rejected with `eden://error/cycle-detected`.
 
 ### 7.3 List and read
 
-- `GET /v0/experiments/{E}/groups` returns `{"groups": [Group, ...]}`.
-- `GET /v0/experiments/{E}/groups/{G}` returns the named Group or 404.
+- `GET /v0/experiments/{E}/groups` returns `{"groups": [Group, ...]}`. It accepts an OPTIONAL `?name=<n>` query parameter with the same exact-match, case-sensitive, 0..N semantics as the worker list (§6.2) — useful for resolving a reserved group (`admins` / `orchestrators`) to its system-minted `grp_*` id by name.
+- `GET /v0/experiments/{E}/groups/{G}` returns the named Group (the `{G}` path segment is an opaque `grp_*` id) or 404.
 
 ## 8. Event log
 
@@ -331,10 +331,11 @@ The `type` URI is the authoritative machine-readable error code. Clients MUST ke
 | `eden://error/conflicting-resubmission` | 409 | resubmit disagreed with committed payload ([`04-task-protocol.md`](04-task-protocol.md) §4.2) |
 | `eden://error/invalid-precondition` | 409 | referenced entity not in required state; also the different-SHA branch of `integrate_variant` (§5) |
 | `eden://error/no-op-variant` | 409 | execution-task submission whose variant tree is identical to every parent's tree; emitted by IUTs that exercise the SHOULD-level wire-side detection from [`04-task-protocol.md`](04-task-protocol.md) §4.2 (only the type is normative when emitted; emission itself is SHOULD per the chapter 04 rule). See [`03-roles.md`](03-roles.md) §3.3, §3.4. |
-| `eden://error/reserved-identifier` | 409 | `register_worker` / `register_group` rejected the supplied id per [`02-data-model.md`](02-data-model.md) §6.1 |
+| `eden://error/reserved-identifier` | 409 | `register_worker` / `register_group` rejected a reserved **name** — a worker name in `admin` / `system` / `internal` ([`02-data-model.md`](02-data-model.md) §6.1) or a group name in `admins` / `orchestrators` already minted at setup ([`02-data-model.md`](02-data-model.md) §7.5) |
+| `eden://error/invalid-name` | 422 | `register_worker` / `register_group` was given a `name` violating the display-name grammar ([`02-data-model.md`](02-data-model.md) §1.7) |
 | `eden://error/cycle-detected` | 409 | a group mutation would introduce a cycle ([`02-data-model.md`](02-data-model.md) §7.3) |
 | `eden://error/checkpoint-invalid` | 400 | uploaded checkpoint archive is malformed; fails JSONL ↔ bundle cross-reference validation per [`10-checkpoints.md`](10-checkpoints.md) §12, or carries a missing `artifacts/sha256/<hex>` referenced by JSONL data per [`10-checkpoints.md`](10-checkpoints.md) §7 |
-| `eden://error/experiment-id-conflict` | 409 | portable-checkpoint import would collide with an existing `experiment_id` and no `as_experiment_id` override was supplied ([`10-checkpoints.md`](10-checkpoints.md) §11) |
+| `eden://error/experiment-id-conflict` | 409 | portable-checkpoint import's `as_experiment_id` override collides with an existing `experiment_id` (without an override the receiver imports under its own id — never the source's — so identity collision is impossible; §14.2, [`10-checkpoints.md`](10-checkpoints.md) §11) |
 | `eden://error/spec-version-mismatch` | 409 | the checkpoint manifest's `spec_version` does not match the importer's spec version ([`10-checkpoints.md`](10-checkpoints.md) §13) |
 | `eden://error/unsupported-checkpoint-version` | 409 | the checkpoint manifest's `checkpoint_format_version` is not recognized by the importer ([`10-checkpoints.md`](10-checkpoints.md) §13) |
 | `eden://error/checkpoint-in-progress` | 409 | OPTIONAL — an exporter that rejects concurrent state-mutating operations during a live export ([`10-checkpoints.md`](10-checkpoints.md) §6) MAY use this code; servers that serialize instead MUST NOT emit it |
@@ -396,11 +397,11 @@ Authentication is normative in v0. Every request to a `/v0/` endpoint MUST carry
 A bearer is the concatenation `<principal>:<secret>`, parsed by splitting on the first `:`. There are two principal namespaces:
 
 - **`admin`** — the deployment's admin principal. The secret half is a deployment-wide admin token (recorded in the deployment's environment as `EDEN_ADMIN_TOKEN`). Rotating this token invalidates all in-flight admin sessions but does NOT invalidate per-worker credentials.
-- **`<worker_id>`** — a registered worker's id (matching the §6.1 grammar of [`02-data-model.md`](02-data-model.md)). The secret half is the `registration_token` issued by `register_worker` (§6.1) or `reissue_credential` (§6.3). The server MUST verify the secret against the stored argon2id hash for `<worker_id>` and MUST reject mismatches with `eden://error/unauthorized`.
+- **`<worker_id>`** — a registered worker's opaque, system-minted id (matching the `wkr_*` grammar of [`02-data-model.md`](02-data-model.md) §1.6). The secret half is the `registration_token` issued by `register_worker` (§6.1) or `reissue_credential` (§6.3). The server MUST verify the secret against the stored argon2id hash for `<worker_id>` and MUST reject mismatches with `eden://error/unauthorized`.
 
 ### 13.2 Worker-id grammar disjointness
 
-The §6.1 worker-id grammar excludes `:` so that the bearer parser can safely split on the first colon. The principal name `admin` is reserved by [`02-data-model.md`](02-data-model.md) §6.1 from being used as a `worker_id`, so a bearer's principal half unambiguously names either the admin principal or a worker.
+The opaque worker-id grammar ([`02-data-model.md`](02-data-model.md) §1.6) excludes `:` so that the bearer parser can safely split on the first colon. The literal `admin` is the deployment-admin principal and is a reserved worker **name** ([`02-data-model.md`](02-data-model.md) §6.1) for which no `worker_id` is ever minted; since every minted `worker_id` carries the `wkr_` prefix and can never equal the literal `admin`, a bearer's principal half unambiguously names either the admin principal or a worker.
 
 ### 13.3 Authorization
 
@@ -471,18 +472,18 @@ The export is atomic per [`10-checkpoints.md`](10-checkpoints.md) §6. A server 
 }
 ```
 
-- `experiment_id` is the imported experiment's id (the manifest's `experiment_id`, or the override if `as_experiment_id` was supplied).
+- `experiment_id` is the imported experiment's resulting id — the `as_experiment_id` override if one was supplied, otherwise an opaque `exp_*` id ([`02-data-model.md`](02-data-model.md) §1.6) **under the receiver's own control**. A receiver that hosts many experiments (a control-plane-fronted deployment) mints a fresh `exp_*` per import; a **single-experiment receiver** (the reference task-store-server, which serves exactly one configured `experiment_id`) imports under that one configured id. In every case the manifest's source id is NOT reused as the primary key; it is preserved for provenance in `imported_from.source_experiment_id` (§14.3). The normative invariant is the non-reuse + provenance stamp — not whether the receiving id was minted per-import or allocated at receiver setup.
 - `warnings` is an array of free-form strings the importer surfaces to the operator. Typical entries: the path of a credentials sidecar file ([`10-checkpoints.md`](10-checkpoints.md) §8 step 4), an indication that one or more refs were ignored because no protocol-owned object referenced them ([`10-checkpoints.md`](10-checkpoints.md) §12 final paragraph).
 
 Optional query parameters:
 
-- `as_experiment_id=<new_id>` — override the source's experiment id. When supplied, the imported experiment is created with this id throughout (the manifest's id is replaced everywhere in the stored data). When absent and the source's id collides with an existing experiment, the server returns 409 `eden://error/experiment-id-conflict`.
+- `as_experiment_id=<exp_*>` — override the receiver-minted experiment id with a caller-supplied opaque `exp_*` ([`02-data-model.md`](02-data-model.md) §1.6). When supplied, the imported experiment is created with this id throughout (the manifest's source id is replaced everywhere in the stored data) and `imported_from.source_experiment_id` still records the source. When the supplied override collides with an existing experiment, the server returns 409 `eden://error/experiment-id-conflict`. **When absent**, the receiver imports under its own id (a fresh mint for a multi-experiment receiver; the single configured id for a single-experiment receiver), so an unkeyed import does not 409 on identity; this is a normative behavior change from the pre-rename "reuse the manifest's id unless overridden" rule (see [`10-checkpoints.md`](10-checkpoints.md) §10).
 
-The import is a single composite commit per [`08-storage.md`](08-storage.md) §6 and [`10-checkpoints.md`](10-checkpoints.md) §7. Validation failures (cross-reference checks per [`10-checkpoints.md`](10-checkpoints.md) §12, missing artifact files, malformed JSONL) MUST cause the entire commit to roll back with 400 `eden://error/checkpoint-invalid`. Version-mismatch failures return 409 (`eden://error/spec-version-mismatch`, `eden://error/unsupported-checkpoint-version`). Experiment-id collisions return 409 `eden://error/experiment-id-conflict`.
+The import is a single composite commit per [`08-storage.md`](08-storage.md) §6 and [`10-checkpoints.md`](10-checkpoints.md) §7. Validation failures (cross-reference checks per [`10-checkpoints.md`](10-checkpoints.md) §12, missing artifact files, malformed JSONL) MUST cause the entire commit to roll back with 400 `eden://error/checkpoint-invalid`. Version-mismatch failures return 409 (`eden://error/spec-version-mismatch`, `eden://error/unsupported-checkpoint-version`). A colliding `as_experiment_id` override returns 409 `eden://error/experiment-id-conflict`.
 
 If the manifest carries `requires_credential_reissue: true` ([`10-checkpoints.md`](10-checkpoints.md) §5), the importer MUST mint fresh credentials for every imported worker as part of the same composite commit. The new credentials are surfaced to the operator via the `warnings` array; the side-channel format is implementation-defined.
 
-**Header carve-out (§1.3).** The `X-Eden-Experiment-Id` header is OPTIONAL on this endpoint. When present, its value MUST equal the imported experiment's resulting id (the manifest's `experiment_id` after any `as_experiment_id` rewrite). A mismatch returns 400 `eden://error/experiment-id-mismatch`. When absent the server proceeds without that check.
+**Header carve-out (§1.3).** The `X-Eden-Experiment-Id` header is OPTIONAL on this endpoint. When present, its value MUST equal the imported experiment's **resulting** id (the receiver's own id described above — the `as_experiment_id` override if supplied, else the receiver's allocated/configured id — NOT the source manifest id). A mismatch returns 400 `eden://error/experiment-id-mismatch`. When absent the server proceeds without that check.
 
 **Authority:** caller MUST present the deployment-admin bearer (literal `admin` principal per §13.1). A worker bearer receives 403 `eden://error/forbidden`. See the §14 introduction for the bootstrap-class rationale (the receiving deployment is typically empty when the import lands; an `admins`-group gate would be uncallable).
 
@@ -492,19 +493,20 @@ If the manifest carries `requires_credential_reissue: true` ([`10-checkpoints.md
 
 ```json
 {
-  "experiment_id": "<id>",
+  "experiment_id": "<exp_*>",
+  "name": "<display name>" | null,
   "state": "running" | "terminated",
   "created_at": "<RFC 3339 timestamp>",
   "base_commit_sha": "<commit SHA>",
-  "imported_from": null | {"checkpoint_exported_at": "<timestamp>", "checkpoint_format_version": "<string>"}
+  "imported_from": null | {"checkpoint_exported_at": "<timestamp>", "checkpoint_format_version": "<string>", "source_experiment_id": "<exp_*>"}
 }
 ```
 
-`imported_from` is `null` on natively-created experiments and an object on imported experiments ([`02-data-model.md`](02-data-model.md) §2.5, [`10-checkpoints.md`](10-checkpoints.md) §10). The endpoint is the recovery-probe surface for the import-response-lost case described in [`10-checkpoints.md`](10-checkpoints.md) §10.
+`experiment_id` is the opaque, system-minted `exp_*` id ([`02-data-model.md`](02-data-model.md) §1.6); `name` is the experiment's optional operator-supplied display label ([`02-data-model.md`](02-data-model.md) §1.7). `imported_from` is `null` on natively-created experiments and an object on imported experiments ([`02-data-model.md`](02-data-model.md) §2.5, [`10-checkpoints.md`](10-checkpoints.md) §10); its `source_experiment_id` carries the export-side `exp_*` for provenance (the receiving experiment's own `experiment_id` is the primary key, never the source's, §14.2). The endpoint is the recovery-probe surface for the import-response-lost case described in [`10-checkpoints.md`](10-checkpoints.md) §10.
 
 `base_commit_sha` is the experiment seed commit ([`02-data-model.md`](02-data-model.md) §2.5), recorded at registration / repo-init time. The orchestrator reads it (over its worker bearer — see the §14 intro note that `read_experiment` is either-auth, not admin-gated) to create the seed baseline variant ([`02-data-model.md`](02-data-model.md) §9.4). It is omitted from the response when absent (an experiment registered before the field existed).
 
-The companion `GET /v0/experiments/{E}/state` (§2.9) remains worker-accessible and returns only the state projection; this endpoint exposes the full object including `imported_from` and is admin-gated to avoid widening the recovery-probe surface.
+The companion `GET /v0/experiments/{E}/state` (§2.9) remains worker-accessible and returns only the state projection; this endpoint exposes the full object including `imported_from` (the recovery-probe surface); its authority is **either-auth** per the Authority note below.
 
 **Authority:** **either-auth** — any registered worker MAY read, parallel to the §2.9 `GET /state` companion read. The recovery-probe flow (admin bearer after a dropped import 201) and the orchestrator's per-iteration policy view (worker bearer reading `created_at`) both legitimately need this surface; restricting it to one principal class would block the other. The `imported_from` field is informational provenance (it does not carry secret material), so the broader read surface does not widen attack surface beyond the existing `GET /state` posture. See the §14 introduction above.
 
@@ -546,16 +548,16 @@ The deployment-scoped registry endpoints (`register_control_worker` and below) m
 
 ```json
 {
-  "experiment_id": "<id>",
+  "name": "<display name>" | null,
   "config_uri": "<uri>"
 }
 ```
 
-Returns 201 with the new registry entry on first registration; 200 with the existing entry on idempotent re-registration of the same `experiment_id` + `config_uri`; 409 `eden://error/already-exists` when the existing entry has a different `config_uri`. Per [`11-control-plane.md`](11-control-plane.md) §2.2.
+The caller does **not** supply an `experiment_id`; the control plane **mints** an opaque `exp_*` id ([`02-data-model.md`](02-data-model.md) §1.6) for the experiment. The optional `name` is the operator-supplied display label ([`02-data-model.md`](02-data-model.md) §1.7); an ill-formed name returns 422 `eden://error/invalid-name`. Returns 201 with the new registry entry (carrying the minted `experiment_id` and `name?`) on every successful create; because the id is system-minted, there is no idempotent re-registration by id. Per [`11-control-plane.md`](11-control-plane.md) §2.2.
 
-`DELETE /v0/control/experiments/{E}` returns 204 on success; 409 `eden://error/invalid-precondition` when `last_known_state != "terminated"` OR an active lease exists. Per [`11-control-plane.md`](11-control-plane.md) §2.2.
+`DELETE /v0/control/experiments/{E}` (the `{E}` segment is the opaque `exp_*`) returns 204 on success; 409 `eden://error/invalid-precondition` when `last_known_state != "terminated"` OR an active lease exists. Per [`11-control-plane.md`](11-control-plane.md) §2.2.
 
-`GET /v0/control/experiments` returns 200 with `{"experiments": [<entry>, ...]}`. `GET /v0/control/experiments/{E}` returns 200 with one entry; 404 `eden://error/not-found` when the experiment id is not registered. Either response MAY carry a `warnings` array surfacing state-sync degradation per [`11-control-plane.md`](11-control-plane.md) §3.4.
+`GET /v0/control/experiments` returns 200 with `{"experiments": [<entry>, ...]}`. It accepts an OPTIONAL `?name=<n>` query parameter (exact-match, case-sensitive, 0..N results) so cross-experiment admin views can resolve a display name to its opaque id without bespoke task-store calls. `GET /v0/control/experiments/{E}` returns 200 with one entry; 404 `eden://error/not-found` when the experiment id is not registered. Either response MAY carry a `warnings` array surfacing state-sync degradation per [`11-control-plane.md`](11-control-plane.md) §3.4.
 
 ### 15.2 Lease operations
 
@@ -563,12 +565,12 @@ Returns 201 with the new registry entry on first registration; 200 with the exis
 
 ```json
 {
-  "holder": "<worker_id>",
+  "holder": "<wkr_*>",
   "holder_instance": "<uuid>"
 }
 ```
 
-Caller MUST be authenticated as `holder` (no impersonation) AND be a member of the deployment-scoped `orchestrators` group. Returns 201 with the new lease on success; 409 `eden://error/lease-held-by-other` when an active lease exists; 404 `eden://error/not-found` when the experiment is not registered. Per [`11-control-plane.md`](11-control-plane.md) §4.5.
+`holder` is the opaque, system-minted `wkr_*` id ([`02-data-model.md`](02-data-model.md) §1.6) of the deployment-scoped worker acquiring the lease. Caller MUST be authenticated as `holder` (no impersonation) AND be a member of the reserved-name deployment-scoped `orchestrators` group (resolved by name to its `grp_*` id). Returns 201 with the new lease on success; 409 `eden://error/lease-held-by-other` when an active lease exists; 404 `eden://error/not-found` when the experiment is not registered. Per [`11-control-plane.md`](11-control-plane.md) §4.5.
 
 `POST /v0/control/leases/{L}/renew` and `POST /v0/control/leases/{L}/release` body:
 
@@ -580,17 +582,17 @@ Caller MUST be authenticated as `holder` (no impersonation) AND be a member of t
 
 Caller MUST be the lease's current `holder`. `renew_lease` returns 200 with the renewed lease (including the new `expires_at`); 410 `eden://error/lease-not-held` if the lease has been replaced; 410 `eden://error/lease-expired` if the lease has lapsed but not yet been replaced; 409 `eden://error/lease-instance-mismatch` on `holder_instance` mismatch. `release_lease` returns 200 on success (and idempotently on already-released lease); 409 `eden://error/lease-instance-mismatch` on mismatch. Per [`11-control-plane.md`](11-control-plane.md) §4.5, §4.7.
 
-`GET /v0/control/leases?holder=<worker_id>` returns 200 with `{"leases": [<lease>, ...]}` containing every active lease (`expires_at >= now`) whose `holder` equals the query parameter. The caller MUST be authenticated as `<worker_id>` OR be the admin principal. Used by the orchestrator's startup-fence probe per [`11-control-plane.md`](11-control-plane.md) §5.2. Per [`11-control-plane.md`](11-control-plane.md) §4.5.
+`GET /v0/control/leases?holder=<wkr_*>` returns 200 with `{"leases": [<lease>, ...]}` containing every active lease (`expires_at >= now`) whose `holder` equals the opaque `wkr_*` query parameter. The caller MUST be authenticated as that `<wkr_*>` OR be the admin principal. Used by the orchestrator's startup-fence probe per [`11-control-plane.md`](11-control-plane.md) §5.2. Per [`11-control-plane.md`](11-control-plane.md) §4.5.
 
 ### 15.3 Deployment-scoped registry
 
-The `/v0/control/workers/...`, `/v0/control/groups/...`, and `/v0/control/whoami` endpoints mirror the chapter 02 §6 / §7 and §6 / §7 of this chapter shapes verbatim. The wire payloads, idempotency contracts, grammar enforcement, and the closed §9 error vocabulary are unchanged from the per-experiment shapes; the only differences are:
+The `/v0/control/workers/...`, `/v0/control/groups/...`, and `/v0/control/whoami` endpoints mirror the chapter 02 §6 / §7 and §6 / §7 of this chapter shapes verbatim. The create bodies take an optional `name?` (and `labels?` / `members?`), the control plane **mints** the opaque `wkr_*` / `grp_*` id ([`02-data-model.md`](02-data-model.md) §1.6), reads / lists return the optional `name`, the `?name=<n>` lookup is available on the list routes, and the closed §9 error vocabulary (including 422 `eden://error/invalid-name` and 409 `eden://error/reserved-identifier` in name-space) is unchanged from the per-experiment shapes; the only differences are:
 
 - The URL roots are `/v0/control/...`, not `/v0/experiments/{E}/...`.
-- The registry is deployment-scoped (`worker_id` unique across the deployment, not within an experiment) and is **distinct from** the per-experiment registries hosted by the task-store-server. A `worker_id` of `auto-orchestrator-1` registered against the control plane is unrelated to a same-named worker registered against any per-experiment task-store-server. The two credential domains are independent.
-- The reserved-group identifiers (`admins`, `orchestrators`) apply at the deployment scope; the per-experiment groups are independent.
+- The registry is deployment-scoped (`worker_id` unique across the deployment, not within an experiment) and is **distinct from** the per-experiment registries hosted by the task-store-server. A deployment-scoped worker minted by the control plane is unrelated to any worker registered against a per-experiment task-store-server, even one carrying the same display `name`. The two credential domains are independent.
+- The reserved worker / group **names** (`admin` / `system` / `internal`; `admins` / `orchestrators`) apply at the deployment scope; the reserved groups are minted at control-plane bootstrap with system-minted `grp_*` ids whose `name` equals the reserved literal. The per-experiment registries are independent.
 
-`GET /v0/control/whoami` returns 200 with `{"worker_id": "<id>"}` for the authenticated worker, mirroring §6.4. Used by the orchestrator's startup credential verification.
+`GET /v0/control/whoami` returns 200 with `{"worker_id": "<wkr_*>", "name": "<name>" | null}` for the authenticated worker, mirroring §6.4. Used by the orchestrator's startup credential verification.
 
 ## 16. Implementation latitude
 

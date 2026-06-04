@@ -22,10 +22,11 @@ def test_pending_reassign_updates_target_and_emits_single_event(
     """spec/v0/04-task-protocol.md §6.1 — pending reassign emits exactly task.reassigned."""
     tid = _seed.create_ideation_task(wire_client)
     before = len(event_log.replay_all())
+    target = wire_client.member_ref("worker", "test-worker")
     resp = _seed.reassign_task(
         wire_client,
         tid,
-        new_target={"kind": "group", "id": "test-worker"},
+        new_target=target,
         reason="route to specific worker",
         actor_id="admin-eric",
     )
@@ -40,7 +41,7 @@ def test_pending_reassign_updates_target_and_emits_single_event(
     ]
     assert types_for_task == ["task.reassigned"]
     body = _seed.read_task(wire_client, tid)
-    assert body["target"] == {"kind": "group", "id": "test-worker"}
+    assert body["target"] == target
     assert body["state"] == "pending"
 
 
@@ -49,10 +50,11 @@ def test_pending_reassign_payload_fields_are_complete(
 ) -> None:
     """spec/v0/05-event-protocol.md §3.1 — task.reassigned event carries required fields."""
     tid = _seed.create_ideation_task(wire_client)
+    target = wire_client.member_ref("worker", "worker-a")
     _seed.reassign_task(
         wire_client,
         tid,
-        new_target={"kind": "worker", "id": "worker-a"},
+        new_target=target,
         reason="initial routing",
         actor_id="admin-eric",
     )
@@ -67,9 +69,9 @@ def test_pending_reassign_payload_fields_are_complete(
     # Per spec §3.1 the data payload MUST carry task_id, new_target,
     # reason, reassigned_by.
     assert data["task_id"] == tid
-    assert data["new_target"] == {"kind": "worker", "id": "worker-a"}
+    assert data["new_target"] == target
     assert data["reason"] == "initial routing"
-    assert data["reassigned_by"] == "admin-eric"
+    assert data["reassigned_by"] == wire_client.worker_id_for("admin-eric")
 
 
 def test_pending_reassign_to_null_keeps_key_in_payload(
@@ -86,7 +88,7 @@ def test_pending_reassign_to_null_keeps_key_in_payload(
     _seed.reassign_task(
         wire_client,
         tid,
-        new_target={"kind": "worker", "id": "worker-a"},
+        new_target=wire_client.member_ref("worker", "worker-a"),
         reason="initial",
     )
     _seed.reassign_task(
@@ -162,7 +164,7 @@ def test_claimed_execution_reassign_composite_errors_starting_variant(
     resp = _seed.reassign_task(
         wire_client,
         exec_tid,
-        new_target={"kind": "worker", "id": "worker-b"},
+        new_target=wire_client.member_ref("worker", "worker-b"),
         reason="executor abandoned",
     )
     assert resp.status_code == 200, resp.text

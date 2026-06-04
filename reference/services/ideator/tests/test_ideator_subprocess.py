@@ -18,10 +18,10 @@ from eden_ideator_host.subprocess_mode import (
 from eden_service_common import StopFlag, seed_bare_repo
 from eden_storage import IdeaSubmission, InMemoryStore
 
-EXPERIMENT_ID = "exp-1"
+EXPERIMENT_ID = "exp_0123456789abcdefghjkmnpqrs"
 
 
-def _seed_store_and_repo(tmp_path: Path) -> tuple[InMemoryStore, str]:
+def _seed_store_and_repo(tmp_path: Path) -> tuple[InMemoryStore, str, str]:
     repo_path = tmp_path / "bare.git"
     from eden_git import GitRepo
 
@@ -31,11 +31,13 @@ def _seed_store_and_repo(tmp_path: Path) -> tuple[InMemoryStore, str]:
         experiment_id=EXPERIMENT_ID,
         evaluation_schema=EvaluationSchema.model_validate({"score": "real"}),
     )
-    # 12a-1 wave 5: Store.claim's §3.5 step-2 registration check
-    # rejects unregistered worker_ids. Pre-register the ideator-1
-    # worker the subprocess loop uses.
-    store.register_worker("ideator-1")
-    return store, seed_sha
+    # Issue #128: worker_ids are now system-minted/opaque. Mint the
+    # ideator worker the subprocess loop uses (Store.claim's §3.5
+    # step-2 registration check rejects unregistered worker_ids) and
+    # return its id so callers thread the minted claimant.
+    _w, _ = store.register_worker(name="ideator-1")
+    ideator_id = _w.worker_id
+    return store, seed_sha, ideator_id
 
 
 def _experiment_config() -> ExperimentConfig:
@@ -99,7 +101,7 @@ def test_dispatch_collects_ideas(tmp_path: Path) -> None:
         print(json.dumps({"event": "ideation-done", "task_id": task_id}), flush=True)
         """,
     )
-    store, _ = _seed_store_and_repo(tmp_path)
+    store, _, ideator_id = _seed_store_and_repo(tmp_path)
     store.create_ideation_task("ideation-1")
     artifacts = tmp_path / "artifacts"
     config = _config(command=f"python3 {worker}", cwd=tmp_path)
@@ -109,7 +111,7 @@ def test_dispatch_collects_ideas(tmp_path: Path) -> None:
     handle_ideation_task(
         store=store,
         task=ideation_task,
-        worker_id="ideator-1",
+        worker_id=ideator_id,
         ideator=sub,
         experiment_id=EXPERIMENT_ID,
         objective={"expr": "score", "direction": "maximize"},
@@ -154,7 +156,7 @@ def test_whitespace_only_content_errors_not_stuck(tmp_path: Path) -> None:
         print(json.dumps({"event": "ideation-done", "task_id": task_id}), flush=True)
         """,
     )
-    store, _ = _seed_store_and_repo(tmp_path)
+    store, _, ideator_id = _seed_store_and_repo(tmp_path)
     store.create_ideation_task("ideation-1")
     artifacts = tmp_path / "artifacts"
     config = _config(command=f"python3 {worker}", cwd=tmp_path)
@@ -165,7 +167,7 @@ def test_whitespace_only_content_errors_not_stuck(tmp_path: Path) -> None:
     handle_ideation_task(
         store=store,
         task=ideation_task,
-        worker_id="ideator-1",
+        worker_id=ideator_id,
         ideator=sub,
         experiment_id=EXPERIMENT_ID,
         objective={"expr": "score", "direction": "maximize"},
@@ -193,7 +195,7 @@ def test_ideation_error_terminator(tmp_path: Path) -> None:
         }), flush=True)
         """,
     )
-    store, _ = _seed_store_and_repo(tmp_path)
+    store, _, ideator_id = _seed_store_and_repo(tmp_path)
     store.create_ideation_task("ideation-1")
     artifacts = tmp_path / "artifacts"
     config = _config(command=f"python3 {worker}", cwd=tmp_path)
@@ -203,7 +205,7 @@ def test_ideation_error_terminator(tmp_path: Path) -> None:
     handle_ideation_task(
         store=store,
         task=ideation_task,
-        worker_id="ideator-1",
+        worker_id=ideator_id,
         ideator=sub,
         experiment_id=EXPERIMENT_ID,
         objective={"expr": "score", "direction": "maximize"},
@@ -230,7 +232,7 @@ def test_protocol_violation_wrong_task_id(tmp_path: Path) -> None:
               flush=True)
         """,
     )
-    store, _ = _seed_store_and_repo(tmp_path)
+    store, _, ideator_id = _seed_store_and_repo(tmp_path)
     store.create_ideation_task("ideation-1")
     config = _config(command=f"python3 {worker}", cwd=tmp_path)
     sub = start_ideator_subprocess(config)
@@ -240,7 +242,7 @@ def test_protocol_violation_wrong_task_id(tmp_path: Path) -> None:
         handle_ideation_task(
             store=store,
             task=ideation_task,
-            worker_id="ideator-1",
+            worker_id=ideator_id,
             ideator=sub,
             experiment_id=EXPERIMENT_ID,
             objective={"expr": "score", "direction": "maximize"},
@@ -275,7 +277,7 @@ def test_loop_respawns_on_subprocess_crash(tmp_path: Path) -> None:
         print(json.dumps({"event": "ideation-done", "task_id": task_id}), flush=True)
         """,
     )
-    store, _ = _seed_store_and_repo(tmp_path)
+    store, _, ideator_id = _seed_store_and_repo(tmp_path)
     store.create_ideation_task("ideation-1")
     store.create_ideation_task("ideation-2")
     marker = tmp_path / "crashed"
@@ -294,7 +296,7 @@ def test_loop_respawns_on_subprocess_crash(tmp_path: Path) -> None:
     def _run() -> None:
         run_ideator_subprocess_loop(
             store=store,
-            worker_id="ideator-1",
+            worker_id=ideator_id,
             experiment_id=EXPERIMENT_ID,
             experiment_config=_experiment_config(),
             artifacts_dir=tmp_path / "artifacts",

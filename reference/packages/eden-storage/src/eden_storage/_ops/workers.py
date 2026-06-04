@@ -11,10 +11,10 @@ from typing import Any
 
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
-from eden_contracts import Worker
+from eden_contracts import Worker, mint_opaque_id
 
 from .._base import _StoreCore, _Tx
-from ..errors import AlreadyExists, NotFound
+from ..errors import NotFound
 from ._helpers import _deep
 
 
@@ -23,41 +23,37 @@ class _WorkerOpsMixin(_StoreCore):
 
     def register_worker(
         self,
-        worker_id: str,
+        name: str | None = None,
         *,
         labels: dict[str, str] | None = None,
         registered_by: str | None = None,
     ) -> tuple[Worker, str | None]:
-        """Register ``worker_id`` for this experiment.
+        """Register a fresh worker for this experiment (issue #128).
 
-        Returns ``(worker, registration_token)``. On first registration
-        the second element is the freshly-minted plaintext token (≥256
-        bits); on idempotent re-registration of an existing
-        ``worker_id`` it is ``None`` and the existing record is
-        returned unchanged. The plaintext token is returned ONLY by
-        this call and ``reissue_credential``; subsequent reads MUST NOT
-        return it.
+        Mints an opaque ``worker_id`` (``wkr_<ulid>``) and takes an
+        optional operator-supplied display ``name``. Returns
+        ``(worker, registration_token)`` where the token is ALWAYS a
+        freshly-minted plaintext credential (≥256 bits). There is no
+        id-based idempotency anymore: every call mints a new row +
+        credential, even when ``name`` collides with an existing
+        worker's name (names may collide). Bootstrap recovery relies on
+        a persisted ``worker_id`` + ``reissue_credential``, not on
+        re-registering by name.
 
-        Raises ``ReservedIdentifier`` for ``admin`` / ``system`` /
-        ``internal`` or any id that violates the §6.1 grammar from
-        [`spec/v0/02-data-model.md`](../../../../spec/v0/02-data-model.md).
+        The plaintext token is returned ONLY by this call and
+        ``reissue_credential``; subsequent reads MUST NOT return it.
+
+        Raises ``ReservedIdentifier`` when ``name`` is one of the
+        reserved worker names (``admin`` / ``system`` / ``internal``),
+        and ``InvalidName`` when ``name`` violates the display-name
+        grammar in
+        [`spec/v0/02-data-model.md`](../../../../spec/v0/02-data-model.md)
+        §1.7. ``name=None`` is accepted (bare opaque id, no label).
         """
-        self._validate_registry_id(worker_id, kind="worker")
+        if name is not None:
+            self._validate_display_name(name, kind="worker")
+        worker_id = mint_opaque_id("wkr")
         with self._atomic_operation():
-            existing = self._get_worker(worker_id)
-            if existing is not None:
-                return (_deep(existing), None)
-            # §7.1 disjoint-namespaces: a group with the same id MUST
-            # NOT exist. Otherwise the resolver in §7.2 can't tell
-            # whether a string in `Group.members` resolves through the
-            # worker registry (leaf) or the group registry (recursive
-            # descent).
-            if self._get_group(worker_id) is not None:
-                raise AlreadyExists(
-                    f"id {worker_id!r} is already registered as a group; "
-                    f"worker / group namespaces MUST be disjoint per "
-                    f"chapter 02 §7.1"
-                )
             token = self._generate_credential_token()
             credential_hash = self._hash_credential(token)
             # Build via dict so optional fields whose value is None are
@@ -69,6 +65,8 @@ class _WorkerOpsMixin(_StoreCore):
                 "experiment_id": self._experiment_id,
                 "registered_at": self._ts(),
             }
+            if name is not None:
+                worker_data["name"] = name
             if registered_by is not None:
                 worker_data["registered_by"] = registered_by
             if labels:
@@ -139,10 +137,20 @@ class _WorkerOpsMixin(_StoreCore):
                 raise NotFound(f"worker {worker_id!r}")
             return _deep(worker)
 
-    def list_workers(self) -> list[Worker]:
-        """Return all registered workers (deep copies, sorted by ``worker_id``)."""
+    def list_workers(self, name: str | None = None) -> list[Worker]:
+        """Return registered workers (deep copies, sorted by ``worker_id``).
+
+        When ``name`` is supplied, returns only workers whose display
+        ``name`` matches exactly (case-sensitive, against the persisted
+        NFC form) — 0..N matches. ``name=None`` returns all workers
+        (issue #128).
+        """
         with self._atomic_operation():
-            return [_deep(w) for w in self._iter_workers()]
+            return [
+                _deep(w)
+                for w in self._iter_workers()
+                if name is None or w.name == name
+            ]
 
     def _generate_credential_token(self) -> str:
         """Mint a fresh ≥256-bit registration token (URL-safe hex).
