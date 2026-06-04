@@ -133,6 +133,19 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--max-artifact-bytes",
+        type=int,
+        default=None,
+        help=(
+            "Maximum size (bytes) of a single artifact deposited via "
+            "POST /v0/experiments/<id>/artifacts (07-wire-protocol.md "
+            "§16.1). Enforced during the multipart stream; over-cap "
+            "uploads get 413 eden://error/payload-too-large. Distinct "
+            "from the 1 MiB inline-render cap. Defaults to 100 MiB when "
+            "unset. Issue #166."
+        ),
+    )
+    parser.add_argument(
         "--readonly-password",
         default=None,
         help=(
@@ -270,6 +283,7 @@ def main(argv: list[str] | None = None) -> int:
             admin_token=args.admin_token,
             subscribe_timeout=args.subscribe_timeout,
             artifacts_dir=artifacts_dir,
+            max_artifact_bytes=args.max_artifact_bytes,
             checkpoint_experiment_config=experiment_config_text,
             checkpoint_repo_path=args.repo_path,
             checkpoint_import_credentials_dir=credentials_dir,

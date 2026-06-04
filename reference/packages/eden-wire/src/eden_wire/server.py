@@ -28,7 +28,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from eden_checkpoint import CheckpointError
-from eden_storage import Store
+from eden_storage import ArtifactBackend, FileArtifactBackend, InMemoryArtifactBackend, Store
 from eden_storage.errors import StorageError
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
@@ -41,6 +41,7 @@ from .errors import (
     BadRequest,
     ExperimentIdMismatch,
     Forbidden,
+    PayloadTooLarge,
     ProblemJson,
     Unauthorized,
     WireReferenceError,
@@ -48,6 +49,7 @@ from .errors import (
     envelope_for_reference_error,
 )
 from .routers import (
+    artifacts,
     checkpoints,
     dispatch_mode,
     events,
@@ -63,6 +65,13 @@ from .routers import (
 
 PROBLEM_JSON = "application/problem+json"
 
+# Default deposit size cap (§16.1, issue #166). Distinct from the 1 MiB
+# inline-render cap on the retired ``_reference`` serve route — real
+# artifacts (build logs, coverage reports, bundles) routinely exceed
+# 1 MiB. Operators tune it via the task-store-server's
+# ``--max-artifact-bytes`` flag.
+DEFAULT_MAX_ARTIFACT_BYTES = 100 * 1024 * 1024
+
 
 def make_app(
     store: Store,
@@ -71,6 +80,8 @@ def make_app(
     subscribe_poll_interval: float = 0.1,
     admin_token: str | None = None,
     artifacts_dir: Path | str | None = None,
+    artifact_backend: ArtifactBackend | None = None,
+    max_artifact_bytes: int = DEFAULT_MAX_ARTIFACT_BYTES,
     checkpoint_experiment_config: str | None = None,
     checkpoint_repo_path: Path | str | None = None,
     checkpoint_import_credentials_dir: Path | str | None = None,
@@ -105,11 +116,17 @@ def make_app(
     ``eden://reference-error/artifact-serving-disabled``. See
     ``spec/v0/reference-bindings/worker-host-subprocess.md`` §9 for the
     substrate-access posture this route supports.
+
+    ``artifact_backend`` is the §16 blob store (issue #166); when omitted
+    it defaults to a ``FileArtifactBackend`` rooted at ``artifacts_dir``
+    (else in-memory). ``max_artifact_bytes`` is the §16.1 deposit cap.
     """
     app = FastAPI(
         title=f"EDEN task store — {store.experiment_id}",
         version="0",
     )
+
+    artifact_backend = _resolve_artifact_backend(artifact_backend, artifacts_dir)
 
     deps = RouterDeps(
         store=store,
@@ -126,6 +143,8 @@ def make_app(
             if checkpoint_import_credentials_dir is not None
             else None
         ),
+        artifact_backend=artifact_backend,
+        max_artifact_bytes=max_artifact_bytes,
     )
 
     if admin_token is not None:
@@ -141,6 +160,7 @@ def make_app(
     app.include_router(tasks.build_router(deps))
     app.include_router(ideas.build_router(deps))
     app.include_router(variants.build_router(deps))
+    app.include_router(artifacts.build_router(deps))
     app.include_router(dispatch_mode.build_router(deps))
     app.include_router(experiment_lifecycle.build_router(deps))
     app.include_router(events.build_router(deps))
@@ -151,6 +171,23 @@ def make_app(
     app.include_router(reference.build_router(deps))
 
     return app
+
+
+def _resolve_artifact_backend(
+    artifact_backend: ArtifactBackend | None, artifacts_dir: Path | str | None
+) -> ArtifactBackend:
+    """Pick the §16 blob backend (issue #166).
+
+    An explicit ``artifact_backend`` wins; otherwise default to a
+    :class:`FileArtifactBackend` rooted at ``artifacts_dir`` when one was
+    supplied, else an in-process :class:`InMemoryArtifactBackend` (the
+    test / in-process posture).
+    """
+    if artifact_backend is not None:
+        return artifact_backend
+    if artifacts_dir is not None:
+        return FileArtifactBackend(artifacts_dir)
+    return InMemoryArtifactBackend()
 
 
 def _problem(
@@ -182,6 +219,7 @@ _ENVELOPE_ERROR_TYPES: tuple[type[Exception], ...] = (
     ExperimentIdMismatch,
     Unauthorized,
     Forbidden,
+    PayloadTooLarge,
 )
 
 

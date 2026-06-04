@@ -14,7 +14,7 @@ from __future__ import annotations
 from typing import Annotated, Any, Literal
 
 from eden_contracts import DispatchModeValue, Event, TaskTarget
-from eden_contracts._common import CommitSha, DateTimeStr, NotNone, WorkerId
+from eden_contracts._common import CommitSha, DateTimeStr, NotNone, UriStr, WorkerId
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -137,6 +137,19 @@ class WhoamiResponse(_WireBase):
     """Body for ``GET /v0/experiments/{E}/whoami`` (§6.4)."""
 
     worker_id: WorkerId
+
+
+class DepositArtifactResponse(_WireBase):
+    """Body for a successful ``POST /v0/experiments/{E}/artifacts`` (§16.1).
+
+    Carries the opaque, server-issued ``artifacts_uri`` the depositor
+    stamps onto the idea / variant / submission it then creates, plus the
+    recorded byte size and content type.
+    """
+
+    artifacts_uri: UriStr
+    size_bytes: Annotated[int, Field(ge=0)]
+    content_type: Annotated[str, Field(min_length=1)]
 
 
 # ---------------------------------------------------------------------
@@ -284,6 +297,7 @@ __all__ = [
     "AddGroupMemberRequest",
     "ClaimRequest",
     "ClaimResponse",
+    "DepositArtifactResponse",
     "DispatchModeResponse",
     "DispatchModeUpdateRequest",
     "EventsResponse",

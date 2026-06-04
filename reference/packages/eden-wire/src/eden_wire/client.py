@@ -58,6 +58,7 @@ from eden_storage.submissions import (
 )
 
 from .errors import raise_for_envelope
+from .models import DepositArtifactResponse
 
 __all__ = [
     "IndeterminateDispatchModeUpdate",
@@ -197,6 +198,7 @@ class StoreClient:
         *,
         params: dict[str, Any] | None = None,
         json: Any = None,
+        files: Any = None,
         extra_headers: dict[str, str] | None = None,
     ) -> httpx.Response:
         headers = self._headers
@@ -207,6 +209,7 @@ class StoreClient:
             path,
             params=params,
             json=json,
+            files=files,
             headers=headers,
         )
         if 400 <= resp.status_code < 600:
@@ -536,6 +539,43 @@ class StoreClient:
             except Exception:
                 continue
         return None
+
+    # ------------------------------------------------------------------
+    # Artifacts (chapter 7 §16, issue #166)
+    # ------------------------------------------------------------------
+
+    def deposit_artifact(
+        self,
+        data: bytes,
+        *,
+        filename: str = "artifact",
+        content_type: str = "application/octet-stream",
+    ) -> DepositArtifactResponse:
+        """Deposit ``data`` and return the opaque ``artifacts_uri`` (§16.1).
+
+        The bytes ride a single multipart ``file`` part; the server mints
+        the opaque id, persists the bytes, records ``created_by`` from
+        this client's bearer, and returns the resolvable URI. Unlike
+        ``integrate_variant`` there is NO read-back ladder — a deposit
+        carries no client-asserted identity to reconcile; a lost response
+        just means re-deposit for a fresh id (§16.1).
+        """
+        resp = self._request(
+            "POST",
+            f"{self._base}/artifacts",
+            files={"file": (filename, io.BytesIO(data), content_type)},
+        )
+        return DepositArtifactResponse.model_validate(resp.json())
+
+    def fetch_artifact(self, opaque_id: str) -> bytes:
+        """Return the exact bytes deposited under ``opaque_id`` (§16.2).
+
+        Raises the §9 wire error the server returned (``NotFound`` for an
+        unknown id, ``Forbidden`` for an ACL miss) via the shared
+        problem+json reconstruction.
+        """
+        resp = self._request("GET", f"{self._base}/artifacts/{opaque_id}")
+        return resp.content
 
     # ------------------------------------------------------------------
     # Shared validators

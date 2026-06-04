@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 from eden_contracts import ExperimentConfig
 from eden_git import GitError, GitRepo
@@ -134,6 +135,7 @@ def build_app(
     admin_token: str | None = None,
     subscribe_timeout: float = 30.0,
     artifacts_dir: Path | str | None = None,
+    max_artifact_bytes: int | None = None,
     checkpoint_experiment_config: str | None = None,
     checkpoint_repo_path: Path | str | None = None,
     checkpoint_import_credentials_dir: Path | str | None = None,
@@ -174,6 +176,12 @@ def build_app(
     minted by the import (§8 is normative) but the wire surface only
     warns; operators must reissue manually via the admin endpoint.
     """
+    make_app_kwargs: dict[str, Any] = {}
+    if max_artifact_bytes is not None:
+        # Issue #166: the §16.1 deposit size cap. When unset, make_app's
+        # DEFAULT_MAX_ARTIFACT_BYTES applies. The §16 FileArtifactBackend
+        # is rooted at artifacts_dir by make_app's default resolution.
+        make_app_kwargs["max_artifact_bytes"] = max_artifact_bytes
     return make_app(
         store,
         admin_token=admin_token,
@@ -182,6 +190,7 @@ def build_app(
         checkpoint_experiment_config=checkpoint_experiment_config,
         checkpoint_repo_path=checkpoint_repo_path,
         checkpoint_import_credentials_dir=checkpoint_import_credentials_dir,
+        **make_app_kwargs,
     )
 
 
