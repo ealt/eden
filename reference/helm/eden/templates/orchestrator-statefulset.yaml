@@ -1,0 +1,113 @@
+{{- if eq (include "eden.appEnabled" .) "true" }}
+{{- $fullName := include "eden.fullname" . }}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ $fullName }}-orchestrator
+  labels:
+    {{- include "eden.componentLabels" (dict "ctx" . "component" "orchestrator") | nindent 4 }}
+spec:
+  serviceName: {{ $fullName }}-orchestrator
+  # HA per the chapter 11 lease model: N replicas contend for the single
+  # experiment's lease; exactly one drives at a time, the rest stand by.
+  replicas: {{ .Values.replicas.orchestrator }}
+  selector:
+    matchLabels:
+      {{- include "eden.componentSelectorLabels" (dict "ctx" . "component" "orchestrator") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "eden.componentLabels" (dict "ctx" . "component" "orchestrator") | nindent 8 }}
+    spec:
+      {{- include "eden.imagePullSecrets" . | nindent 6 }}
+      # The image runs as uid/gid 1000 (eden); fsGroup makes the clone PVC
+      # group-writable so the integrator's git writes succeed.
+      securityContext:
+        fsGroup: 1000
+      {{- with .Values.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: orchestrator
+          image: {{ include "eden.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          envFrom:
+            - secretRef:
+                name: {{ include "eden.secretName" . }}
+          env:
+            # The pod name (eden-orchestrator-0, -1, …) is a unique, stable
+            # --worker-id per replica, matching 12a-1's worker_id grammar.
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            # Non-empty control-plane URL flips the orchestrator into the
+            # chapter 11 §5 lease-driven multi-experiment loop (HA).
+            - name: EDEN_CONTROL_PLANE_URL
+              value: {{ include "eden.controlPlaneUrl" . | quote }}
+          args:
+            - python
+            - -m
+            - eden_orchestrator
+            - --task-store-url
+            - {{ include "eden.taskStoreUrl" . | quote }}
+            - --experiment-id
+            - {{ required "experiment.id is required" .Values.experiment.id | quote }}
+            - --admin-token
+            - $(EDEN_ADMIN_TOKEN)
+            - --worker-id
+            - $(POD_NAME)
+            - --repo-path
+            - /var/lib/eden/repo
+            - --forgejo-url
+            - {{ include "eden.forgejoRemoteUrl" . | quote }}
+            - --credential-helper
+            - {{ include "eden.credentialHelperPath" . | quote }}
+            - --experiment-config
+            - /etc/eden/experiment-config.yaml
+            - --poll-interval
+            - {{ .Values.config.pollIntervalSeconds | quote }}
+            - --max-quiescent-iterations
+            - {{ .Values.config.maxQuiescentIterations | quote }}
+            - --lease-duration-seconds
+            - {{ .Values.config.leaseDurationSeconds | quote }}
+            - --log-level
+            - info
+          volumeMounts:
+            - name: repo
+              mountPath: /var/lib/eden/repo
+            - name: experiment-config
+              mountPath: /etc/eden/experiment-config.yaml
+              subPath: experiment-config.yaml
+            - name: git-credential-helper
+              mountPath: {{ include "eden.credentialHelperPath" . }}
+              subPath: git-credential-helper
+          {{- with .Values.resources }}
+          resources: {{- toYaml . | nindent 12 }}
+          {{- end }}
+      volumes:
+        - name: experiment-config
+          configMap:
+            name: {{ $fullName }}-experiment-config
+        - name: git-credential-helper
+          configMap:
+            name: {{ $fullName }}-git-credential-helper
+            defaultMode: 0555
+  volumeClaimTemplates:
+    - metadata:
+        name: repo
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- if .Values.storage.className }}
+        storageClassName: {{ .Values.storage.className | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.storage.orchestratorRepoSize | quote }}
+{{- end }}

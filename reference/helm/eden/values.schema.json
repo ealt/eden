@@ -1,0 +1,116 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "EDEN Helm chart values",
+  "type": "object",
+  "required": ["image", "experiment", "replicas", "storage", "config"],
+  "properties": {
+    "image": {
+      "type": "object",
+      "required": ["repository", "tag"],
+      "properties": {
+        "repository": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Container image repository. REQUIRED — build + push the eden-reference image to a registry the cluster can pull from."
+        },
+        "tag": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Image tag. REQUIRED."
+        },
+        "pullPolicy": {
+          "type": "string",
+          "enum": ["Always", "IfNotPresent", "Never"]
+        },
+        "pullSecrets": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["name"],
+            "properties": { "name": { "type": "string", "minLength": 1 } }
+          }
+        }
+      }
+    },
+    "experiment": {
+      "type": "object",
+      "required": ["id"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "config": { "type": "object" },
+        "baseCommitSha": { "type": "string" }
+      }
+    },
+    "replicas": {
+      "type": "object",
+      "properties": {
+        "taskStoreServer": { "type": "integer", "minimum": 0 },
+        "controlPlane": { "type": "integer", "minimum": 0 },
+        "orchestrator": { "type": "integer", "minimum": 0 },
+        "ideatorHost": { "type": "integer", "minimum": 0 },
+        "executorHost": { "type": "integer", "minimum": 0 },
+        "evaluatorHost": { "type": "integer", "minimum": 0 },
+        "webUi": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "secrets": {
+      "type": "object",
+      "properties": {
+        "adminToken": { "type": "string" },
+        "sessionSecret": { "type": "string" },
+        "postgresPassword": { "type": "string" },
+        "readonlyPassword": { "type": "string" },
+        "forgejoRemotePassword": { "type": "string" },
+        "forgejoSecretKey": { "type": "string" },
+        "forgejoInternalToken": { "type": "string" },
+        "existingSecret": { "type": "string" }
+      }
+    },
+    "storage": {
+      "type": "object",
+      "properties": {
+        "className": { "type": "string" },
+        "postgresSize": { "type": "string", "pattern": "^[0-9]+(Mi|Gi|Ti)$" },
+        "forgejoSize": { "type": "string", "pattern": "^[0-9]+(Mi|Gi|Ti)$" },
+        "orchestratorRepoSize": { "type": "string", "pattern": "^[0-9]+(Mi|Gi|Ti)$" },
+        "executorRepoSize": { "type": "string", "pattern": "^[0-9]+(Mi|Gi|Ti)$" },
+        "evaluatorRepoSize": { "type": "string", "pattern": "^[0-9]+(Mi|Gi|Ti)$" },
+        "webUiRepoSize": { "type": "string", "pattern": "^[0-9]+(Mi|Gi|Ti)$" },
+        "artifactsSize": { "type": "string", "pattern": "^[0-9]+(Mi|Gi|Ti)$" }
+      }
+    },
+    "ingress": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "className": { "type": "string" },
+        "annotations": { "type": "object" },
+        "hosts": { "type": "object" },
+        "tls": { "type": "array" }
+      }
+    },
+    "config": {
+      "type": "object",
+      "properties": {
+        "leaseDurationSeconds": { "type": "integer", "minimum": 1 },
+        "stateSyncIntervalSeconds": { "type": "integer", "minimum": 1 },
+        "stateSyncFailureThreshold": { "type": "integer", "minimum": 1 },
+        "maxQuiescentIterations": {
+          "description": "0 = never exit on quiescence (Kubernetes default); otherwise >= 2.",
+          "anyOf": [
+            { "type": "integer", "const": 0 },
+            { "type": "integer", "minimum": 2 }
+          ]
+        },
+        "pollIntervalSeconds": { "type": "number", "exclusiveMinimum": 0 },
+        "adminsInitialMember": { "type": "string", "minLength": 1 },
+        "webUiWorkerId": { "type": "string", "minLength": 1 },
+        "workerMode": {
+          "description": "Only 'scripted' is supported in 13a (Decision 10).",
+          "type": "string",
+          "enum": ["scripted"]
+        }
+      }
+    }
+  }
+}

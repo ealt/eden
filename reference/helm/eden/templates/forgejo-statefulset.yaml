@@ -1,0 +1,111 @@
+{{- $fullName := include "eden.fullname" . }}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ $fullName }}-forgejo
+  labels:
+    {{- include "eden.componentLabels" (dict "ctx" . "component" "forgejo") | nindent 4 }}
+spec:
+  serviceName: {{ $fullName }}-forgejo
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "eden.componentSelectorLabels" (dict "ctx" . "component" "forgejo") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "eden.componentLabels" (dict "ctx" . "component" "forgejo") | nindent 8 }}
+    spec:
+      {{- include "eden.imagePullSecrets" . | nindent 6 }}
+      # The rootless Forgejo image runs as uid/gid 1000; fsGroup lets it write
+      # the PVC regardless of the StorageClass's default ownership.
+      securityContext:
+        fsGroup: 1000
+      {{- with .Values.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: forgejo
+          image: {{ .Values.forgejo.image | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 3000
+          env:
+            - name: FORGEJO__server__DOMAIN
+              value: {{ printf "%s-forgejo" $fullName | quote }}
+            - name: FORGEJO__server__ROOT_URL
+              value: {{ printf "http://%s-forgejo:3000/" $fullName | quote }}
+            - name: FORGEJO__server__HTTP_PORT
+              value: "3000"
+            # NOTE: the container path stays `/var/lib/gitea` — the Forgejo
+            # image is a Gitea soft-fork and writes its data there regardless
+            # of brand (see reference/compose/compose.yaml, issue #129).
+            - name: FORGEJO__database__DB_TYPE
+              value: sqlite3
+            - name: FORGEJO__database__PATH
+              value: /var/lib/gitea/data/forgejo.db
+            - name: FORGEJO__security__INSTALL_LOCK
+              value: "true"
+            - name: FORGEJO__security__SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "eden.secretName" . }}
+                  key: FORGEJO_SECRET_KEY
+            - name: FORGEJO__security__INTERNAL_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "eden.secretName" . }}
+                  key: FORGEJO_INTERNAL_TOKEN
+            - name: FORGEJO__service__DISABLE_REGISTRATION
+              value: "true"
+            # Let the seed `git push` auto-create the experiment repo, so the
+            # bootstrap Job needs no separate API repo-create step (the eden
+            # user is provisioned by setup-experiment-helm.sh via the CLI).
+            - name: FORGEJO__repository__ENABLE_PUSH_CREATE_USER
+              value: "true"
+            - name: FORGEJO__log__LEVEL
+              value: Warn
+          readinessProbe:
+            httpGet:
+              path: /api/v1/version
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 30
+          livenessProbe:
+            httpGet:
+              path: /api/v1/version
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/gitea
+              subPath: data
+            - name: data
+              mountPath: /etc/gitea
+              subPath: etc
+          {{- with .Values.forgejo.resources }}
+          resources: {{- toYaml . | nindent 12 }}
+          {{- end }}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- if .Values.storage.className }}
+        storageClassName: {{ .Values.storage.className | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.storage.forgejoSize | quote }}

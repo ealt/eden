@@ -63,18 +63,29 @@ _MAX_QUIESCENT_ITERATIONS_FLAG_DEFAULT = 3
 
 
 def _quiescent_iterations(raw: str) -> int:
-    """Argparse type for ``--max-quiescent-iterations`` (>=2)."""
+    """Argparse type for ``--max-quiescent-iterations`` (0 or >=2).
+
+    ``0`` is a sentinel meaning "never exit on quiescence; run until
+    SIGTERM" (Decision 9 of the Phase 13a Helm-base-chart plan). It
+    exists for substrates — chiefly a Kubernetes ``Deployment`` /
+    ``StatefulSet`` whose only valid ``restartPolicy`` is ``Always`` —
+    where a clean quiescence exit would be treated as a crash and
+    restarted in a tight loop. ``1`` stays rejected: a single
+    zero-progress iteration risks exiting while a worker is mid-submit.
+    """
     try:
         value = int(raw)
     except ValueError as exc:
         raise argparse.ArgumentTypeError(
             f"--max-quiescent-iterations must be an integer, not {raw!r}"
         ) from exc
+    if value == 0:
+        return 0
     if value < 2:
         raise argparse.ArgumentTypeError(
-            f"--max-quiescent-iterations must be >= 2 (got {value}); a value "
-            "of 0 or 1 risks the orchestrator exiting while a worker is "
-            "mid-submit."
+            f"--max-quiescent-iterations must be 0 or >= 2 (got {value}); a "
+            "value of 1 risks the orchestrator exiting while a worker is "
+            "mid-submit, and 0 is the 'never exit on quiescence' sentinel."
         )
     return value
 
@@ -215,7 +226,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=_MAX_QUIESCENT_ITERATIONS_FLAG_DEFAULT,
         help=(
             "Exit after N consecutive no-progress iterations (default: 3). "
-            "Must be >=2 — N=1 risks exiting while a worker is mid-submit. "
+            "Must be 0 or >=2 — N=1 risks exiting while a worker is "
+            "mid-submit. N=0 is the 'never exit on quiescence; run until "
+            "SIGTERM' sentinel for restartPolicy=Always substrates "
+            "(Kubernetes Deployments / StatefulSets; see the Phase 13a "
+            "Helm chart Decision 9). "
             "In single-experiment mode the experiment-config "
             "``max_quiescent_iterations`` field takes precedence; a "
             "non-default CLI value triggers a startup-warning and is "

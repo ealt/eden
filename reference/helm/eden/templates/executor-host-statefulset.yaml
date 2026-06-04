@@ -1,0 +1,112 @@
+{{- if eq (include "eden.appEnabled" .) "true" }}
+{{- $fullName := include "eden.fullname" . }}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ $fullName }}-executor-host
+  labels:
+    {{- include "eden.componentLabels" (dict "ctx" . "component" "executor-host") | nindent 4 }}
+spec:
+  serviceName: {{ $fullName }}-executor-host
+  replicas: {{ .Values.replicas.executorHost }}
+  selector:
+    matchLabels:
+      {{- include "eden.componentSelectorLabels" (dict "ctx" . "component" "executor-host") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "eden.componentLabels" (dict "ctx" . "component" "executor-host") | nindent 8 }}
+    spec:
+      {{- include "eden.imagePullSecrets" . | nindent 6 }}
+      # The image runs as uid/gid 1000 (eden); fsGroup makes the clone PVC
+      # group-writable so the executor's git writes succeed.
+      securityContext:
+        fsGroup: 1000
+      {{- with .Values.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: executor-host
+          image: {{ include "eden.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          envFrom:
+            - secretRef:
+                name: {{ include "eden.secretName" . }}
+          env:
+            # Stable pod name (eden-executor-host-0, …) → unique --worker-id
+            # per replica that survives restart (reattaches to its clone PVC).
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+          args:
+            - python
+            - -m
+            - eden_executor_host
+            - --task-store-url
+            - {{ include "eden.taskStoreUrl" . | quote }}
+            - --experiment-id
+            - {{ required "experiment.id is required" .Values.experiment.id | quote }}
+            - --admin-token
+            - $(EDEN_ADMIN_TOKEN)
+            - --worker-id
+            - $(POD_NAME)
+            - --mode
+            - {{ .Values.config.workerMode | quote }}
+            - --repo-path
+            - /var/lib/eden/repo
+            - --forgejo-url
+            - {{ include "eden.forgejoRemoteUrl" . | quote }}
+            - --credential-helper
+            - {{ include "eden.credentialHelperPath" . | quote }}
+            - --poll-interval
+            - {{ .Values.config.pollIntervalSeconds | quote }}
+            - --log-level
+            - info
+          volumeMounts:
+            - name: repo
+              mountPath: /var/lib/eden/repo
+            - name: git-credential-helper
+              mountPath: {{ include "eden.credentialHelperPath" . }}
+              subPath: git-credential-helper
+          {{- with .Values.resources }}
+          resources: {{- toYaml . | nindent 12 }}
+          {{- end }}
+      volumes:
+        - name: git-credential-helper
+          configMap:
+            name: {{ $fullName }}-git-credential-helper
+            defaultMode: 0555
+  volumeClaimTemplates:
+    - metadata:
+        name: repo
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- if .Values.storage.className }}
+        storageClassName: {{ .Values.storage.className | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.storage.executorRepoSize | quote }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $fullName }}-executor-host
+  labels:
+    {{- include "eden.componentLabels" (dict "ctx" . "component" "executor-host") | nindent 4 }}
+spec:
+  clusterIP: None
+  selector:
+    {{- include "eden.componentSelectorLabels" (dict "ctx" . "component" "executor-host") | nindent 4 }}
+  ports:
+    - name: placeholder
+      port: 8080
+      targetPort: 8080
+{{- end }}

@@ -247,6 +247,93 @@ def test_loop_picks_up_mode_changes_between_iterations(
 
 
 # ----------------------------------------------------------------------
+# max_quiescent_iterations == 0 sentinel (Phase 13a Decision 9)
+# ----------------------------------------------------------------------
+
+
+def test_loop_never_exits_on_quiescence_when_max_is_zero(
+    store: InMemoryStore,
+) -> None:
+    """``max_quiescent_iterations=0`` runs through many zero-progress iters.
+
+    The Kubernetes substrate (restartPolicy: Always) needs the
+    orchestrator to run until SIGTERM rather than exit cleanly on
+    quiescence — a clean exit would be restarted in a tight loop. The
+    sentinel value 0 disables the quiescence-exit branch entirely; only
+    the ``stop`` flag ends the loop. We drive 100 no-progress iterations
+    (manual mode → the policy is gated off, so every iteration is
+    zero-progress) and assert the loop is still running, then stop it.
+    """
+    store.update_dispatch_mode(
+        {"ideation_creation": "manual"}, updated_by="orchestrator"
+    )
+    stop = StopFlag()
+    iterations = [0]
+
+    # The policy is gated off (manual mode), so it should never be
+    # called; we count iterations via a dispatch-mode read hook instead.
+    class _CountingStore:
+        def __init__(self, inner: InMemoryStore) -> None:
+            self._inner = inner
+
+        def read_dispatch_mode(self) -> DispatchMode:
+            iterations[0] += 1
+            # Well past any non-zero quiescence budget; if the loop
+            # honored a non-zero default it would have exited by ~iter 3.
+            if iterations[0] >= 100:
+                stop.set()
+            return self._inner.read_dispatch_mode()
+
+        def __getattr__(self, name: str) -> Any:
+            return getattr(self._inner, name)
+
+    def policy(state: ExperimentStateView) -> int:
+        raise AssertionError("policy must not be invoked in manual mode")
+
+    run_orchestrator_loop(
+        store=_CountingStore(store),  # type: ignore[arg-type]
+        integrator=_NoopIntegrator(),  # type: ignore[arg-type]
+        ideation_policy=policy,
+        termination_policy=never_terminate,
+        terminated_by="orchestrator",
+        ideation_task_prefix="ideation-",
+        execution_task_prefix="execution-",
+        evaluation_task_prefix="evaluate-",
+        poll_interval=0.0,
+        max_quiescent_iterations=0,
+        stop=stop,
+        scheduler=_disabled_scheduler(),
+    )
+    # The loop only ended because ``stop`` fired at iteration 100 — it
+    # did NOT exit on quiescence despite 99 zero-progress iterations.
+    assert iterations[0] == 100
+
+
+# ----------------------------------------------------------------------
+# _quiescent_iterations argparse type
+# ----------------------------------------------------------------------
+
+
+def test_quiescent_iterations_accepts_zero_sentinel() -> None:
+    from eden_orchestrator.cli import _quiescent_iterations
+
+    assert _quiescent_iterations("0") == 0
+    assert _quiescent_iterations("2") == 2
+    assert _quiescent_iterations("30") == 30
+
+
+def test_quiescent_iterations_rejects_one_and_non_int() -> None:
+    import argparse
+
+    from eden_orchestrator.cli import _quiescent_iterations
+
+    with pytest.raises(argparse.ArgumentTypeError):
+        _quiescent_iterations("1")
+    with pytest.raises(argparse.ArgumentTypeError):
+        _quiescent_iterations("nope")
+
+
+# ----------------------------------------------------------------------
 # _ensure_orchestrators_membership
 # ----------------------------------------------------------------------
 

@@ -1,0 +1,26 @@
+{{- /*
+Postgres init hook (chapter 11 §3.4 Option A): create the control-plane's
+second logical database on a fresh data dir. Mounted into
+/docker-entrypoint-initdb.d/ on the upstream postgres image, which runs *.sh
+there exactly once. Mirrors reference/compose/init-control-plane-db.sh.
+*/ -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "eden.fullname" . }}-postgres-init
+  labels:
+    {{- include "eden.labels" . | nindent 4 }}
+data:
+  01-control-plane-db.sh: |
+    #!/bin/sh
+    set -eu
+    DB_NAME="${POSTGRES_DB_CONTROL_PLANE:-eden_control_plane}"
+    exists="$(psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc \
+        "SELECT 1 FROM pg_database WHERE datname = '${DB_NAME}'")"
+    if [ "$exists" = "1" ]; then
+        echo "init-control-plane-db: database ${DB_NAME} already exists; skipping"
+    else
+        echo "init-control-plane-db: creating database ${DB_NAME}"
+        psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
+            -c "CREATE DATABASE \"${DB_NAME}\" OWNER \"$POSTGRES_USER\";"
+    fi

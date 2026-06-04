@@ -1,0 +1,66 @@
+{{- if eq (include "eden.appEnabled" .) "true" }}
+{{- $fullName := include "eden.fullname" . }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $fullName }}-ideator-host
+  labels:
+    {{- include "eden.componentLabels" (dict "ctx" . "component" "ideator-host") | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicas.ideatorHost }}
+  selector:
+    matchLabels:
+      {{- include "eden.componentSelectorLabels" (dict "ctx" . "component" "ideator-host") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "eden.componentLabels" (dict "ctx" . "component" "ideator-host") | nindent 8 }}
+    spec:
+      {{- include "eden.imagePullSecrets" . | nindent 6 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: ideator-host
+          image: {{ include "eden.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          envFrom:
+            - secretRef:
+                name: {{ include "eden.secretName" . }}
+          env:
+            # Pod name → unique --worker-id per replica (the ideator doesn't
+            # hold a clone, so a Deployment with churning pod names is fine).
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+          args:
+            - python
+            - -m
+            - eden_ideator_host
+            - --task-store-url
+            - {{ include "eden.taskStoreUrl" . | quote }}
+            - --experiment-id
+            - {{ required "experiment.id is required" .Values.experiment.id | quote }}
+            - --admin-token
+            - $(EDEN_ADMIN_TOKEN)
+            - --worker-id
+            - $(POD_NAME)
+            - --mode
+            - {{ .Values.config.workerMode | quote }}
+            - --base-commit-sha
+            - {{ .Values.experiment.baseCommitSha | quote }}
+            - --poll-interval
+            - {{ .Values.config.pollIntervalSeconds | quote }}
+            - --log-level
+            - info
+          {{- with .Values.resources }}
+          resources: {{- toYaml . | nindent 12 }}
+          {{- end }}
+{{- end }}

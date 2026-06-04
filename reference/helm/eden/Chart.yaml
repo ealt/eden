@@ -1,0 +1,27 @@
+apiVersion: v2
+name: eden
+description: >-
+  EDEN reference deployment as a Helm chart — the same nine services the
+  Compose stack runs (task-store-server, control-plane, orchestrator,
+  ideator/executor/evaluator hosts, web-ui, Forgejo, Postgres), packaged for
+  any conforming Kubernetes cluster (1.27+). Phase 13a base chart; cloud-
+  specific extensions land in 13b–13e.
+type: application
+# Chart version follows the EDEN repo's tagged versions (0.x for v0).
+version: 0.1.0
+# appVersion pins the eden-reference image tag the chart is built against.
+# It is documentation only — the operator supplies the actual image via
+# image.repository + image.tag (Decision 7; the image is the operator's to
+# build + push). See docs/deployment/helm.md "Image build vs chart version".
+appVersion: "0.1.0"
+kubeVersion: ">=1.27.0-0"
+home: https://github.com/ealt/eden
+sources:
+  - https://github.com/ealt/eden
+keywords:
+  - eden
+  - directed-evolution
+  - orchestration
+maintainers:
+  - name: EDEN maintainers
+    url: https://github.com/ealt/eden

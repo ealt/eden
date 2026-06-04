@@ -1,0 +1,20 @@
+{{- if eq (include "eden.appEnabled" .) "true" }}
+{{- $fullName := include "eden.fullname" . }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $fullName }}-orchestrator
+  labels:
+    {{- include "eden.componentLabels" (dict "ctx" . "component" "orchestrator") | nindent 4 }}
+spec:
+  # Headless service required by the StatefulSet for stable per-pod network
+  # identity. The orchestrator is a client (no inbound HTTP), so the port is a
+  # placeholder that nothing connects to.
+  clusterIP: None
+  selector:
+    {{- include "eden.componentSelectorLabels" (dict "ctx" . "component" "orchestrator") | nindent 4 }}
+  ports:
+    - name: placeholder
+      port: 8080
+      targetPort: 8080
+{{- end }}

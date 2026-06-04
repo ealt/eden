@@ -1,0 +1,73 @@
+# Per-experiment bare-repo seed Job — NOT a chart template.
+#
+# Helm does not render files outside templates/, by design: this Job's
+# lifecycle is per-EXPERIMENT, not per-RELEASE (the long-lived release hosts
+# many experiments over time, so a chart-managed singleton can't bootstrap
+# experiment 2, 3, … with distinct inputs — see plan §3.5 and the AGENTS.md
+# "Multi-tenant lifecycle" pitfall). setup-experiment-helm.sh renders this with
+# `envsubst` and `kubectl apply`s it, one Job per experiment.
+#
+# The Job seeds an empty bare repo (ephemeral staging) and pushes the seed
+# commit to Forgejo over HTTP Basic via the chart's git-credential-helper. It
+# emits `EDEN_REPO_SEEDED sha=<hex>` (or `EDEN_REPO_ALREADY_SEEDED sha=<hex>`)
+# on stdout; the script reads the SHA from the pod log.
+#
+# Substituted variables (envsubst): ${EDEN_NAMESPACE} ${EDEN_JOB_NAME}
+# ${EDEN_IMAGE} ${EDEN_IMAGE_PULL_POLICY} ${EDEN_SECRET_NAME}
+# ${EDEN_HELPER_CONFIGMAP} ${EDEN_FORGEJO_REMOTE_URL}.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: ${EDEN_JOB_NAME}
+  namespace: ${EDEN_NAMESPACE}
+  labels:
+    app.kubernetes.io/name: eden
+    app.kubernetes.io/component: repo-init
+spec:
+  backoffLimit: 2
+  # Reaped by setup-experiment-helm.sh after it reads the seed SHA.
+  ttlSecondsAfterFinished: 600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: eden
+        app.kubernetes.io/component: repo-init
+    spec:
+      restartPolicy: Never
+      # The image runs as uid/gid 1000 (eden); fsGroup makes the staging
+      # emptyDir group-writable so the seed git writes succeed.
+      securityContext:
+        fsGroup: 1000
+      containers:
+        - name: repo-init
+          image: ${EDEN_IMAGE}
+          imagePullPolicy: ${EDEN_IMAGE_PULL_POLICY}
+          env:
+            - name: FORGEJO_REMOTE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: ${EDEN_SECRET_NAME}
+                  key: FORGEJO_REMOTE_PASSWORD
+          command:
+            - python
+            - -m
+            - eden_service_common.repo_init
+            - --repo-path
+            - /var/lib/eden/repo
+            - --push-to
+            - ${EDEN_FORGEJO_REMOTE_URL}
+            - --credential-helper
+            - /etc/eden/git-credential-helper
+          volumeMounts:
+            - name: staging
+              mountPath: /var/lib/eden/repo
+            - name: git-credential-helper
+              mountPath: /etc/eden/git-credential-helper
+              subPath: git-credential-helper
+      volumes:
+        - name: staging
+          emptyDir: {}
+        - name: git-credential-helper
+          configMap:
+            name: ${EDEN_HELPER_CONFIGMAP}
+            defaultMode: 0555
