@@ -181,6 +181,16 @@ helm upgrade eden reference/helm/eden -n eden-prod --reuse-values \
   down a deployment and its data: `helm uninstall eden -n eden-prod` then
   `kubectl delete pvc -n eden-prod --all`. Operators who only `helm uninstall`
   keep their Postgres / Forgejo / clone data for the next install.
+- **Secrets + retained PVCs (reinstall hazard).** `helm uninstall` deletes the
+  chart-managed `<release>-secrets` Secret, but the PVCs are retained. A
+  reinstall with chart-managed (inline) secrets regenerates a fresh
+  `POSTGRES_PASSWORD`, while the retained Postgres data dir still holds the
+  **old** role password — so the new DSNs fail authentication (the same hazard
+  as rotating the Compose `.env` password against an existing data volume). For
+  any deployment you intend to uninstall **and reinstall against the same
+  PVCs**, use `secrets.existingSecret` so the credentials outlive the release.
+  Otherwise, wipe the PVCs (`kubectl delete pvc -n <ns> --all`) for a clean
+  reinstall.
 - **Scaling to zero.** Set `replicas.<service>=0` to idle a workload (e.g. pause
   the orchestrator). The StatefulSet keeps its PVCs, so scaling back up
   reattaches the per-replica clones. Postgres and Forgejo cannot scale to zero

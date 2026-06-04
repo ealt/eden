@@ -33,16 +33,27 @@ EXPERIMENT_ID="exp-1"
 # so we poll for the integration end-state rather than for a clean exit.
 DEADLINE_SECONDS="${EDEN_HELM_SMOKE_DEADLINE:-240}"
 
+# Only tear down a cluster THIS script created — never delete a pre-existing
+# local cluster that happens to share the name.
+CREATED_CLUSTER=0
 cleanup() {
     local rc=$?
-    echo "--- tearing down kind cluster ${CLUSTER} ---" >&2
-    kind delete cluster --name "$CLUSTER" >/dev/null 2>&1 || true
+    if [[ "$CREATED_CLUSTER" -eq 1 ]]; then
+        echo "--- tearing down kind cluster ${CLUSTER} ---" >&2
+        kind delete cluster --name "$CLUSTER" >/dev/null 2>&1 || true
+    fi
     exit "$rc"
 }
 trap cleanup EXIT
 
+if kind get clusters 2>/dev/null | grep -qx "$CLUSTER"; then
+    echo "kind cluster '${CLUSTER}' already exists; refusing to reuse/delete it." >&2
+    echo "Delete it yourself or set EDEN_KIND_CLUSTER to a fresh name." >&2
+    exit 2
+fi
 echo "--- creating kind cluster ${CLUSTER} ---" >&2
 kind create cluster --name "$CLUSTER" --wait 120s
+CREATED_CLUSTER=1
 
 echo "--- building + loading ${IMAGE} ---" >&2
 docker build -t "$IMAGE" -f "${REPO_ROOT}/reference/compose/Dockerfile" "$REPO_ROOT"

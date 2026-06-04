@@ -108,7 +108,11 @@ See [`values.yaml`](values.yaml) for the full annotated surface and
 
 - **PVC retention.** StatefulSet `volumeClaimTemplates` PVCs are **not**
   deleted on `helm uninstall`. To fully tear down: `helm uninstall <release> -n
-  <ns>` then `kubectl delete pvc -n <ns> --all`.
+  <ns>` then `kubectl delete pvc -n <ns> --all`. Note: `helm uninstall` DOES
+  delete the chart-managed Secret while keeping the PVCs, so a reinstall with
+  regenerated secrets can't authenticate against the retained Postgres data —
+  use `secrets.existingSecret` for reinstallable deployments (see
+  [`docs/deployment/helm.md`](../../../docs/deployment/helm.md) §5).
 - **Coexistence.** Use a distinct namespace per release; two releases in the
   same namespace collide on resource names. When running alongside the Compose
   stack on one machine, port-forward to offset ports (e.g. 18090) to avoid
