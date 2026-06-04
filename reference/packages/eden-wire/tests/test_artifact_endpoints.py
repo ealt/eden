@@ -125,6 +125,22 @@ class TestDepositFetchNoAuth:
         assert resp.status_code == 400
         assert resp.json()["type"] == "eden://error/bad-request"
 
+    def test_malformed_multipart_returns_problem_json_400(
+        self, store: InMemoryStore
+    ) -> None:
+        # A multipart content-type with no boundary makes Starlette's parser
+        # raise; the handler must map it to problem+json bad-request, not let
+        # FastAPI emit its default {"detail": ...} body.
+        client = TestClient(make_app(store))
+        resp = client.post(
+            _artifacts_url(),
+            headers=_hdr({"Content-Type": "multipart/form-data"}),
+            content=b"not really multipart",
+        )
+        assert resp.status_code == 400
+        assert "problem+json" in resp.headers.get("content-type", "")
+        assert resp.json()["type"] == "eden://error/bad-request"
+
 
 # ----------------------------------------------------------------------
 # Auth-enabled posture (§16.2 per-row ACL)

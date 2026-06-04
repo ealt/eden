@@ -21,8 +21,9 @@ from __future__ import annotations
 
 import secrets
 from collections.abc import Awaitable, Callable
-from typing import Any
+from typing import Any, cast
 
+from eden_storage import ArtifactStore
 from fastapi import APIRouter, Header, Request
 from fastapi.responses import Response
 from starlette.datastructures import UploadFile
@@ -151,9 +152,16 @@ def _deposit_artifact(deps: RouterDeps):  # noqa: ANN202 — FastAPI handler fac
         raw = await _read_body_capped(request, cap + _MULTIPART_SLACK)
         # Re-parse the capped body through Starlette's multipart machinery
         # (a fresh Request over a replay receive — the network stream is
-        # already consumed).
+        # already consumed). A malformed multipart body (e.g. no boundary)
+        # raises a Starlette parser error that is NOT in the wire exception
+        # map; catch it and re-raise BadRequest so §9 problem+json holds.
         reparsed = Request(request.scope, _replay_receive(raw))
-        form = await reparsed.form()
+        try:
+            form = await reparsed.form()
+        except BadRequest:
+            raise
+        except Exception as exc:  # noqa: BLE001 — untrusted multipart body
+            raise BadRequest(f"malformed multipart deposit body: {exc}") from exc
         try:
             upload = form.get("file")
             if not isinstance(upload, UploadFile):
@@ -171,7 +179,7 @@ def _deposit_artifact(deps: RouterDeps):  # noqa: ANN202 — FastAPI handler fac
             )
         opaque_id = secrets.token_hex(16)
         deps.artifact_backend.store(opaque_id, data)
-        deps.store.create_artifact(
+        cast(ArtifactStore, deps.store).create_artifact(
             opaque_id=opaque_id,
             created_by=created_by,
             size_bytes=len(data),
@@ -198,7 +206,7 @@ def _fetch_artifact(deps: RouterDeps):  # noqa: ANN202 — FastAPI handler facto
         # the ACL check so a different worker cannot use 403-vs-404 to
         # probe which ids exist beyond their own — the reference posture
         # returns 404 for absent, 403 for present-but-unauthorized (§16.2).
-        metadata = deps.store.read_artifact(opaque_id)
+        metadata = cast(ArtifactStore, deps.store).read_artifact(opaque_id)
         _authorize_fetch(deps, request, metadata.created_by)
         data = deps.artifact_backend.load(opaque_id)
         headers = artifact_response_headers(opaque_id)

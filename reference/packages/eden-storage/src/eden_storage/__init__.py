@@ -34,7 +34,7 @@ from .errors import (
 )
 from .memory import InMemoryStore
 from .postgres import PostgresStore, ensure_readonly_role
-from .protocol import Store
+from .protocol import ArtifactStore, Store
 from .sqlite import SqliteStore
 from .submissions import (
     EvaluationSubmission,
@@ -47,6 +47,7 @@ from .submissions import (
 __all__ = [
     "AlreadyExists",
     "ArtifactBackend",
+    "ArtifactStore",
     "ConflictingResubmission",
     "CycleDetected",
     "DispatchError",

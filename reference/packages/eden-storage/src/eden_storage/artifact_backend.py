@@ -27,6 +27,7 @@ import contextlib
 import os
 import re
 import stat
+import tempfile
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
@@ -109,13 +110,20 @@ class FileArtifactBackend:
         """Persist ``data`` under ``root/opaque_id``; ``FileExistsError`` on reuse."""
         _require_valid_opaque_id(opaque_id)
         final = self._root / opaque_id
-        tmp = self._root / f".{opaque_id}.tmp"
-        tmp.write_bytes(data)
-        # os.link is atomic and raises FileExistsError when `final`
-        # already exists — the §5.4 no-overwrite guarantee. The temp link
-        # is always dropped: on success `final` keeps its own hard link to
-        # the data; on failure the orphan temp is cleaned up.
+        # A UNIQUE temp (mkstemp) per call, not a fixed `.{id}.tmp` name:
+        # if a prior call crashed after os.link but before the unlink, a
+        # fixed temp would still be a hard link to the committed inode, and
+        # this call's write would truncate it before os.link raised. A
+        # fresh unique temp can never alias a committed artifact.
+        fd, tmp_name = tempfile.mkstemp(
+            dir=self._root, prefix=f".{opaque_id}.", suffix=".tmp"
+        )
+        tmp = Path(tmp_name)
         try:
+            with os.fdopen(fd, "wb") as handle:
+                handle.write(data)
+            # os.link is atomic and raises FileExistsError when `final`
+            # already exists — the §5.4 no-overwrite guarantee.
             os.link(tmp, final)
         finally:
             with contextlib.suppress(FileNotFoundError):

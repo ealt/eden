@@ -17,6 +17,7 @@
         "eden://error/worker-not-eligible",
         "eden://error/wrong-claimant",
         "eden://error/not-found",
+        "eden://error/payload-too-large",
         "eden://error/already-exists",
         "eden://error/illegal-transition",
         "eden://error/not-claimed",

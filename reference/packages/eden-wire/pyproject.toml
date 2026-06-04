@@ -12,6 +12,11 @@ dependencies = [
     "fastapi>=0.115,<1",
     "httpx>=0.27,<1",
     "pydantic>=2.9,<3",
+    # Required by Starlette's request.form() multipart parser, used by the
+    # §16 artifact deposit handler (issue #166). Declared explicitly so a
+    # standalone eden-wire install can parse deposits (it was previously
+    # only present transitively via eden-web-ui).
+    "python-multipart>=0.0.9",
     "uvicorn>=0.30,<1",
 ]
 

@@ -50,5 +50,36 @@ non-secret: opaque_id / created_by / size / content_type).
 
 ## Round 1
 
-Re-ran `codex review --base main` after the fixes — no further findings
+Re-ran `codex review --base main` after the round-0 fixes — five more findings,
+all addressed:
+
+- **[P1] `Store` protocol widening broke `StoreClient` conformance.** Adding
+  `create_artifact`/`read_artifact` to the shared `Store` Protocol made
+  `StoreClient` (the HTTP client, which has no wire surface for those methods)
+  structurally non-conforming → 12 `uv run pyright` errors at the
+  ideator/executor/evaluator/orchestrator/web-ui assignment sites. (The per-package
+  pyright runs in rounds 0-2 missed these — only the full-repo `uv run pyright`
+  gate catches cross-package assignment.) **Fix:** moved the two methods to a
+  separate `ArtifactStore` Protocol; the three concrete backends satisfy both, and
+  the wire handler — which always operates against a concrete backend, never a
+  `StoreClient` — `cast`s `deps.store` to `ArtifactStore`.
+- **[P2] `error.schema.json` enum.** Added `eden://error/payload-too-large` to the
+  wire error-envelope enum (it was in §9 prose + the impl map but not the schema, so
+  the 413 problem body would fail schema validation).
+- **[P2] `python-multipart` dependency.** Declared it explicitly in `eden-wire`'s
+  `pyproject.toml` (Starlette's `request.form()` needs it; it was only present
+  transitively via `eden-web-ui`, so a standalone wire-server install would fail
+  every deposit at runtime).
+- **[P2] Multipart parser errors → problem+json.** Wrapped `reparsed.form()` in
+  try/except so a malformed multipart body (e.g. no boundary) raises `BadRequest`
+  (problem+json `eden://error/bad-request`) instead of FastAPI's default
+  `{"detail": ...}`. Added a regression test.
+- **[P2] Stale hard-link temp file.** `FileArtifactBackend.store` now uses a unique
+  `tempfile.mkstemp` temp instead of a fixed `.{id}.tmp`, so crash residue from a
+  prior `store` can never be a hard link to a committed inode that a later write
+  would truncate.
+
+## Round 2
+
+Re-ran `codex review --base main` after the round-1 fixes — no further findings
 (convergence).

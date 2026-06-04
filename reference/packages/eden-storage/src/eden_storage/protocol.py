@@ -71,7 +71,7 @@ if TYPE_CHECKING:
 
     from ._checkpoint import ImportResult
 
-__all__ = ["Store"]
+__all__ = ["ArtifactStore", "Store"]
 
 
 class Store(Protocol):
@@ -548,31 +548,6 @@ class Store(Protocol):
         ...
 
     # ------------------------------------------------------------------
-    # Artifact metadata (issue #166)
-    # ------------------------------------------------------------------
-
-    def create_artifact(
-        self,
-        *,
-        opaque_id: str,
-        created_by: str,
-        size_bytes: int,
-        content_type: str,
-    ) -> None:
-        """Record an artifact metadata row (``08-storage.md`` §5.5).
-
-        ``created_by`` is the depositing principal (the §16.2 fetch ACL
-        key). The bytes themselves live in a separate ``ArtifactBackend``;
-        no event accompanies the row. Raises ``AlreadyExists`` on a
-        reused ``opaque_id``.
-        """
-        ...
-
-    def read_artifact(self, opaque_id: str) -> ArtifactMetadata:
-        """Return the artifact metadata row, or raise ``NotFound``."""
-        ...
-
-    # ------------------------------------------------------------------
     # Portable-checkpoint export / import (12b)
     # ------------------------------------------------------------------
 
@@ -626,4 +601,41 @@ class Store(Protocol):
         Store-managed entity + the imported experiment's runtime state +
         ``imported_from`` per chapter 10 §10.
         """
+        ...
+
+
+class ArtifactStore(Protocol):
+    """Server-side artifact-metadata interface (issue #166).
+
+    Kept **separate** from :class:`Store` on purpose: the wire
+    ``StoreClient`` implements ``Store`` over HTTP, but the artifact
+    metadata methods have no standalone wire surface (a metadata row is
+    created server-side inside the §16.1 deposit handler; the §16.2 fetch
+    returns bytes, not metadata JSON). Folding these onto ``Store`` would
+    make ``StoreClient`` structurally non-conforming. The three reference
+    backends (``InMemoryStore`` / ``SqliteStore`` / ``PostgresStore``)
+    satisfy both protocols; the task-store-server's wire handler operates
+    against a concrete backend (never a ``StoreClient``), so it can rely
+    on this interface.
+    """
+
+    def create_artifact(
+        self,
+        *,
+        opaque_id: str,
+        created_by: str,
+        size_bytes: int,
+        content_type: str,
+    ) -> None:
+        """Record an artifact metadata row (``08-storage.md`` §5.5).
+
+        ``created_by`` is the depositing principal (the §16.2 fetch ACL
+        key). The bytes themselves live in a separate ``ArtifactBackend``;
+        no event accompanies the row. Raises ``AlreadyExists`` on a
+        reused ``opaque_id``.
+        """
+        ...
+
+    def read_artifact(self, opaque_id: str) -> ArtifactMetadata:
+        """Return the artifact metadata row, or raise ``NotFound``."""
         ...

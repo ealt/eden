@@ -11,10 +11,12 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from pathlib import Path
+from typing import cast
 
 import pytest
 from eden_storage import (
     AlreadyExists,
+    ArtifactStore,
     FileArtifactBackend,
     InMemoryArtifactBackend,
     NotFound,
@@ -34,7 +36,7 @@ class TestArtifactMetadata:
     def test_create_then_read_roundtrips(
         self, make_store: Callable[..., Store]
     ) -> None:
-        store = make_store()
+        store = cast(ArtifactStore, make_store())
         store.create_artifact(
             opaque_id=_HEX,
             created_by="eric",
@@ -51,14 +53,14 @@ class TestArtifactMetadata:
     def test_read_absent_raises_not_found(
         self, make_store: Callable[..., Store]
     ) -> None:
-        store = make_store()
+        store = cast(ArtifactStore, make_store())
         with pytest.raises(NotFound):
             store.read_artifact(_HEX)
 
     def test_duplicate_opaque_id_rejected(
         self, make_store: Callable[..., Store]
     ) -> None:
-        store = make_store()
+        store = cast(ArtifactStore, make_store())
         store.create_artifact(
             opaque_id=_HEX,
             created_by="eric",
@@ -76,7 +78,7 @@ class TestArtifactMetadata:
     def test_admin_depositor_recorded(
         self, make_store: Callable[..., Store]
     ) -> None:
-        store = make_store()
+        store = cast(ArtifactStore, make_store())
         store.create_artifact(
             opaque_id=_HEX2,
             created_by="admin",
@@ -90,7 +92,7 @@ class TestArtifactMetadata:
     ) -> None:
         # The artifact store is distinct from the event log (08-storage.md
         # §5); a deposit carries no event.
-        store = make_store()
+        store = cast(ArtifactStore, make_store())
         before = len(store.events())
         store.create_artifact(
             opaque_id=_HEX,
