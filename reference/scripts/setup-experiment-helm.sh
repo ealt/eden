@@ -187,12 +187,21 @@ if [[ -z "$VALUES_FILE" ]]; then
     done
 fi
 
-# --- Phase 1: infra tier (baseCommitSha empty) ---
+# --- Phase 1: bring up (or refresh) infra. ---
+# On a FRESH install baseCommitSha is empty so only the infra tier renders. On
+# a RERUN against an already-bootstrapped release we PRESERVE the existing SHA,
+# so phase 1 does NOT tear the live app tier down — the repo-init Job is
+# idempotent (ALREADY_SEEDED returns the same SHA) and phase 2 re-applies it.
+EXISTING_SHA=""
+if helm status "$RELEASE" -n "$NAMESPACE" >/dev/null 2>&1; then
+    EXISTING_SHA="$(helm get values "$RELEASE" -n "$NAMESPACE" -a -o json 2>/dev/null \
+        | python3 -c 'import json,sys; print(json.load(sys.stdin).get("experiment",{}).get("baseCommitSha") or "")')"
+fi
 echo "--- phase 1: helm upgrade --install ${RELEASE} (infra tier) ---" >&2
 helm upgrade --install "$RELEASE" "$CHART" \
     --namespace "$NAMESPACE" --create-namespace \
     "${HELM_VALUE_ARGS[@]}" \
-    --set "experiment.baseCommitSha=" \
+    --set-string "experiment.baseCommitSha=${EXISTING_SHA}" \
     --wait --timeout "$TIMEOUT"
 
 # Resolve the actual secret name from the merged release values: the operator's

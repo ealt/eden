@@ -110,6 +110,7 @@
         "pollIntervalSeconds": { "type": "number", "exclusiveMinimum": 0 },
         "adminsInitialMember": { "type": "string", "minLength": 1 },
         "webUiWorkerId": { "type": "string", "minLength": 1 },
+        "ideatorWorkerId": { "type": "string", "minLength": 1, "maxLength": 64 },
         "workerMode": {
           "description": "Only 'scripted' is supported in 13a (Decision 10).",
           "type": "string",

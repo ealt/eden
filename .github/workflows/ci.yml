@@ -125,6 +125,9 @@ jobs:
               # root), so the build inputs gate the job too.
               - 'reference/compose/Dockerfile'
               - '.dockerignore'
+              # helm-smoke drives the fixture experiment; a fixture change can
+              # alter bootstrap behavior or the expected event counts.
+              - 'tests/fixtures/**'
             # rootcfg = workspace-global build config. The workflow file
             # (any job definition) and the root pyproject.toml / uv.lock
             # (consumed by every `uv sync --frozen` job: python-lint,

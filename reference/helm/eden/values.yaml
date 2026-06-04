@@ -155,6 +155,12 @@ config:
   # / EDEN_WEB_UI_WORKER_ID defaults.
   adminsInitialMember: operator
   webUiWorkerId: web-ui-1
+  # The ideator host runs as a Deployment, whose pod names
+  # (<fullname>-ideator-host-<rs-hash>-<suffix>) can exceed the store's 64-char
+  # worker_id grammar for long release names — so it uses this fixed id rather
+  # than $(POD_NAME). Operator-singleton in v0 (replicas.ideatorHost: 1); the
+  # executor/evaluator StatefulSets keep stable bounded POD_NAME worker ids.
+  ideatorWorkerId: ideator-1
   # --mode for the worker hosts. Only "scripted" is supported in 13a
   # (Decision 10); user-supplied LLM workers via subprocess + DooD need a
   # Kubernetes-native per-task packaging mechanism (13b "executor as k8s Job").

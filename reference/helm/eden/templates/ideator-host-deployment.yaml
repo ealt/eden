@@ -33,13 +33,6 @@ spec:
           envFrom:
             - secretRef:
                 name: {{ include "eden.secretName" . }}
-          env:
-            # Pod name → unique --worker-id per replica (the ideator doesn't
-            # hold a clone, so a Deployment with churning pod names is fine).
-            - name: POD_NAME
-              valueFrom:
-                fieldRef:
-                  fieldPath: metadata.name
           args:
             - python
             - -m
@@ -51,7 +44,7 @@ spec:
             - --admin-token
             - $(EDEN_ADMIN_TOKEN)
             - --worker-id
-            - $(POD_NAME)
+            - {{ .Values.config.ideatorWorkerId | quote }}
             - --mode
             - {{ .Values.config.workerMode | quote }}
             - --base-commit-sha
