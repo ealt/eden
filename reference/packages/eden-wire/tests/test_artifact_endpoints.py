@@ -78,6 +78,21 @@ class TestDepositFetchNoAuth:
         assert fetch.headers["x-content-type-options"] == "nosniff"
         assert fetch.headers["content-disposition"].startswith("attachment")
 
+    def test_fetch_preserves_exact_text_content_type(
+        self, store: InMemoryStore
+    ) -> None:
+        # §16.2: fetch returns the content_type exactly as recorded — no
+        # Starlette "; charset=utf-8" mutation on a text/* type.
+        client = TestClient(make_app(store))
+        deposit = client.post(
+            _artifacts_url(),
+            headers=_hdr(),
+            files={"file": ("note.md", b"# hi", "text/markdown")},
+        )
+        opaque_id = deposit.json()["artifacts_uri"].rsplit("/", 1)[-1]
+        fetch = client.get(_artifacts_url(f"/{opaque_id}"), headers=_hdr())
+        assert fetch.headers["content-type"] == "text/markdown"
+
     def test_fetch_unknown_id_returns_404(self, store: InMemoryStore) -> None:
         client = TestClient(make_app(store))
         resp = client.get(_artifacts_url("/" + "0" * 32), headers=_hdr())

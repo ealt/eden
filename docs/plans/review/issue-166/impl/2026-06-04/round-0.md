@@ -81,5 +81,18 @@ all addressed:
 
 ## Round 2
 
-Re-ran `codex review --base main` after the round-1 fixes — no further findings
+Re-ran `codex review --base main` after the round-1 fixes — two more findings,
+both addressed:
+
+- **[P2] Check the cap before appending the chunk.** `_read_body_capped` appended
+  each chunk then checked the total, so a single over-limit chunk was buffered
+  before rejection. Now checks `len(body) + len(chunk) > limit` before `extend`.
+- **[P2] Preserve the recorded content type on fetch.** `Response(media_type=…)`
+  makes Starlette append `; charset=utf-8` to a `text/*` type, mutating the
+  recorded `content_type` §16.2 requires returning verbatim. Now sets the
+  `Content-Type` header directly (no `media_type`). Added a regression test.
+
+## Round 3
+
+Re-ran `codex review --base main` after the round-2 fixes — no further findings
 (convergence).

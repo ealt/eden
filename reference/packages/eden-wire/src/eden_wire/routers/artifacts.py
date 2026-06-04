@@ -113,11 +113,14 @@ async def _read_body_capped(request: Request, limit: int) -> bytes:
     """
     body = bytearray()
     async for chunk in request.stream():
-        body.extend(chunk)
-        if len(body) > limit:
+        # Check BEFORE appending so a single over-limit chunk is never
+        # buffered — the streamed cap must bound memory, not just detect
+        # the overage after the fact.
+        if len(body) + len(chunk) > limit:
             raise PayloadTooLarge(
                 f"artifact upload exceeds the {limit}-byte streamed cap"
             )
+        body.extend(chunk)
     return bytes(body)
 
 
@@ -210,11 +213,12 @@ def _fetch_artifact(deps: RouterDeps):  # noqa: ANN202 — FastAPI handler facto
         _authorize_fetch(deps, request, metadata.created_by)
         data = deps.artifact_backend.load(opaque_id)
         headers = artifact_response_headers(opaque_id)
-        return Response(
-            content=data,
-            media_type=metadata.content_type,
-            headers=headers,
-        )
+        # Set Content-Type via the raw header (NOT Response(media_type=…)):
+        # Starlette appends "; charset=utf-8" to a text/* media_type, which
+        # would mutate the recorded content_type. §16.2 requires returning
+        # the content_type exactly as recorded at deposit.
+        headers["Content-Type"] = metadata.content_type
+        return Response(content=data, headers=headers)
 
     return fetch_artifact
 
