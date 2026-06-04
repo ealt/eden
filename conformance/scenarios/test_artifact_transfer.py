@@ -55,6 +55,15 @@ def _deposit(
     )
 
 
+def _fetch(client: WireClient, uri: str, *, as_worker: str | None = None):
+    # §16.2: present the opaque artifacts_uri verbatim as the `uri` query
+    # parameter — the client never parses it.
+    kwargs = {"params": {"uri": uri}}
+    if as_worker is not None:
+        kwargs["as_worker"] = as_worker
+    return client.get(_artifacts_path(client), **kwargs)
+
+
 def test_deposit_returns_201_opaque_uri(wire_client: WireClient) -> None:
     """spec/v0/07-wire-protocol.md §16.1 — deposit MUST return 201 + opaque artifacts_uri."""  # noqa: E501
     depositor = _seed.fresh_worker_id("dep")
@@ -69,15 +78,23 @@ def test_deposit_returns_201_opaque_uri(wire_client: WireClient) -> None:
 
 
 def test_fetch_by_depositor_returns_exact_bytes(wire_client: WireClient) -> None:
-    """spec/v0/08-storage.md §5.3 — a fetch MUST return the exact deposited bytes."""
+    """spec/v0/08-storage.md §5.3 — a fetch MUST return the exact deposited bytes.
+
+    Also asserts the §16.2 safe-delivery headers (recorded content_type +
+    Content-Disposition: attachment + X-Content-Type-Options: nosniff).
+    """
     depositor = _seed.fresh_worker_id("dep")
     _seed.register_worker(wire_client, depositor)
     payload = b"\x00\x01binary\xffcontent"
-    uri = _deposit(wire_client, depositor, payload).json()["artifacts_uri"]
-    opaque_id = uri.rsplit("/", 1)[-1]
-    r = wire_client.get(_artifacts_path(wire_client, f"/{opaque_id}"), as_worker=depositor)
+    uri = _deposit(
+        wire_client, depositor, payload, content_type="application/gzip"
+    ).json()["artifacts_uri"]
+    r = _fetch(wire_client, uri, as_worker=depositor)
     assert r.status_code == 200, r.text
     assert r.content == payload
+    assert r.headers.get("content-type") == "application/gzip", r.headers
+    assert r.headers.get("content-disposition", "").startswith("attachment"), r.headers
+    assert r.headers.get("x-content-type-options") == "nosniff", r.headers
 
 
 def test_fetch_by_admin_succeeds(wire_client: WireClient) -> None:
@@ -85,9 +102,8 @@ def test_fetch_by_admin_succeeds(wire_client: WireClient) -> None:
     depositor = _seed.fresh_worker_id("dep")
     _seed.register_worker(wire_client, depositor)
     uri = _deposit(wire_client, depositor, b"admin-readable").json()["artifacts_uri"]
-    opaque_id = uri.rsplit("/", 1)[-1]
     # The default wire_client authenticates as the deployment admin.
-    r = wire_client.get(_artifacts_path(wire_client, f"/{opaque_id}"))
+    r = _fetch(wire_client, uri)
     assert r.status_code == 200, r.text
     assert r.content == b"admin-readable"
 
@@ -99,19 +115,16 @@ def test_fetch_by_different_worker_returns_403(wire_client: WireClient) -> None:
     _seed.register_worker(wire_client, depositor)
     _seed.register_worker(wire_client, other)
     uri = _deposit(wire_client, depositor, b"secret").json()["artifacts_uri"]
-    opaque_id = uri.rsplit("/", 1)[-1]
-    r = wire_client.get(_artifacts_path(wire_client, f"/{opaque_id}"), as_worker=other)
+    r = _fetch(wire_client, uri, as_worker=other)
     assert r.status_code == 403, r.text
     assert r.json().get("type") == "eden://error/forbidden", r.text
 
 
-def test_fetch_unknown_id_returns_404(wire_client: WireClient) -> None:
-    """spec/v0/07-wire-protocol.md §16.2 — an unknown opaque id MUST return 404 not-found."""  # noqa: E501
+def test_fetch_unknown_uri_returns_404(wire_client: WireClient) -> None:
+    """spec/v0/07-wire-protocol.md §16.2 — an unknown artifacts_uri MUST return 404 not-found."""  # noqa: E501
     worker = _seed.fresh_worker_id("dep")
     _seed.register_worker(wire_client, worker)
-    r = wire_client.get(
-        _artifacts_path(wire_client, "/" + "0" * 32), as_worker=worker
-    )
+    r = _fetch(wire_client, "eden://artifacts/" + "0" * 32, as_worker=worker)
     assert r.status_code == 404, r.text
     assert r.json().get("type") == "eden://error/not-found", r.text
 

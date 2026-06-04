@@ -579,18 +579,19 @@ class StoreClient:
         )
         return DepositArtifactResponse.model_validate(resp.json())
 
-    def fetch_artifact(self, uri_or_id: str) -> bytes:
+    def fetch_artifact(self, artifacts_uri: str) -> bytes:
         """Return the exact bytes for an artifact (§16.2).
 
-        Accepts either the opaque ``artifacts_uri`` a deposit / idea /
-        variant carries (``eden://artifacts/<id>``) or the bare opaque id —
-        the id is the URI's final path segment, so callers never have to
-        parse the supposedly-opaque URI by hand. Raises the §9 wire error
-        the server returned (``NotFound`` for an unknown id, ``Forbidden``
-        for an ACL miss) via the shared problem+json reconstruction.
+        Takes the opaque ``artifacts_uri`` a deposit / idea / variant
+        carries and presents it **verbatim** as the ``uri`` query parameter
+        — the client never parses the opaque URI (§1.5); the issuing server
+        maps it back to bytes. Raises the §9 wire error the server returned
+        (``NotFound`` for an unknown uri, ``Forbidden`` for an ACL miss) via
+        the shared problem+json reconstruction.
         """
-        opaque_id = uri_or_id.rsplit("/", 1)[-1]
-        resp = self._request("GET", f"{self._base}/artifacts/{opaque_id}")
+        resp = self._request(
+            "GET", f"{self._base}/artifacts", params={"uri": artifacts_uri}
+        )
         return resp.content
 
     # ------------------------------------------------------------------

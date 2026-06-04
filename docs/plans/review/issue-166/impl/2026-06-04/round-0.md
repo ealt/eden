@@ -180,8 +180,27 @@ Re-ran `codex review --base main` after the round-6 fixes — three findings, on
 
 ## Round 8
 
-Re-ran `codex review --base main` after the round-7 fix — only re-raises of the two
-documented declines above (per-part streaming cap; durable-store deposit posture), no
-new actionable findings. Converged: every actionable defect is fixed; the two open
+Re-ran `codex review --base main` after the round-7 fix — two new findings, both
+addressed (plus the two standing declines, unchanged):
+
+- **[P1, fixed] Opaque-URI fetch contract.** §16.2 originally took `{A}` (the opaque
+  id) in the path, which forced the client to *extract* the id from `artifacts_uri` —
+  contradicting §1.5's "MUST NOT parse it" and leaving non-path schemes (S3 URLs,
+  URNs) with no portable `{A}`. **Fix:** `fetch_artifact` now takes the **full opaque
+  `artifacts_uri` verbatim** as the `uri` query parameter
+  (`GET /v0/experiments/{E}/artifacts?uri=<artifacts_uri>`); the *issuing* server maps
+  its own scheme back to bytes. Updated the spec §16/§16.2, the handler
+  (`_opaque_id_from_uri`, missing `uri` → 400, unrecognized → 404),
+  `StoreClient.fetch_artifact`, the conformance scenarios, and the wire tests.
+- **[P2, fixed] Conformance asserts the safe-delivery headers.** The fetch scenario
+  now asserts the recorded `Content-Type` + `Content-Disposition: attachment` +
+  `X-Content-Type-Options: nosniff` (§16.2), so an IUT that returns the right bytes but
+  unsafe headers is caught.
+
+## Round 9
+
+Re-ran `codex review --base main` after the round-8 fixes — only re-raises of the two
+standing declines (per-part streaming cap; durable-store deposit posture), no new
+actionable findings. **Converged:** every actionable defect is fixed; the two open
 items are deliberate, documented scoping decisions for this additive PR (the durable
 blob volume + writer adoption are the #290 cutover's work).

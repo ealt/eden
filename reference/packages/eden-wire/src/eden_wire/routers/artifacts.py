@@ -19,11 +19,13 @@ The size cap is enforced **during** the multipart stream via Starlette's
 
 from __future__ import annotations
 
+import re
 import secrets
 from collections.abc import Awaitable, Callable
 from typing import Any, cast
 
 from eden_storage import ArtifactStore
+from eden_storage.errors import NotFound
 from fastapi import APIRouter, Header, Request
 from fastapi.responses import Response
 from starlette.datastructures import UploadFile
@@ -42,12 +44,33 @@ from ..models import DepositArtifactResponse
 _MULTIPART_SLACK = 64 * 1024
 
 
+_ARTIFACT_URI_PREFIX = "eden://artifacts/"
+_OPAQUE_ID_RE = re.compile(r"^[0-9a-f]{32}$")
+
+
 def build_router(deps: RouterDeps) -> APIRouter:
     """Build the artifact deposit / fetch router (§16)."""
     router = APIRouter(prefix="/v0/experiments/{experiment_id}/artifacts")
     router.post("", status_code=201)(_deposit_artifact(deps))
-    router.get("/{opaque_id}")(_fetch_artifact(deps))
+    router.get("")(_fetch_artifact(deps))
     return router
+
+
+def _opaque_id_from_uri(uri: str) -> str:
+    """Map a full reference ``artifacts_uri`` back to its opaque id (§16.2).
+
+    The client presents the whole opaque URI; the *issuing* server (this
+    one) parses ITS OWN scheme — opacity (§1.5) binds clients, not the
+    issuer. A URI that is not a well-formed ``eden://artifacts/<32hex>`` is
+    treated as unrecognized → ``NotFound`` (404), exactly like an
+    absent id.
+    """
+    if not uri.startswith(_ARTIFACT_URI_PREFIX):
+        raise NotFound(f"unrecognized artifact uri {uri!r}")
+    rest = uri[len(_ARTIFACT_URI_PREFIX) :]
+    if not _OPAQUE_ID_RE.fullmatch(rest):
+        raise NotFound(f"unrecognized artifact uri {uri!r}")
+    return rest
 
 
 def _depositor_id(deps: RouterDeps, request: Request) -> str:
@@ -208,10 +231,15 @@ def _fetch_artifact(deps: RouterDeps):  # noqa: ANN202 — FastAPI handler facto
     async def fetch_artifact(
         request: Request,
         experiment_id: str,
-        opaque_id: str,
+        uri: str | None = None,
         x_eden_experiment_id: str | None = Header(None),
     ) -> Response:
         check_experiment(deps, experiment_id, x_eden_experiment_id)
+        # §16.2: the client presents the full opaque artifacts_uri verbatim
+        # (never parsing it); the issuing server maps it back to the id.
+        if uri is None:
+            raise BadRequest("fetch requires the 'uri' query parameter (§16.2)")
+        opaque_id = _opaque_id_from_uri(uri)
         # read_artifact raises NotFound (→ 404) for an absent id, BEFORE
         # the ACL check so a different worker cannot use 403-vs-404 to
         # probe which ids exist beyond their own — the reference posture

@@ -70,8 +70,8 @@ class TestDepositFetchNoAuth:
             headers=_hdr(),
             files={"file": ("blob", payload, "application/octet-stream")},
         )
-        opaque_id = deposit.json()["artifacts_uri"].rsplit("/", 1)[-1]
-        fetch = client.get(_artifacts_url(f"/{opaque_id}"), headers=_hdr())
+        uri = deposit.json()["artifacts_uri"]
+        fetch = client.get(_artifacts_url(), headers=_hdr(), params={"uri": uri})
         assert fetch.status_code == 200
         assert fetch.content == payload
         assert fetch.headers["content-type"].startswith("application/octet-stream")
@@ -89,13 +89,31 @@ class TestDepositFetchNoAuth:
             headers=_hdr(),
             files={"file": ("note.md", b"# hi", "text/markdown")},
         )
-        opaque_id = deposit.json()["artifacts_uri"].rsplit("/", 1)[-1]
-        fetch = client.get(_artifacts_url(f"/{opaque_id}"), headers=_hdr())
+        uri = deposit.json()["artifacts_uri"]
+        fetch = client.get(_artifacts_url(), headers=_hdr(), params={"uri": uri})
         assert fetch.headers["content-type"] == "text/markdown"
 
     def test_fetch_unknown_id_returns_404(self, store: InMemoryStore) -> None:
         client = TestClient(make_app(store))
-        resp = client.get(_artifacts_url("/" + "0" * 32), headers=_hdr())
+        resp = client.get(
+            _artifacts_url(),
+            headers=_hdr(),
+            params={"uri": "eden://artifacts/" + "0" * 32},
+        )
+        assert resp.status_code == 404
+        assert resp.json()["type"] == "eden://error/not-found"
+
+    def test_fetch_missing_uri_returns_400(self, store: InMemoryStore) -> None:
+        client = TestClient(make_app(store))
+        resp = client.get(_artifacts_url(), headers=_hdr())
+        assert resp.status_code == 400
+        assert resp.json()["type"] == "eden://error/bad-request"
+
+    def test_fetch_unrecognized_uri_returns_404(self, store: InMemoryStore) -> None:
+        client = TestClient(make_app(store))
+        resp = client.get(
+            _artifacts_url(), headers=_hdr(), params={"uri": "s3://bucket/key"}
+        )
         assert resp.status_code == 404
         assert resp.json()["type"] == "eden://error/not-found"
 
@@ -196,6 +214,11 @@ def _register_group(client: TestClient, group_id: str, members: list[str]) -> No
     assert resp.status_code == 200
 
 
+def _fetch_by_uri(client: TestClient, uri: str, bearer: str | None = None):
+    extra = {"Authorization": bearer} if bearer else None
+    return client.get(_artifacts_url(), headers=_hdr(extra), params={"uri": uri})
+
+
 class TestFetchACL:
     def _deposit_as(self, client: TestClient, bearer: str) -> str:
         resp = client.post(
@@ -204,7 +227,7 @@ class TestFetchACL:
             files={"file": ("a", b"secret-bytes", "text/plain")},
         )
         assert resp.status_code == 201, resp.text
-        return resp.json()["artifacts_uri"].rsplit("/", 1)[-1]
+        return resp.json()["artifacts_uri"]
 
     def test_depositor_can_fetch_admin_can_fetch_others_cannot(
         self, store: InMemoryStore
@@ -216,15 +239,14 @@ class TestFetchACL:
         bob = f"Bearer bob:{bob_token}"
         admin = f"Bearer admin:{ADMIN_TOKEN}"
 
-        opaque_id = self._deposit_as(client, alice)
-        url = _artifacts_url(f"/{opaque_id}")
+        uri = self._deposit_as(client, alice)
 
         # Depositor fetches its own.
-        assert client.get(url, headers=_hdr({"Authorization": alice})).status_code == 200
+        assert _fetch_by_uri(client, uri, alice).status_code == 200
         # Admin bearer fetches anyone's.
-        assert client.get(url, headers=_hdr({"Authorization": admin})).status_code == 200
+        assert _fetch_by_uri(client, uri, admin).status_code == 200
         # A different worker is refused.
-        forbidden = client.get(url, headers=_hdr({"Authorization": bob}))
+        forbidden = _fetch_by_uri(client, uri, bob)
         assert forbidden.status_code == 403
         assert forbidden.json()["type"] == "eden://error/forbidden"
 
@@ -234,22 +256,16 @@ class TestFetchACL:
         carol_token = _register_worker(client, "carol")
         _register_group(client, "admins", ["carol"])
 
-        opaque_id = self._deposit_as(client, f"Bearer alice:{alice_token}")
-        resp = client.get(
-            _artifacts_url(f"/{opaque_id}"),
-            headers=_hdr({"Authorization": f"Bearer carol:{carol_token}"}),
-        )
+        uri = self._deposit_as(client, f"Bearer alice:{alice_token}")
+        resp = _fetch_by_uri(client, uri, f"Bearer carol:{carol_token}")
         assert resp.status_code == 200
 
     def test_admin_deposit_attributed_to_admin(self, store: InMemoryStore) -> None:
         client = TestClient(make_app(store, admin_token=ADMIN_TOKEN))
-        opaque_id = self._deposit_as(client, f"Bearer admin:{ADMIN_TOKEN}")
+        uri = self._deposit_as(client, f"Bearer admin:{ADMIN_TOKEN}")
         # created_by == "admin"; a worker who is not admin-class is refused.
         worker_token = _register_worker(client, "dave")
-        resp = client.get(
-            _artifacts_url(f"/{opaque_id}"),
-            headers=_hdr({"Authorization": f"Bearer dave:{worker_token}"}),
-        )
+        resp = _fetch_by_uri(client, uri, f"Bearer dave:{worker_token}")
         assert resp.status_code == 403
 
     def test_unauthenticated_request_rejected(self, store: InMemoryStore) -> None:
@@ -280,10 +296,8 @@ class TestStoreClientRoundtrip:
         )
         assert result.artifacts_uri.startswith("eden://artifacts/")
         assert result.size_bytes == len(payload)
-        # fetch_artifact accepts the full opaque URI verbatim ...
+        # fetch_artifact takes the full opaque URI verbatim.
         assert sc.fetch_artifact(result.artifacts_uri) == payload
-        # ... or the bare id.
-        assert sc.fetch_artifact(result.artifacts_uri.rsplit("/", 1)[-1]) == payload
 
     def test_deposit_with_injected_json_content_type_client(
         self, store: InMemoryStore
@@ -304,7 +318,7 @@ class TestStoreClientRoundtrip:
     def test_fetch_unknown_raises_not_found(self, store: InMemoryStore) -> None:
         sc = self._store_client(store)
         with pytest.raises(NotFound):
-            sc.fetch_artifact("0" * 32)
+            sc.fetch_artifact("eden://artifacts/" + "0" * 32)
 
     def test_fetch_forbidden_raises(self, store: InMemoryStore) -> None:
         # Auth-enabled: a different worker's fetch maps the 403 envelope
@@ -320,6 +334,5 @@ class TestStoreClientRoundtrip:
             "http://wire.test", EXPERIMENT_ID, client=client, bearer=f"bob:{bob}"
         )
         uri = alice_sc.deposit_artifact(b"x").artifacts_uri
-        opaque_id = uri.rsplit("/", 1)[-1]
         with pytest.raises(Forbidden):
-            bob_sc.fetch_artifact(opaque_id)
+            bob_sc.fetch_artifact(uri)

@@ -602,9 +602,9 @@ Artifacts are the byte payloads roles produce (plan text, code diffs, evaluator 
 | Operation | HTTP | Path | Auth |
 |---|---|---|---|
 | `deposit_artifact` | `POST` | `/v0/experiments/{E}/artifacts` | worker (admin MAY also deposit) |
-| `fetch_artifact` | `GET` | `/v0/experiments/{E}/artifacts/{A}` | either + per-row ACL (depositor or admin; §13.3) |
+| `fetch_artifact` | `GET` | `/v0/experiments/{E}/artifacts?uri=<artifacts_uri>` | either + per-row ACL (depositor or admin; §13.3) |
 
-The `artifacts_uri` a deposit returns is **opaque** to clients ([`02-data-model.md`](02-data-model.md) §1.5): a client MUST NOT parse it for structure, MUST NOT assume it maps to a filesystem path or any other storage layout, and MUST resolve it only by presenting it to `fetch_artifact`. The reference deployment issues `eden://artifacts/<opaque-id>` where `<opaque-id>` is a server-minted, unguessable, single-segment token; the scheme is documented per the [`08-storage.md`](08-storage.md) §5.1 "MUST document which schemes it issues" requirement and reuses the `eden://` authority (role-disjoint from the non-resolvable `eden://error/...` type URIs of §9).
+The `artifacts_uri` a deposit returns is **opaque** to clients ([`02-data-model.md`](02-data-model.md) §1.5): a client MUST NOT parse it for structure, MUST NOT assume it maps to a filesystem path or any other storage layout, and MUST resolve it only by **presenting the URI verbatim** to `fetch_artifact` (as the `uri` query parameter). Because the client passes the whole URI and never extracts a sub-component, the scheme stays genuinely opaque and any RFC-3986 scheme works (an S3 URL, a URN, …) — the *issuing* server, which alone knows its scheme, maps the URI back to stored bytes. The reference deployment issues `eden://artifacts/<opaque-id>` where `<opaque-id>` is a server-minted, unguessable, single-segment token; the scheme is documented per the [`08-storage.md`](08-storage.md) §5.1 "MUST document which schemes it issues" requirement and reuses the `eden://` authority (role-disjoint from the non-resolvable `eden://error/...` type URIs of §9).
 
 ### 16.1 Deposit
 
@@ -628,13 +628,13 @@ The server MUST enforce a configurable maximum artifact size and MUST reject an 
 
 ### 16.2 Fetch
 
-`GET /v0/experiments/{E}/artifacts/{A}`, where `{A}` is the opaque artifact id carried in a prior deposit's `artifacts_uri`. The server MUST:
+`GET /v0/experiments/{E}/artifacts?uri=<artifacts_uri>`, where the `uri` query parameter carries the **full, percent-encoded** `artifacts_uri` returned by a prior deposit (or recorded on an idea / variant). The client passes the URI verbatim — it does NOT extract any sub-component, preserving opacity ([`02-data-model.md`](02-data-model.md) §1.5). The server MUST:
 
-1. Resolve `{A}` to its recorded artifact; an unknown id returns 404 `eden://error/not-found`.
-2. Enforce the §13.3 per-row ACL: the request is authorized only if the authenticated principal is the artifact's `created_by` depositor OR is an admin-class principal (the literal `admin` bearer, or a member of the `admins` group per [`02-data-model.md`](02-data-model.md) §7.5). An authenticated-but-unauthorized principal — including a *different* registered worker — receives 403 `eden://error/forbidden`. The ACL is evaluated AFTER the existence check only insofar as a 404 for a truly-absent id does not leak; an implementation MAY return 404 for an id the principal is not authorized to learn the existence of, but the reference deployment returns 404 for absent ids and 403 for present-but-unauthorized ones.
+1. Resolve the supplied `uri` to its recorded artifact (the issuing server maps its own scheme back to stored bytes); an unknown or unrecognized `uri` returns 404 `eden://error/not-found`. A missing `uri` query parameter returns 400 `eden://error/bad-request`.
+2. Enforce the §13.3 per-row ACL: the request is authorized only if the authenticated principal is the artifact's `created_by` depositor OR is an admin-class principal (the literal `admin` bearer, or a member of the `admins` group per [`02-data-model.md`](02-data-model.md) §7.5). An authenticated-but-unauthorized principal — including a *different* registered worker — receives 403 `eden://error/forbidden`. The ACL is evaluated AFTER the existence check only insofar as a 404 for a truly-absent artifact does not leak; an implementation MAY return 404 for an artifact the principal is not authorized to learn the existence of, but the reference deployment returns 404 for absent URIs and 403 for present-but-unauthorized ones.
 3. Return `200 OK` with the exact deposited bytes ([`08-storage.md`](08-storage.md) §5.3) and the recorded `content_type`. The response MUST carry `Content-Disposition: attachment` and `X-Content-Type-Options: nosniff` (the safe-delivery posture defeating stored-XSS via `.html` / `.svg` artifacts).
 
-A conforming deployment MUST NOT serve byte content that differs from what `deposit_artifact` persisted for that id ([`08-storage.md`](08-storage.md) §5.3), and MUST NOT overwrite an artifact's bytes once the id is issued ([`08-storage.md`](08-storage.md) §5.4) — because each deposit mints a fresh id, no client request can target an existing id for overwrite.
+A conforming deployment MUST NOT serve byte content that differs from what `deposit_artifact` persisted for that URI ([`08-storage.md`](08-storage.md) §5.3), and MUST NOT overwrite an artifact's bytes once the URI is issued ([`08-storage.md`](08-storage.md) §5.4) — because each deposit mints a fresh URI, no client request can target an existing artifact for overwrite.
 
 ## 17. Implementation latitude
 
