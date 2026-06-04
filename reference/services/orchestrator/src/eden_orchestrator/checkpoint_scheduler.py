@@ -180,6 +180,32 @@ class CheckpointScheduler:
         """Whether auto-checkpointing is active (false ⇒ both methods no-op)."""
         return self._enabled
 
+    @property
+    def interval_seconds(self) -> float:
+        """Resolved cadence interval (seconds)."""
+        return self._interval_seconds
+
+    @property
+    def retention_count(self) -> int:
+        """Resolved periodic-checkpoint ring depth."""
+        return self._retention_count
+
+    @property
+    def on_terminate(self) -> bool:
+        """Whether a terminal checkpoint is taken on observed termination."""
+        return self._on_terminate
+
+    @property
+    def should_check_terminal(self) -> bool:
+        """Whether the loop still needs to read state for the terminal trigger.
+
+        Lets the loop skip the per-iteration ``read_experiment_state``
+        wire roundtrip entirely when auto-checkpointing is disabled,
+        ``on_terminate`` is off, or a terminal checkpoint has already
+        fired this process.
+        """
+        return self._enabled and self._on_terminate and not self._terminal_done
+
     def maybe_checkpoint_periodic(self, *, wall_now: datetime) -> None:
         """Export a periodic checkpoint if the cadence interval has elapsed.
 

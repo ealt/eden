@@ -19,11 +19,13 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import IO
 
 import pytest
 from eden_contracts import AutoCheckpointConfig
 from eden_orchestrator.checkpoint_scheduler import (
     CheckpointScheduler,
+    ExportFn,
     _safe_experiment_prefix,
 )
 
@@ -47,8 +49,8 @@ def _wall(n: int = 0) -> datetime:
     return datetime(2026, 6, 4, 12, 0, n, tzinfo=UTC)
 
 
-def _make_export_fn(payload: bytes = b"CKPT") -> object:
-    def _export(stream) -> None:  # noqa: ANN001
+def _make_export_fn(payload: bytes = b"CKPT") -> ExportFn:
+    def _export(stream: IO[bytes]) -> None:
         stream.write(payload)
 
     return _export
@@ -63,7 +65,7 @@ def _scheduler(
     interval_seconds: float = 100.0,
     retention_count: int = 3,
     on_terminate: bool = True,
-    export_fn: object | None = None,
+    export_fn: ExportFn | None = None,
 ) -> CheckpointScheduler:
     return CheckpointScheduler(
         experiment_id=experiment_id,
@@ -323,9 +325,9 @@ def test_from_config_applies_defaults(tmp_path: Path) -> None:
     )
     assert sched.enabled is True
     # Defaults applied: interval 3600, retention 6, on_terminate true.
-    assert sched._interval_seconds == 3600.0
-    assert sched._retention_count == 6
-    assert sched._on_terminate is True
+    assert sched.interval_seconds == 3600.0
+    assert sched.retention_count == 6
+    assert sched.on_terminate is True
 
 
 def test_from_config_none_is_disabled(tmp_path: Path) -> None:
