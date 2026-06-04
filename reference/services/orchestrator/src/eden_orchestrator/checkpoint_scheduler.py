@@ -65,9 +65,13 @@ DEFAULT_INTERVAL_SECONDS = 3600.0
 DEFAULT_RETENTION_COUNT = 6
 DEFAULT_ON_TERMINATE = True
 
-# Filename timestamp: UTC, second-granularity, sortable lexically.
-_WALL_TS_FORMAT = "%Y%m%dT%H%M%SZ"
-_WALL_TS_RE = r"\d{8}T\d{6}Z"
+# Filename timestamp: UTC, MICROSECOND-granularity, sortable lexically.
+# Microseconds (not bare seconds) so two checkpoints in the same wall
+# second — reachable with a legal sub-second ``interval_seconds`` or a
+# delayed loop tick — produce distinct filenames instead of one
+# silently ``os.replace``-overwriting the other.
+_WALL_TS_FORMAT = "%Y%m%dT%H%M%S_%fZ"
+_WALL_TS_RE = r"\d{8}T\d{6}_\d{6}Z"
 
 # Type of the admin-authed export callable. It writes the archive bytes
 # into the supplied binary stream; its return value (if any) is ignored.

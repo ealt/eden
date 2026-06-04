@@ -1,0 +1,13 @@
+--- docs/plans/review/issue-131-auto-checkpointing/impl/20260604T121701/0.md	2026-06-04 12:17:01
++++ docs/plans/review/issue-131-auto-checkpointing/impl/20260604T121701/1.md	2026-06-04 13:16:07
+@@ -35,3 +35,10 @@
+ 
+ ## Review Status
+ Round 0 — awaiting initial review.
++
++## Round 1 — addressed round-0 findings
++
++- **Must-fix (sub-second filename overwrite):** checkpoint_scheduler.py now uses MICROSECOND-granular timestamps (`%Y%m%dT%H%M%S_%fZ`; regex `\d{8}T\d{6}_\d{6}Z`) so two checkpoints in the same wall second never os.replace-overwrite each other. Added regression test `test_two_fires_same_wall_second_do_not_overwrite`. Did NOT reject sub-second intervals — the plan's corpus deliberately accepts fractional `0.5` (schema `exclusiveMinimum: 0`).
++- **Must-fix (CHANGELOG deferral rule):** removed the checkpoint-compression bullet entirely from the #131 CHANGELOG entry (it tripped the "out of scope" deferral-phrase check; compression is an issue-level non-goal of #131, not deferred work from this chunk, so no tracking issue is owed).
++- **Should-fix (smoke weaker than plan):** smoke-auto-checkpoint.sh now extracts `events.jsonl` from each archive and asserts it is NON-EMPTY (populated wire-state JSONL per plan §3.4), in addition to the tar-parse + manifest.json checks. The git bundle is still allowed empty (inherited 12b gap #294).
++- Docs: observability.md filename scheme updated to the microsecond form. Re-ran scheduler+wiring unit tests (33 pass) and the compose smoke (PASS: 3 periodic + 1 terminal).

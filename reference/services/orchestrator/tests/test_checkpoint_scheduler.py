@@ -147,6 +147,24 @@ def test_periodic_timer_advances_from_completion(tmp_path: Path) -> None:
     assert len(_periodic_tars(tmp_path, prefix)) == 2
 
 
+def test_two_fires_same_wall_second_do_not_overwrite(tmp_path: Path) -> None:
+    # A legal sub-second interval (or a delayed tick) can fire two
+    # periodic checkpoints within the same wall SECOND. Microsecond-
+    # granular filenames must keep them distinct — a second-granular
+    # name would os.replace-overwrite the first (codex round-0 finding).
+    clock = FakeClock()
+    prefix = _safe_experiment_prefix("exp-1")
+    sched = _scheduler(tmp_path, clock, interval_seconds=0.1, retention_count=10)
+    same_second = datetime(2026, 6, 4, 12, 0, 0, 100000, tzinfo=UTC)
+    later_us = datetime(2026, 6, 4, 12, 0, 0, 900000, tzinfo=UTC)
+    clock.advance(0.1)
+    sched.maybe_checkpoint_periodic(wall_now=same_second)
+    clock.advance(0.1)
+    sched.maybe_checkpoint_periodic(wall_now=later_us)
+    # Two distinct archives, not one overwritten.
+    assert len(_periodic_tars(tmp_path, prefix)) == 2
+
+
 # -- retention ring ---------------------------------------------------
 
 
@@ -160,8 +178,10 @@ def test_retention_prunes_oldest_only(tmp_path: Path) -> None:
     kept = _periodic_tars(tmp_path, prefix)
     assert len(kept) == 3
     # Oldest two (wall seconds 0 and 1) pruned; newest three retained.
-    assert all("120000Z" not in k and "120001Z" not in k for k in kept)
-    assert any("120004Z" in k for k in kept)
+    # Timestamps are microsecond-granular (..T120000_000000Z); match on
+    # the seconds-field-plus-underscore so the substring is unambiguous.
+    assert all("120000_" not in k and "120001_" not in k for k in kept)
+    assert any("120004_" in k for k in kept)
 
 
 def test_retention_ignores_terminal_and_foreign_files(tmp_path: Path) -> None:
@@ -170,17 +190,17 @@ def test_retention_ignores_terminal_and_foreign_files(tmp_path: Path) -> None:
     # Pre-seed a terminal archive + a foreign file + another experiment's
     # periodic archive; none of these must ever be pruned.
     other_prefix = _safe_experiment_prefix("exp-2")
-    (tmp_path / f"{prefix}-terminated-20260101T000000Z.tar").write_bytes(b"T")
+    (tmp_path / f"{prefix}-terminated-20260101T000000_000000Z.tar").write_bytes(b"T")
     (tmp_path / "operator-notes.txt").write_bytes(b"keep me")
-    (tmp_path / f"{other_prefix}-20260101T000000Z.tar").write_bytes(b"O")
+    (tmp_path / f"{other_prefix}-20260101T000000_000000Z.tar").write_bytes(b"O")
     sched = _scheduler(tmp_path, clock, interval_seconds=10.0, retention_count=2)
     for i in range(4):
         clock.advance(10.0)
         sched.maybe_checkpoint_periodic(wall_now=_wall(i))
     assert len(_periodic_tars(tmp_path, prefix)) == 2
-    assert (tmp_path / f"{prefix}-terminated-20260101T000000Z.tar").exists()
+    assert (tmp_path / f"{prefix}-terminated-20260101T000000_000000Z.tar").exists()
     assert (tmp_path / "operator-notes.txt").exists()
-    assert (tmp_path / f"{other_prefix}-20260101T000000Z.tar").exists()
+    assert (tmp_path / f"{other_prefix}-20260101T000000_000000Z.tar").exists()
 
 
 # -- terminal trigger -------------------------------------------------
@@ -199,12 +219,12 @@ def test_terminal_skipped_when_existing_archive(tmp_path: Path) -> None:
     clock = FakeClock()
     prefix = _safe_experiment_prefix("exp-1")
     # Restart dedup: a prior process already wrote a terminal archive.
-    (tmp_path / f"{prefix}-terminated-20260101T000000Z.tar").write_bytes(b"OLD")
+    (tmp_path / f"{prefix}-terminated-20260101T000000_000000Z.tar").write_bytes(b"OLD")
     sched = _scheduler(tmp_path, clock)
     sched.maybe_checkpoint_terminal()
     # No second terminal archive written.
     assert _terminal_tars(tmp_path, prefix) == [
-        f"{prefix}-terminated-20260101T000000Z.tar"
+        f"{prefix}-terminated-20260101T000000_000000Z.tar"
     ]
 
 

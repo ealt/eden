@@ -239,7 +239,11 @@ test "${#terminal[@]}" -eq 1 || {
 }
 
 # Each archive parses as tar and carries manifest.json (structural
-# validity; NOT repo-bundle completeness — inherited 12b gap).
+# validity; NOT repo-bundle completeness — inherited 12b gap), AND that
+# the wire-state JSONL is actually POPULATED (per plan §3.4): a structurally
+# valid archive with an empty events.jsonl would pass the manifest check but
+# carry no recoverable state. The git bundle is allowed to be empty (the
+# inherited 12b gap, #294); the wire state is not.
 for f in "${periodic[@]}" "${terminal[@]}"; do
     tar -tf "$f" >/dev/null || {
         echo "archive does not parse as tar: $f" >&2
@@ -248,6 +252,22 @@ for f in "${periodic[@]}" "${terminal[@]}"; do
     tar -tf "$f" | grep -q 'manifest\.json$' || {
         echo "archive missing manifest.json: $f" >&2
         tar -tf "$f" >&2
+        exit 1
+    }
+    # events.jsonl is the always-present wire-state stream (every
+    # experiment emits events). Extract the member by its exact archived
+    # name (it lives under a top-level root dir) and assert non-empty.
+    # `|| true` so a no-match does not trip `set -e` at the assignment —
+    # the explicit emptiness check below emits the clear diagnostic.
+    events_member="$(tar -tf "$f" | grep -E 'events\.jsonl$' | head -1 || true)"
+    test -n "$events_member" || {
+        echo "archive missing events.jsonl: $f" >&2
+        tar -tf "$f" >&2
+        exit 1
+    }
+    events_bytes="$(tar -xOf "$f" "$events_member" | wc -c | tr -d '[:space:]')"
+    test "$events_bytes" -gt 0 || {
+        echo "archive carries an EMPTY events.jsonl (no wire state): $f" >&2
         exit 1
     }
 done
