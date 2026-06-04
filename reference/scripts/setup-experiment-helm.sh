@@ -121,6 +121,9 @@ if [[ "$RELEASE" == *"$CHART_NAME"* ]]; then
 else
     FULLNAME="${RELEASE}-${CHART_NAME}"
 fi
+# Mirror the chart's eden.fullname truncation (trunc 40 + trim trailing '-') so
+# the resource names this script targets match what Helm rendered.
+FULLNAME="$(printf '%s' "$FULLNAME" | cut -c1-40 | sed 's/-*$//')"
 
 # Default chart-managed secret name; overridden after phase 1 if the operator's
 # values set secrets.existingSecret.
@@ -373,8 +376,12 @@ done
 # Now that the groups are seeded, register the experiment with the control
 # plane — this publishes the lease target the orchestrators acquire.
 echo "--- registering experiment ${EXPERIMENT_ID} with the control plane ---" >&2
+# config_uri is the experiment-config resource (chapter 11), NOT the git
+# remote. The chart mounts the config at /etc/eden/experiment-config.yaml in
+# every service, mirroring the Compose bootstrap's file:// URI.
+CONFIG_URI="file:///etc/eden/experiment-config.yaml"
 rc="$(cp_curl POST /v0/control/experiments \
-    "{\"experiment_id\":\"${EXPERIMENT_ID}\",\"config_uri\":\"${FORGEJO_REMOTE_URL}\"}")"
+    "{\"experiment_id\":\"${EXPERIMENT_ID}\",\"config_uri\":\"${CONFIG_URI}\"}")"
 case "$rc" in
     200|201) ;;
     *) echo "register_experiment failed: http=$rc" >&2; exit 1 ;;

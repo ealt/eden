@@ -14,10 +14,14 @@ release (see README "Coexistence").
 */}}
 {{- define "eden.fullname" -}}
 {{- $name := default .Chart.Name .Values.nameOverride -}}
+{{- /* Truncate to 40, not 63: per-resource suffixes are appended after this
+       (the longest, "-git-credential-helper", is 22 chars), so reserving
+       headroom keeps every rendered name within Kubernetes' 63-char DNS
+       label limit even for long release names. */ -}}
 {{- if contains $name .Release.Name -}}
-{{- .Release.Name | trunc 63 | trimSuffix "-" -}}
+{{- .Release.Name | trunc 40 | trimSuffix "-" -}}
 {{- else -}}
-{{- printf "%s-%s" .Release.Name $name | trunc 63 | trimSuffix "-" -}}
+{{- printf "%s-%s" .Release.Name $name | trunc 40 | trimSuffix "-" -}}
 {{- end -}}
 {{- end -}}
 

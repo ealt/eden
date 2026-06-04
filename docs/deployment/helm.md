@@ -84,10 +84,16 @@ kubectl -n eden-prod port-forward svc/eden-web-ui 18090:8090
 open http://localhost:18090/
 ```
 
-### Plain `helm install`
+### Plain `helm install` (chart resources only — NOT a complete bootstrap)
 
-Operators who have already seeded Forgejo and know the seed SHA can skip the
-script:
+A bare `helm install` brings up the chart's pods but does **none** of the
+script's bootstrap steps (steps 2–4 above): the Forgejo `eden` user is not
+created, the bare repo is not seeded, the experiment is not registered with the
+control plane (so the orchestrator has no lease target to acquire), and the
+reserved `admins`/`orchestrators` task-store groups are not seeded (so the
+orchestrator's task ops would 403 and the Web UI has no admin authority). It is
+useful only to an operator who will perform the equivalent registration + group
+bootstrap manually, or who has already seeded Forgejo and knows the seed SHA:
 
 ```sh
 helm install eden reference/helm/eden \
@@ -98,6 +104,10 @@ helm install eden reference/helm/eden \
   --set experiment.id=exp-1 \
   --set experiment.baseCommitSha=<seed-sha>
 ```
+
+For a functional deployment, use `setup-experiment-helm.sh` (above) — it is the
+canonical, supported bootstrap. The manual registration + group-seed steps it
+performs are non-trivial; reproducing them by hand is error-prone.
 
 ## 3. The two-phase bootstrap (why)
 
