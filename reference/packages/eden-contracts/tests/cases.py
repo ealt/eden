@@ -761,6 +761,132 @@ EXPERIMENT_CONFIG_CASES: list[Case] = [
         },
         False,
     ),
+    # --- auto_checkpoint block (issue #131) ---
+    Case(
+        "auto_checkpoint_full_block",
+        {
+            "parallel_variants": 2,
+            "evaluation_schema": {"accuracy": "real"},
+            "objective": {"expr": "accuracy", "direction": "maximize"},
+            "auto_checkpoint": {
+                "enabled": True,
+                "interval_seconds": 1800,
+                "retention_count": 4,
+                "on_terminate": True,
+            },
+        },
+        True,
+    ),
+    Case(
+        "auto_checkpoint_empty_block",
+        {
+            "parallel_variants": 2,
+            "evaluation_schema": {"accuracy": "real"},
+            "objective": {"expr": "accuracy", "direction": "maximize"},
+            "auto_checkpoint": {},
+        },
+        True,
+    ),
+    Case(
+        "auto_checkpoint_enabled_only",
+        {
+            "parallel_variants": 2,
+            "evaluation_schema": {"accuracy": "real"},
+            "objective": {"expr": "accuracy", "direction": "maximize"},
+            "auto_checkpoint": {"enabled": False},
+        },
+        True,
+    ),
+    Case(
+        "auto_checkpoint_fractional_interval_ok",
+        {
+            "parallel_variants": 2,
+            "evaluation_schema": {"accuracy": "real"},
+            "objective": {"expr": "accuracy", "direction": "maximize"},
+            "auto_checkpoint": {"interval_seconds": 0.5},
+        },
+        True,
+    ),
+    Case(
+        "auto_checkpoint_interval_zero_rejected",
+        {
+            "parallel_variants": 2,
+            "evaluation_schema": {"accuracy": "real"},
+            "objective": {"expr": "accuracy", "direction": "maximize"},
+            "auto_checkpoint": {"interval_seconds": 0},
+        },
+        False,
+    ),
+    Case(
+        "auto_checkpoint_interval_negative_rejected",
+        {
+            "parallel_variants": 2,
+            "evaluation_schema": {"accuracy": "real"},
+            "objective": {"expr": "accuracy", "direction": "maximize"},
+            "auto_checkpoint": {"interval_seconds": -1},
+        },
+        False,
+    ),
+    Case(
+        "auto_checkpoint_retention_zero_rejected",
+        {
+            "parallel_variants": 2,
+            "evaluation_schema": {"accuracy": "real"},
+            "objective": {"expr": "accuracy", "direction": "maximize"},
+            "auto_checkpoint": {"retention_count": 0},
+        },
+        False,
+    ),
+    Case(
+        "auto_checkpoint_unknown_key_rejected",
+        {
+            "parallel_variants": 2,
+            "evaluation_schema": {"accuracy": "real"},
+            "objective": {"expr": "accuracy", "direction": "maximize"},
+            "auto_checkpoint": {"destination": "/tmp/x"},
+        },
+        False,
+    ),
+    Case(
+        "auto_checkpoint_enabled_wrong_type_rejected",
+        {
+            "parallel_variants": 2,
+            "evaluation_schema": {"accuracy": "real"},
+            "objective": {"expr": "accuracy", "direction": "maximize"},
+            "auto_checkpoint": {"enabled": "yes"},
+        },
+        False,
+    ),
+    Case(
+        "auto_checkpoint_retention_non_integer_rejected",
+        {
+            "parallel_variants": 2,
+            "evaluation_schema": {"accuracy": "real"},
+            "objective": {"expr": "accuracy", "direction": "maximize"},
+            "auto_checkpoint": {"retention_count": 2.5},
+        },
+        False,
+    ),
+    Case(
+        "auto_checkpoint_enabled_explicit_null_rejected",
+        {
+            "parallel_variants": 2,
+            "evaluation_schema": {"accuracy": "real"},
+            "objective": {"expr": "accuracy", "direction": "maximize"},
+            "auto_checkpoint": {"enabled": None},
+        },
+        False,
+    ),
+    Case(
+        "auto_checkpoint_interval_explicit_null_rejected",
+        {
+            "parallel_variants": 2,
+            "evaluation_schema": {"accuracy": "real"},
+            "objective": {"expr": "accuracy", "direction": "maximize"},
+            "auto_checkpoint": {"interval_seconds": None},
+        },
+        False,
+    ),
 ]
 
 
