@@ -81,7 +81,9 @@ The first Phase 13 chunk: a Helm chart at [`reference/helm/eden/`](reference/hel
 
 **Scope (13a).** Base chart + `--mode scripted` worker hosts (Decision 10) + embedded Postgres/Forgejo StatefulSets (stopgaps replaced in 13c/13e — embedding chosen over upstream subchart dependencies per plan §3.8). The artifact store is a web-ui-owned `ReadWriteOnce` PVC; the task-store-server's artifact-serving route is unwired in 13a.
 
-**Deferrals (filed at the moment of deferral).** A `helm-upgrade-smoke` CI job (plan §6.3) is deferred to [#284](https://github.com/ealt/eden/issues/284). Cross-service artifact serving on Kubernetes (needs a `ReadWriteMany` or external blob backend) is deferred to [#285](https://github.com/ealt/eden/issues/285), mapping to Phase 13d. The required-status bump is [#286](https://github.com/ealt/eden/issues/286). GPU executor as a k8s Job (13b), managed external Postgres (13c), S3/GCS blob backend (13d), Forgejo auth + per-branch ACLs (13e), and `--mode subprocess` + DooD worker hosts remain future 13 sub-chunks per [`docs/roadmap.md`](docs/roadmap.md).
+**Deferrals (each filed as a tracking issue at the moment of deferral).** A `helm-upgrade-smoke` CI job (plan §6.3) → [#284](https://github.com/ealt/eden/issues/284). Cross-service artifact serving on Kubernetes (needs a `ReadWriteMany` or external blob backend) → [#285](https://github.com/ealt/eden/issues/285). The `helm-lint`/`helm-smoke` required-status bump → [#286](https://github.com/ealt/eden/issues/286). Kubernetes-native `--mode subprocess` + DooD worker hosts (Decision 10; 13a ships only `--mode scripted`) → [#291](https://github.com/ealt/eden/issues/291).
+
+**Subsequent Phase 13 substrate work** is pre-planned roadmap scope, tracked in [`docs/roadmap.md`](docs/roadmap.md) §"Phase 13 — Kubernetes reference deployment": GPU executor as a k8s Job (13b), managed external Postgres (13c), S3/GCS blob backend (13d), and Forgejo auth + per-branch ACLs + native PR review (13e). These are separate planned phases, not gaps left by 13a.
 
 ### Fix: align spec prose + integrator manifest to the `evaluation` field name (issue #273)
 

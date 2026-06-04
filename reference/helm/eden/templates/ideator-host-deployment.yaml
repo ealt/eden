@@ -8,6 +8,12 @@ metadata:
     {{- include "eden.componentLabels" (dict "ctx" . "component" "ideator-host") | nindent 4 }}
 spec:
   replicas: {{ .Values.replicas.ideatorHost }}
+  # Recreate (not RollingUpdate): the ideator uses a single fixed --worker-id,
+  # so a rolling update's overlapping old+new pods would race on the same
+  # worker credential (the new pod reissues while the old is still polling).
+  # Recreate terminates the old pod before starting the new one.
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       {{- include "eden.componentSelectorLabels" (dict "ctx" . "component" "ideator-host") | nindent 6 }}
