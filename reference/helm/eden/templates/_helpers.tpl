@@ -1,8 +1,10 @@
 {{/*
-Chart name.
+Chart name. The chart deliberately does NOT support nameOverride: the setup
+script derives the same fullname in bash, and a values-only override would
+silently diverge from the resource names it targets.
 */}}
 {{- define "eden.name" -}}
-{{- default .Chart.Name .Values.nameOverride | trunc 63 | trimSuffix "-" -}}
+{{- .Chart.Name | trunc 63 | trimSuffix "-" -}}
 {{- end -}}
 
 {{/*
@@ -13,7 +15,7 @@ WOULD collide on these names — operators MUST use distinct namespaces per
 release (see README "Coexistence").
 */}}
 {{- define "eden.fullname" -}}
-{{- $name := default .Chart.Name .Values.nameOverride -}}
+{{- $name := .Chart.Name -}}
 {{- /* Truncate to 40, not 63: per-resource suffixes are appended after this
        (the longest, "-git-credential-helper", is 22 chars), so reserving
        headroom keeps every rendered name within Kubernetes' 63-char DNS
@@ -141,4 +143,19 @@ Path to the git credential-helper mounted from the ConfigMap.
 */}}
 {{- define "eden.credentialHelperPath" -}}
 /etc/eden/git-credential-helper
+{{- end -}}
+
+{{/*
+Rollout-trigger checksums for the pod template's metadata.annotations. A change
+to the chart-managed Secret or the startup-read ConfigMaps changes these
+annotations, which changes the pod template and forces a rolling restart — so a
+re-run that rotates a secret (or edits the experiment config) doesn't leave
+pods running with stale env/config. (With secrets.existingSecret the Secret
+template renders empty, so its checksum is stable — external-secret rotation is
+the operator's concern.)
+*/}}
+{{- define "eden.rolloutChecksums" -}}
+checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+checksum/experiment-config: {{ include (print $.Template.BasePath "/experiment-config-configmap.yaml") . | sha256sum }}
+checksum/git-credential-helper: {{ include (print $.Template.BasePath "/git-credential-helper-configmap.yaml") . | sha256sum }}
 {{- end -}}

@@ -12,6 +12,8 @@ spec:
       {{- include "eden.componentSelectorLabels" (dict "ctx" . "component" "control-plane") | nindent 6 }}
   template:
     metadata:
+      annotations:
+        {{- include "eden.rolloutChecksums" . | nindent 8 }}
       labels:
         {{- include "eden.componentLabels" (dict "ctx" . "component" "control-plane") | nindent 8 }}
     spec:

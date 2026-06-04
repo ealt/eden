@@ -13,6 +13,8 @@ spec:
       {{- include "eden.componentSelectorLabels" (dict "ctx" . "component" "task-store-server") | nindent 6 }}
   template:
     metadata:
+      annotations:
+        {{- include "eden.rolloutChecksums" . | nindent 8 }}
       labels:
         {{- include "eden.componentLabels" (dict "ctx" . "component" "task-store-server") | nindent 8 }}
     spec:

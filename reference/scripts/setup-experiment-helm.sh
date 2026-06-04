@@ -258,7 +258,11 @@ SAFE_ID="$(printf '%s' "$EXPERIMENT_ID" | tr '[:upper:]' '[:lower:]' \
     | tr -c 'a-z0-9' '-' | cut -c1-20 | sed 's/^-*//; s/-*$//')"
 ID_HASH="$(printf '%s' "$EXPERIMENT_ID" \
     | python3 -c 'import hashlib,sys; print(hashlib.sha1(sys.stdin.buffer.read()).hexdigest()[:8])')"
-JOB_NAME="${FULLNAME}-repo-init-${SAFE_ID}-${ID_HASH}"
+# Cap at 63 (DNS label) while preserving the 8-char hash suffix for uniqueness:
+# FULLNAME (≤40) + "-repo-init-" + SAFE_ID (≤20) can exceed the limit, so cap
+# the prefix to 54 and append "-${ID_HASH}" (9 chars) → ≤63.
+JOB_PREFIX="$(printf '%s' "${FULLNAME}-repo-init-${SAFE_ID}" | cut -c1-54 | sed 's/-*$//')"
+JOB_NAME="${JOB_PREFIX}-${ID_HASH}"
 
 # Render the out-of-tree Job template (string.Template ${VAR} substitution via
 # python — avoids a gettext/envsubst dependency) and apply it.

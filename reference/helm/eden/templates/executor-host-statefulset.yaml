@@ -14,6 +14,8 @@ spec:
       {{- include "eden.componentSelectorLabels" (dict "ctx" . "component" "executor-host") | nindent 6 }}
   template:
     metadata:
+      annotations:
+        {{- include "eden.rolloutChecksums" . | nindent 8 }}
       labels:
         {{- include "eden.componentLabels" (dict "ctx" . "component" "executor-host") | nindent 8 }}
     spec:
