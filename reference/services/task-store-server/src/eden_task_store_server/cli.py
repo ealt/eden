@@ -245,6 +245,30 @@ def _resolve_store_url(args: argparse.Namespace, log: Any) -> str:
     return str(args.store_url)
 
 
+def _resolve_artifact_blob_dir(raw: str | None, log: Any) -> Path | None:
+    """Resolve the §16 artifact blob dir, warning loudly when absent (issue #166).
+
+    Without ``--artifact-blob-dir`` the deposit endpoint falls back to a
+    non-durable in-memory backend: deposited bytes are lost on restart while
+    their metadata row persists, so a previously-returned ``artifacts_uri``
+    then fetches as 404. Acceptable only for tests / ``:memory:`` stores; a
+    durable deployment MUST set the flag (a server-private writable dir,
+    distinct from ``--artifacts-dir``).
+    """
+    if raw:
+        return Path(raw)
+    log.warning(
+        "no --artifact-blob-dir set: the §16 artifact deposit endpoint will "
+        "use a NON-DURABLE in-memory backend — deposited bytes are lost on "
+        "restart while their metadata row persists, so a previously-returned "
+        "artifacts_uri then fetches as 404. A durable deployment MUST pass "
+        "--artifact-blob-dir. The reference Compose stack wires this as part "
+        "of the #290 cutover, since no writer deposits over the wire yet "
+        "(issue #166)."
+    )
+    return None
+
+
 def main(argv: list[str] | None = None) -> int:
     """Entry point for ``python -m eden_task_store_server``."""
     args = parse_args(argv)
@@ -290,15 +314,7 @@ def main(argv: list[str] | None = None) -> int:
             if args.checkpoint_import_credentials_dir
             else None
         )
-        artifact_blob_dir = (
-            Path(args.artifact_blob_dir) if args.artifact_blob_dir else None
-        )
-        if artifact_blob_dir is None:
-            log.warning(
-                "no --artifact-blob-dir set: the §16 artifact deposit "
-                "endpoint will use a NON-DURABLE in-memory backend; "
-                "deposited bytes are lost on restart (issue #166)"
-            )
+        artifact_blob_dir = _resolve_artifact_blob_dir(args.artifact_blob_dir, log)
         app = build_app(
             store=store,
             admin_token=args.admin_token,

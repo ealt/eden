@@ -91,10 +91,12 @@ class TestArtifactMetadata:
         self, make_store: Callable[..., Store]
     ) -> None:
         # The artifact store is distinct from the event log (08-storage.md
-        # §5); a deposit carries no event.
-        store = cast(ArtifactStore, make_store())
+        # §5); a deposit carries no event. Keep `store` typed as Store for
+        # the event-log reads; cast only the artifact-metadata call (which
+        # lives on the separate ArtifactStore protocol).
+        store = make_store()
         before = len(store.events())
-        store.create_artifact(
+        cast(ArtifactStore, store).create_artifact(
             opaque_id=_HEX,
             created_by="eric",
             size_bytes=1,

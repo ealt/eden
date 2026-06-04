@@ -105,5 +105,26 @@ addressed:
 
 ## Round 4
 
-Re-ran `codex review --base main` after the round-3 fix — no further findings
-(convergence).
+Re-ran `codex review --base main` after the round-3 fix — two findings:
+
+- **[P1, fixed] `events()` after the `ArtifactStore` cast.** `test_no_event_emitted_for_artifact`
+  cast `store` to `ArtifactStore` (which only exposes `create_artifact`/`read_artifact`)
+  then called `store.events()` → `uv run pyright` fails `Attribute "events" is unknown`.
+  (The per-file `pyright .../src` run missed it; the full-repo gate includes tests.)
+  Fixed: keep `store` typed as `Store` for the event reads, `cast` only the
+  `create_artifact` call.
+- **[P1, declined-with-rationale] "require/disable deposits without a durable backend."**
+  codex wants the CLI to error (or disable deposits) when `--artifact-blob-dir` is
+  unset rather than warn-and-continue. Declined for this additive PR: (a) no writer
+  deposits over the wire yet (the cutover is deferred to #290), so the stack never
+  issues a 201 to lose; (b) erroring on a missing flag would break the existing
+  Compose / manual `task-store-server` startup, which the additive PR must not
+  regress; (c) the durable-blob volume is cutover wiring that belongs to #290. The
+  warning is strengthened to spell out the 404-after-restart failure mode and that a
+  durable deployment MUST pass the flag. Re-evaluate (require the flag) when #290
+  wires the writers + the volume.
+
+## Round 5
+
+Re-ran `codex review --base main` after the round-4 fix — no further actionable
+findings (convergence; remaining items are the deferred cutover tracked in #290).
