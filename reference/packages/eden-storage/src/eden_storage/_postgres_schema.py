@@ -203,6 +203,24 @@ def _apply_v7(cur: Any) -> None:
         cur.execute(stmt)
 
 
+# Issue #166: the artifact-metadata store (mirrors the SQLite v8 table).
+# `data` carries the canonical ArtifactMetadata JSON; the bytes live in a
+# separate ArtifactBackend. No event accompanies an artifact row.
+_V8_STATEMENTS: list[str] = [
+    """
+    CREATE TABLE artifact (
+        opaque_id text NOT NULL PRIMARY KEY,
+        data text NOT NULL
+    )
+    """,
+]
+
+
+def _apply_v8(cur: Any) -> None:
+    for stmt in _V8_STATEMENTS:
+        cur.execute(stmt)
+
+
 _MIGRATIONS: list[Callable[[Any], None]] = [
     _apply_v1,
     _apply_v2,
@@ -211,6 +229,7 @@ _MIGRATIONS: list[Callable[[Any], None]] = [
     _apply_v5,
     _apply_v6,
     _apply_v7,
+    _apply_v8,
 ]
 
 

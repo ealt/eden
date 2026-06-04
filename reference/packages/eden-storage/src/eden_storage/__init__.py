@@ -10,6 +10,11 @@ live in [`errors.py`](errors.py) and [`submissions.py`](submissions.py).
 from ._base import RESERVED_IDENTIFIERS
 from ._checkpoint import ImportResult
 from ._ops.events import iter_events_by_type
+from .artifact_backend import (
+    ArtifactBackend,
+    FileArtifactBackend,
+    InMemoryArtifactBackend,
+)
 from .errors import (
     AlreadyExists,
     ConflictingResubmission,
@@ -41,12 +46,15 @@ from .submissions import (
 
 __all__ = [
     "AlreadyExists",
+    "ArtifactBackend",
     "ConflictingResubmission",
     "CycleDetected",
     "DispatchError",
     "EvaluationSubmission",
+    "FileArtifactBackend",
     "IllegalTransition",
     "VariantSubmission",
+    "InMemoryArtifactBackend",
     "InMemoryStore",
     "InvalidPrecondition",
     "NotClaimed",

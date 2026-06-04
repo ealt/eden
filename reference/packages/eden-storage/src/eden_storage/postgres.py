@@ -33,6 +33,7 @@ from typing import Any
 
 import psycopg
 from eden_contracts import (
+    ArtifactMetadata,
     EvaluationSchema,
     Event,
     Experiment,
@@ -765,6 +766,16 @@ class PostgresStore(_StoreBase):
             rows = cur.fetchall()
         return [Group.model_validate_json(row[0]) for row in rows]
 
+    def _get_artifact(self, opaque_id: str) -> ArtifactMetadata | None:
+        with self._conn.cursor() as cur:
+            cur.execute(
+                "SELECT data FROM artifact WHERE opaque_id = %s", (opaque_id,)
+            )
+            row = cur.fetchone()
+        if row is None:
+            return None
+        return ArtifactMetadata.model_validate_json(row[0])
+
     def _get_dispatch_mode(self) -> dict[str, str]:
         with self._conn.cursor() as cur:
             cur.execute(
@@ -840,6 +851,8 @@ class PostgresStore(_StoreBase):
                 cur.execute(
                     "DELETE FROM worker_group WHERE group_id = %s", (group_id,)
                 )
+        for opaque_id, metadata in tx.artifacts.items():
+            self._upsert_artifact(opaque_id, metadata)
         if tx.dispatch_mode is not None:
             with self._conn.cursor() as cur:
                 cur.execute(
@@ -929,6 +942,16 @@ class PostgresStore(_StoreBase):
                     data = EXCLUDED.data
                 """,
                 (task_id, kind, data),
+            )
+
+    def _upsert_artifact(self, opaque_id: str, metadata: ArtifactMetadata) -> None:
+        with self._conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO artifact(opaque_id, data) VALUES(%s, %s)
+                ON CONFLICT(opaque_id) DO UPDATE SET data = EXCLUDED.data
+                """,
+                (opaque_id, _serialize_model(metadata)),
             )
 
     def _insert_event(self, event: Event) -> None:

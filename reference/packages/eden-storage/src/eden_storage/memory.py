@@ -21,6 +21,7 @@ from contextlib import contextmanager
 from threading import RLock
 
 from eden_contracts import (
+    ArtifactMetadata,
     Event,
     Experiment,
     Group,
@@ -76,6 +77,8 @@ class InMemoryStore(_StoreBase):
         # 12b: import-provenance per `02-data-model.md` §2.5. `None` on
         # natively-created experiments; populated by `import_checkpoint`.
         self._imported_from: ImportProvenance | None = None
+        # Artifact metadata rows (issue #166), keyed by opaque_id.
+        self._artifacts: dict[str, ArtifactMetadata] = {}
         self._lock = RLock()
 
     # ------------------------------------------------------------------
@@ -134,6 +137,9 @@ class InMemoryStore(_StoreBase):
     def _get_group(self, group_id: str) -> Group | None:
         return self._groups.get(group_id)
 
+    def _get_artifact(self, opaque_id: str) -> ArtifactMetadata | None:
+        return self._artifacts.get(opaque_id)
+
     def _iter_groups(self) -> Iterable[Group]:
         return [self._groups[k] for k in sorted(self._groups)]
 
@@ -178,6 +184,8 @@ class InMemoryStore(_StoreBase):
             self._groups[group_id] = group
         for group_id in tx.group_deletes:
             self._groups.pop(group_id, None)
+        for opaque_id, metadata in tx.artifacts.items():
+            self._artifacts[opaque_id] = metadata
         if tx.dispatch_mode is not None:
             self._dispatch_mode = dict(tx.dispatch_mode)
         if tx.experiment_state is not None:

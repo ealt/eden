@@ -45,6 +45,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, BinaryIO, Protocol
 
 from eden_contracts import (
+    ArtifactMetadata,
     DispatchMode,
     EvaluationTask,
     Event,
@@ -544,6 +545,31 @@ class Store(Protocol):
 
     def resolve_worker_in_group(self, worker_id: str, group_id: str) -> bool:
         """Return whether ``worker_id`` is transitively in ``group_id``."""
+        ...
+
+    # ------------------------------------------------------------------
+    # Artifact metadata (issue #166)
+    # ------------------------------------------------------------------
+
+    def create_artifact(
+        self,
+        *,
+        opaque_id: str,
+        created_by: str,
+        size_bytes: int,
+        content_type: str,
+    ) -> None:
+        """Record an artifact metadata row (``08-storage.md`` §5.5).
+
+        ``created_by`` is the depositing principal (the §16.2 fetch ACL
+        key). The bytes themselves live in a separate ``ArtifactBackend``;
+        no event accompanies the row. Raises ``AlreadyExists`` on a
+        reused ``opaque_id``.
+        """
+        ...
+
+    def read_artifact(self, opaque_id: str) -> ArtifactMetadata:
+        """Return the artifact metadata row, or raise ``NotFound``."""
         ...
 
     # ------------------------------------------------------------------
