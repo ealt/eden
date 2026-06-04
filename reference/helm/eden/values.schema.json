@@ -50,7 +50,12 @@
         "ideatorHost": { "type": "integer", "minimum": 0 },
         "executorHost": { "type": "integer", "minimum": 0 },
         "evaluatorHost": { "type": "integer", "minimum": 0 },
-        "webUi": { "type": "integer", "minimum": 0 }
+        "webUi": {
+          "description": "Operator-singleton in v0: a fixed --worker-id + RWO clone/artifacts PVCs make >1 replica incoherent (credential reissue races, split artifacts). Capped at 1 until horizontal scaling lands.",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1
+        }
       }
     },
     "secrets": {

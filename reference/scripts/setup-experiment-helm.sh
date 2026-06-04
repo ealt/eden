@@ -237,7 +237,16 @@ if secrets:
     lines += ["        - name: " + s["name"] for s in secrets]
     sys.stdout.write("\n".join(lines))
 ')"
-JOB_NAME="${FULLNAME}-repo-init-${EXPERIMENT_ID}"
+# Derive a DNS-safe Job name: experiment ids may contain characters valid for
+# EDEN (underscores, uppercase) but invalid in Kubernetes object names. Lower-
+# case + replace invalid chars, truncate, and append a short hash of the
+# original id for uniqueness. The original EXPERIMENT_ID still drives the
+# EDEN/Forgejo inputs.
+SAFE_ID="$(printf '%s' "$EXPERIMENT_ID" | tr '[:upper:]' '[:lower:]' \
+    | tr -c 'a-z0-9' '-' | cut -c1-20 | sed 's/^-*//; s/-*$//')"
+ID_HASH="$(printf '%s' "$EXPERIMENT_ID" \
+    | python3 -c 'import hashlib,sys; print(hashlib.sha1(sys.stdin.buffer.read()).hexdigest()[:8])')"
+JOB_NAME="${FULLNAME}-repo-init-${SAFE_ID}-${ID_HASH}"
 
 # Render the out-of-tree Job template (string.Template ${VAR} substitution via
 # python — avoids a gettext/envsubst dependency) and apply it.

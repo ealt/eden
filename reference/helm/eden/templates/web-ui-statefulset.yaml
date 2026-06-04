@@ -100,8 +100,12 @@ spec:
           volumeMounts:
             - name: repo
               mountPath: /var/lib/eden/repo
+              # subPath so the clone target is an empty subdir (avoids the
+              # ext4 lost+found that makes `git clone --bare` refuse the root).
+              subPath: repo
             - name: artifacts
               mountPath: /var/lib/eden/artifacts
+              subPath: artifacts
             - name: experiment-config
               mountPath: /etc/eden/experiment-config.yaml
               subPath: experiment-config.yaml

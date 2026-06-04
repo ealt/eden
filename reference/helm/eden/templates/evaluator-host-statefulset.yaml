@@ -69,6 +69,7 @@ spec:
             # mode (13b), per Decision 3's StatefulSet-with-clone shape.
             - name: repo
               mountPath: /var/lib/eden/repo
+              subPath: repo
             - name: experiment-config
               mountPath: /etc/eden/experiment-config.yaml
               subPath: experiment-config.yaml

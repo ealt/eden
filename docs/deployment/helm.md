@@ -66,11 +66,16 @@ When no `--values` file is supplied, the script generates fresh dev secrets
 requires `--image`. Supply `--values <file>` (e.g. for production secrets via
 `existingSecret`) to drive secrets yourself.
 
-To bootstrap a **second** experiment later, re-run with a different
-`--experiment-id` and `--experiment-config` against the same release. (Note: the
-reference task-store-server is single-experiment per process; multiple
-experiments per release is a control-plane concept — for v0, run one experiment
-per release.)
+**One experiment per release in v0.** The reference task-store-server is
+single-experiment per process, and the release-wide `experiment.id` value points
+the whole stack at one experiment. Do **not** re-run the script with a different
+`--experiment-id` against the same release — that rewrites `experiment.id`,
+re-points the single task-store/worker stack at the new experiment, and orphans
+the first (it stays registered with the control plane but is no longer served).
+To run a **second** experiment, install a **separate release in a separate
+namespace** (e.g. `--release eden-b --namespace eden-b`). True
+multiple-experiments-per-release hosting is tracked in
+[#254](https://github.com/ealt/eden/issues/254).
 
 Reach the Web UI:
 

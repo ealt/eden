@@ -82,6 +82,10 @@ spec:
           volumeMounts:
             - name: repo
               mountPath: /var/lib/eden/repo
+              # subPath so the clone target is an empty subdir of the PVC, not
+              # the volume root — a fresh ext4 PVC root carries lost+found, and
+              # `git clone --bare` refuses a non-empty destination.
+              subPath: repo
             - name: experiment-config
               mountPath: /etc/eden/experiment-config.yaml
               subPath: experiment-config.yaml
