@@ -60,7 +60,7 @@ spec:
             - --mode
             - {{ .Values.config.workerMode | quote }}
             - --repo-path
-            - /var/lib/eden/repo
+            - /var/lib/eden/clone/repo
             - --forgejo-url
             - {{ include "eden.forgejoRemoteUrl" . | quote }}
             - --credential-helper
@@ -70,11 +70,11 @@ spec:
             - --log-level
             - info
           volumeMounts:
+            # PVC mounted at a parent; clone into the .../clone/repo child so
+            # fsGroup ownership applies (volume root) and git creates the empty
+            # repo dir — see orchestrator-statefulset.yaml for the rationale.
             - name: repo
-              mountPath: /var/lib/eden/repo
-              # subPath so the clone target is an empty subdir (avoids the
-              # ext4 lost+found that makes `git clone --bare` refuse the root).
-              subPath: repo
+              mountPath: /var/lib/eden/clone
             - name: git-credential-helper
               mountPath: {{ include "eden.credentialHelperPath" . }}
               subPath: git-credential-helper

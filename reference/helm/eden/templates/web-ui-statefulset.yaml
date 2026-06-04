@@ -66,7 +66,7 @@ spec:
             - --artifacts-dir
             - /var/lib/eden/artifacts
             - --repo-path
-            - /var/lib/eden/repo
+            - /var/lib/eden/clone/repo
             - --forgejo-url
             - {{ include "eden.forgejoRemoteUrl" . | quote }}
             - --credential-helper
@@ -98,14 +98,15 @@ spec:
             timeoutSeconds: 3
             failureThreshold: 6
           volumeMounts:
+            # Clone into the .../clone/repo child (see orchestrator-statefulset
+            # for the fsGroup/subPath/lost+found rationale).
             - name: repo
-              mountPath: /var/lib/eden/repo
-              # subPath so the clone target is an empty subdir (avoids the
-              # ext4 lost+found that makes `git clone --bare` refuse the root).
-              subPath: repo
+              mountPath: /var/lib/eden/clone
+            # Artifacts: mounted at the volume root (no subPath) so fsGroup makes
+            # it writable by the rootless web-ui; a stray lost+found is harmless
+            # to the artifact-serving route.
             - name: artifacts
               mountPath: /var/lib/eden/artifacts
-              subPath: artifacts
             - name: experiment-config
               mountPath: /etc/eden/experiment-config.yaml
               subPath: experiment-config.yaml

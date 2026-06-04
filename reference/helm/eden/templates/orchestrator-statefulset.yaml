@@ -64,7 +64,7 @@ spec:
             - --worker-id
             - $(POD_NAME)
             - --repo-path
-            - /var/lib/eden/repo
+            - /var/lib/eden/clone/repo
             - --forgejo-url
             - {{ include "eden.forgejoRemoteUrl" . | quote }}
             - --credential-helper
@@ -80,12 +80,14 @@ spec:
             - --log-level
             - info
           volumeMounts:
+            # Mount the PVC at a dedicated parent and clone into a CHILD dir
+            # (--repo-path .../clone/repo). fsGroup makes the volume ROOT
+            # group-writable (subPath dirs are created root-owned AFTER the
+            # fsGroup pass, so a rootless pod can't write them), and git creates
+            # the empty repo/ child — sidestepping both the ext4 lost+found at
+            # the root and the subPath ownership gap.
             - name: repo
-              mountPath: /var/lib/eden/repo
-              # subPath so the clone target is an empty subdir of the PVC, not
-              # the volume root — a fresh ext4 PVC root carries lost+found, and
-              # `git clone --bare` refuses a non-empty destination.
-              subPath: repo
+              mountPath: /var/lib/eden/clone
             - name: experiment-config
               mountPath: /etc/eden/experiment-config.yaml
               subPath: experiment-config.yaml

@@ -66,10 +66,11 @@ spec:
           volumeMounts:
             # In scripted mode the evaluator does not clone (it scores from the
             # task store); the clone PVC + mount are reserved for subprocess
-            # mode (13b), per Decision 3's StatefulSet-with-clone shape.
+            # mode (13b), per Decision 3's StatefulSet-with-clone shape. Mounted
+            # at the parent (no subPath) so a future clone target child gets
+            # fsGroup ownership — see orchestrator-statefulset.yaml.
             - name: repo
-              mountPath: /var/lib/eden/repo
-              subPath: repo
+              mountPath: /var/lib/eden/clone
             - name: experiment-config
               mountPath: /etc/eden/experiment-config.yaml
               subPath: experiment-config.yaml
