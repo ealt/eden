@@ -280,8 +280,26 @@ class TestStoreClientRoundtrip:
         )
         assert result.artifacts_uri.startswith("eden://artifacts/")
         assert result.size_bytes == len(payload)
-        opaque_id = result.artifacts_uri.rsplit("/", 1)[-1]
-        assert sc.fetch_artifact(opaque_id) == payload
+        # fetch_artifact accepts the full opaque URI verbatim ...
+        assert sc.fetch_artifact(result.artifacts_uri) == payload
+        # ... or the bare id.
+        assert sc.fetch_artifact(result.artifacts_uri.rsplit("/", 1)[-1]) == payload
+
+    def test_deposit_with_injected_json_content_type_client(
+        self, store: InMemoryStore
+    ) -> None:
+        # A caller-injected client whose default Content-Type is JSON must
+        # still produce a valid multipart deposit (the helper sets the
+        # boundary Content-Type explicitly).
+        app = make_app(store)
+        client = TestClient(
+            app,
+            base_url="http://wire.test",
+            headers={"Content-Type": "application/json"},
+        )
+        sc = StoreClient("http://wire.test", EXPERIMENT_ID, client=client)
+        result = sc.deposit_artifact(b"payload", content_type="text/plain")
+        assert sc.fetch_artifact(result.artifacts_uri) == b"payload"
 
     def test_fetch_unknown_raises_not_found(self, store: InMemoryStore) -> None:
         sc = self._store_client(store)

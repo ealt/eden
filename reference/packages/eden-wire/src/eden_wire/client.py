@@ -198,7 +198,7 @@ class StoreClient:
         *,
         params: dict[str, Any] | None = None,
         json: Any = None,
-        files: Any = None,
+        content: bytes | None = None,
         extra_headers: dict[str, str] | None = None,
     ) -> httpx.Response:
         headers = self._headers
@@ -209,7 +209,7 @@ class StoreClient:
             path,
             params=params,
             json=json,
-            files=files,
+            content=content,
             headers=headers,
         )
         if 400 <= resp.status_code < 600:
@@ -560,20 +560,36 @@ class StoreClient:
         carries no client-asserted identity to reconcile; a lost response
         just means re-deposit for a fresh id (§16.1).
         """
+        # Encode the multipart body via a standalone httpx.Request (no
+        # client defaults applied) so we capture the generated boundary
+        # Content-Type and send it explicitly. A caller-injected
+        # ``client=httpx.Client(headers={"Content-Type": "application/json"})``
+        # would otherwise leave httpx unable to override that default for a
+        # ``files=`` request, and the server would see JSON + no file part.
+        encoded = httpx.Request(
+            "POST",
+            self._client.base_url.join(f"{self._base}/artifacts"),
+            files={"file": (filename, io.BytesIO(data), content_type)},
+        )
         resp = self._request(
             "POST",
             f"{self._base}/artifacts",
-            files={"file": (filename, io.BytesIO(data), content_type)},
+            content=encoded.read(),
+            extra_headers={"Content-Type": encoded.headers["content-type"]},
         )
         return DepositArtifactResponse.model_validate(resp.json())
 
-    def fetch_artifact(self, opaque_id: str) -> bytes:
-        """Return the exact bytes deposited under ``opaque_id`` (§16.2).
+    def fetch_artifact(self, uri_or_id: str) -> bytes:
+        """Return the exact bytes for an artifact (§16.2).
 
-        Raises the §9 wire error the server returned (``NotFound`` for an
-        unknown id, ``Forbidden`` for an ACL miss) via the shared
-        problem+json reconstruction.
+        Accepts either the opaque ``artifacts_uri`` a deposit / idea /
+        variant carries (``eden://artifacts/<id>``) or the bare opaque id —
+        the id is the URI's final path segment, so callers never have to
+        parse the supposedly-opaque URI by hand. Raises the §9 wire error
+        the server returned (``NotFound`` for an unknown id, ``Forbidden``
+        for an ACL miss) via the shared problem+json reconstruction.
         """
+        opaque_id = uri_or_id.rsplit("/", 1)[-1]
         resp = self._request("GET", f"{self._base}/artifacts/{opaque_id}")
         return resp.content
 

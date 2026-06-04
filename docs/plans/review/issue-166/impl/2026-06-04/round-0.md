@@ -126,5 +126,21 @@ Re-ran `codex review --base main` after the round-3 fix — two findings:
 
 ## Round 5
 
-Re-ran `codex review --base main` after the round-4 fix — no further actionable
-findings (convergence; remaining items are the deferred cutover tracked in #290).
+Re-ran `codex review --base main` after the round-4 fixes — two `StoreClient`
+API-robustness findings, both addressed:
+
+- **[P2] Multipart Content-Type for an injected client.** `StoreClient.deposit_artifact`
+  used `files=`; a caller-injected `httpx.Client` with a default
+  `Content-Type: application/json` would prevent httpx from emitting the multipart
+  boundary (same trap as the conformance `WireClient`). Now encodes the multipart via
+  a standalone `httpx.Request` and sends the raw content with the boundary
+  Content-Type set explicitly (overriding any client default). Added a regression test.
+- **[P2] `fetch_artifact` accepts the full opaque URI.** It required the bare id and
+  spliced it into the path, so a caller passing the returned `eden://artifacts/<id>`
+  URI got a 404. Now extracts the id as the URI's final path segment, accepting both
+  the full URI and the bare id. Added a regression test.
+
+## Round 6
+
+Re-ran `codex review --base main` after the round-5 fixes — no further actionable
+findings (convergence; remaining work is the deferred cutover tracked in #290).
