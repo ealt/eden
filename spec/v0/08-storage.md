@@ -151,7 +151,7 @@ Every experiment declares an evaluation schema in its `experiment_config` ([`02-
 
 ### 4.1 Registration
 
-At experiment registration time, a conforming deployment MUST persist the experiment's evaluation schema durably and atomically with the experiment's other configuration. A subsequent write of a variant's `metrics` field MUST be validated against the schema registered for that experiment; no write MAY bypass this validation.
+At experiment registration time, a conforming deployment MUST persist the experiment's evaluation schema durably and atomically with the experiment's other configuration. A subsequent write of a variant's `evaluation` field MUST be validated against the schema registered for that experiment; no write MAY bypass this validation.
 
 ### 4.2 Immutability during an experiment
 
@@ -163,7 +163,7 @@ The content is canonicality: comparing variants across an experiment only has me
 
 A successful write of a `variant.evaluation` payload MUST satisfy:
 
-- Every key in `metrics` is present in the experiment's evaluation schema.
+- Every key in the `evaluation` payload is present in the experiment's evaluation schema.
 - Every value either satisfies the declared type of its key — per the type mapping in [`02-data-model.md`](02-data-model.md) §1.3 (`integer`, `real`, `text`) — or is `null`.
 - No reserved name ([`02-data-model.md`](02-data-model.md) §8.2) appears as a key.
 

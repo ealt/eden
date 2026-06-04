@@ -13,12 +13,12 @@ Fields are pinned by the spec:
 - ``IdeaSubmission``        — status + idea_ids (set-equivalent
   per 04 §4.2).
 - ``VariantSubmission``   — status + variant_id + commit_sha (03 §3.4).
-- ``EvaluationSubmission``    — status + variant_id + metrics + optional
-  artifacts_uri (03 §4.4, 04 §4.2 on metrics equivalence).
+- ``EvaluationSubmission``    — status + variant_id + evaluation + optional
+  artifacts_uri (03 §4.4, 04 §4.2 on evaluation equivalence).
 
 All three are ``frozen=True`` so callers cannot rebind fields after
 construction. ``submit`` still deep-copies on entry and
-``read_submission`` on exit, because the ``metrics`` dict on
+``read_submission`` on exit, because the ``evaluation`` dict on
 ``EvaluationSubmission`` is not itself frozen.
 """
 

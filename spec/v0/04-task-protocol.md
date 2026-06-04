@@ -134,7 +134,7 @@ When the claimant matches, the task store MUST handle the resubmission as follow
 - If the resubmission's result payload is **content-equivalent** to the already-recorded payload, the task store MUST accept it and MUST NOT change the task's state or recorded result. "Content equivalence" means the normative fields identified per role agree:
   - `ideation` — the set of `idea_ids` (compared as sets; order is not significant per [`03-roles.md`](03-roles.md) §2.4) and `status`.
   - `execution` — `variant_id`, `status`, and `commit_sha` (when present).
-  - `evaluation` — `variant_id`, `status`, and `metrics` (compared as JSON values; key order does not matter).
+  - `evaluation` — `variant_id`, `status`, and `evaluation` (compared as JSON values; key order does not matter).
 - If the resubmission's result payload is **not** content-equivalent, the task store MUST reject it. The first submission's result is the committed result.
 
 This rule exists so that a worker may safely retry a submit after a network or process failure without risk of advancing state twice or corrupting the recorded result. Bindings MAY additionally accept an optional caller-supplied `submission_id` field on the wire payload to act as an explicit idempotency key; that is a binding-layer extension and does not weaken the content-equivalence rule.

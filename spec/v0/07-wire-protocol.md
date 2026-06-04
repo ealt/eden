@@ -364,7 +364,7 @@ Claim, reject, reclaim, and accept are **not** blindly retry-safe on transport f
 The reference `eden_wire` server also exposes:
 
 - `GET /_reference/experiments/{E}/tasks/{T}/validate-terminal`
-- `POST /_reference/experiments/{E}/validate/metrics`
+- `POST /_reference/experiments/{E}/validate/evaluation`
 
 These are conveniences for the Phase-5 dispatch driver and are **not** part of the normative binding. A conforming third-party client MUST NOT rely on them being present. A conforming third-party orchestrator implementing its own accept/reject decision inline is free to do so; the [`04-task-protocol.md`](04-task-protocol.md) §4.3 decision rules are all that matter for the state machine.
 

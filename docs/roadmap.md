@@ -263,6 +263,7 @@ Units and chunking to be named closer to execution — too far ahead to estimate
 - [12c](plans/eden-phase-12c-control-plane.md) — Control plane — **shipped 2026-05-19** (see [CHANGELOG](../CHANGELOG.md))
 - [#145](plans/issue-145-per-route-store-swap.md) — Per-route store swapping for the experiment switcher (12c §3.6 backfill) — **shipped 2026-06-02** (see [CHANGELOG](../CHANGELOG.md))
 - [#122](plans/issue-122-baseline-variant.md) — Evaluatable baseline variant (seed becomes a `kind="baseline"` Variant) — **shipped 2026-06-02** (see [CHANGELOG](../CHANGELOG.md))
+- [#273](https://github.com/ealt/eden/issues/273) — Fix spec/impl drift: align prose + integrator manifest to the `evaluation` field name (Option 1) — **shipped 2026-06-03** (see [CHANGELOG](../CHANGELOG.md))
 
 ---
 

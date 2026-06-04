@@ -980,7 +980,7 @@ class _TaskLifecycleOpsMixin(_StoreCore):
         if variant.commit_sha is None:
             return f"variant {submission.variant_id!r} has no commit_sha"
         if submission.evaluation is None:
-            return "success submission requires metrics (03-roles.md §4.4)"
+            return "success submission requires evaluation (03-roles.md §4.4)"
         try:
             self._validate_evaluation(submission.evaluation)
         except InvalidPrecondition as exc:

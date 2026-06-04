@@ -275,7 +275,7 @@ class TestValidationErrorRouting:
         )
         reason = store.validate_acceptance("t-eval")
         assert reason is not None
-        assert "metrics" in reason
+        assert "evaluation" in reason
 
     def test_driver_routes_malformed_success_to_validation_error(
         self, make_store: Callable[..., Store]

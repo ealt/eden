@@ -97,7 +97,7 @@ class _VariantOpsMixin(_StoreCore):
     def declare_variant_evaluation_error(self, variant_id: str) -> None:
         """Retry-exhausted: ``starting → evaluation_error`` (``05-event-protocol.md`` §2.2).
 
-        Writes ``completed_at`` atomically; MUST NOT set metrics or
+        Writes ``completed_at`` atomically; MUST NOT set evaluation or
         artifacts_uri (``03-roles.md`` §4.4).
         """
         with self._atomic_operation():
