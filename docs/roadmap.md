@@ -264,6 +264,7 @@ Units and chunking to be named closer to execution — too far ahead to estimate
 - [#145](plans/issue-145-per-route-store-swap.md) — Per-route store swapping for the experiment switcher (12c §3.6 backfill) — **shipped 2026-06-02** (see [CHANGELOG](../CHANGELOG.md))
 - [#122](plans/issue-122-baseline-variant.md) — Evaluatable baseline variant (seed becomes a `kind="baseline"` Variant) — **shipped 2026-06-02** (see [CHANGELOG](../CHANGELOG.md))
 - [#273](https://github.com/ealt/eden/issues/273) — Fix spec/impl drift: align prose + integrator manifest to the `evaluation` field name (Option 1) — **shipped 2026-06-03** (see [CHANGELOG](../CHANGELOG.md))
+- [#166](plans/issue-166-wire-artifact-upload.md) — Wire-level artifact transfer: contract + `ArtifactBackend` + deposit/fetch endpoints + conformance (Waves 0-2 + 4; hard cutover deferred to [#290](https://github.com/ealt/eden/issues/290)) — **shipped 2026-06-04** (see [CHANGELOG](../CHANGELOG.md))
 
 ---
 

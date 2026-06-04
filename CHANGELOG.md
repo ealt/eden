@@ -8,6 +8,38 @@ Per-chunk entries preserve the full implementation record: contract amendments, 
 
 ## [Unreleased]
 
+### Wire-level artifact transfer: contract + backend + deposit/fetch endpoints + conformance (issue #166, Waves 0-2 + 4)
+
+Adds the **additive** half of wire-level artifact transfer — the deposit/fetch endpoints, the server-side blob backend + metadata, the `StoreClient` methods, and the conformance group. This is the contract Phase 13d's S3/GCS backend ([#174](https://github.com/ealt/eden/issues/174)) plugs into. **The hard cutover** (migrating every writer off the shared-`file://` mount and retiring the `file://` read path, plan decision D-c) is **deferred to [#290](https://github.com/ealt/eden/issues/290)** — the highest-blast-radius wave, split out for its own focused PR with the full smoke/e2e quartet per the AGENTS.md substrate-migration audit discipline. Nothing emits `eden://artifacts/…` yet; the `file://` write/read path is untouched and still in use.
+
+**Why wire-level (motivation).** EDEN's artifact substrate assumed a *shared filesystem* between every worker, the task-store-server, and the web-ui (the `${EDEN_EXPERIMENT_DATA_ROOT}/artifacts/` bind-mount). That breaks for any distributed deployment: a worker on another machine has no shared FS, workers can read/overwrite each other's submissions, and worker-local bytes vanish on instance loss. #166 moves artifacts to **wire deposit/retrieve** behind an opaque URI; the physical layout becomes the server's private business.
+
+**Spec (Wave 0).**
+
+- [`07-wire-protocol.md`](spec/v0/07-wire-protocol.md): new **§16 Artifact operations** (`deposit_artifact` `POST /v0/experiments/{E}/artifacts`, `fetch_artifact` `GET .../{A}`) — opaque `eden://artifacts/<opaque-id>` URI, streamed size cap, safe-delivery headers, the first **row-scoped** fetch ACL (depositor or admin-class; §13.3); renumber "Implementation latitude" §16 → §17; new §9 error `eden://error/payload-too-large` (413); §12 conformance statement.
+- [`02-data-model.md`](spec/v0/02-data-model.md) §1.5: `artifacts_uri` is opaque; reference deployment issues `eden://artifacts/<opaque-id>` resolved via §16, role-disjoint from `eden://error/`.
+- [`08-storage.md`](spec/v0/08-storage.md) §5.1 reference note re-pointed from the #168 hierarchical `file://` layout to the opaque scheme + private blob backend; new §5.5 metadata-row note.
+- [`09-conformance.md`](spec/v0/09-conformance.md) §4/§5: v1 **"Artifact transfer"** scenario group, scoped to the wire-observable projection per the chapter 9 §6 IUT-contract restriction.
+- [worker-host-subprocess.md](spec/v0/reference-bindings/worker-host-subprocess.md) §2.3/§4/§10: staging-then-deposit flow; layout is server-internal.
+- New schemas: `artifact-metadata.schema.json`, `wire/deposit-artifact-response.schema.json`; `eden_contracts.ArtifactMetadata` + `eden_wire.models.DepositArtifactResponse` Pydantic bindings (full `_common.py` strict/format/NotNone discipline; schema-parity + roundtrip wired).
+
+**Storage (Wave 1).** `eden_storage.artifact_backend`: `ArtifactBackend` Protocol (bytes-in `store` / bytes-out `load`, metadata-free so 13d's S3/GCS backend satisfies it trivially) + `FileArtifactBackend` (exclusive-create / atomic-link + `O_NOFOLLOW` read guards; the opaque-id hex grammar is validated first so — unlike the client-path `_reference` route — there is no traversal surface) + `InMemoryArtifactBackend`. `Store` gains `create_artifact` / `read_artifact` (**no event** — the artifact store is distinct from the event log per chapter 8 §5) across in-memory / sqlite / postgres, with a v8 migration adding the `artifact` metadata table.
+
+**Wire (Wave 2).** `routers/artifacts.py` deposit + fetch handlers. The deposit **size cap is enforced during the streamed read** before the body is buffered (Starlette's `request.form(max_part_size=…)` does NOT cap *file* parts — only non-file fields — so the cap is enforced on the raw stream, then the body is re-parsed via a replay-receive `Request`; over-cap → 413). Fetch enforces the §16.2 per-row ACL and returns exact bytes with `Content-Disposition: attachment` + `nosniff`. `StoreClient.deposit_artifact` / `fetch_artifact`; task-store-server `--max-artifact-bytes` flag (default 100 MiB, distinct from the 1 MiB inline-render cap).
+
+**Conformance (Wave 4).** `conformance/scenarios/test_artifact_transfer.py` (group "Artifact transfer"): deposit 201 + opaque URI + size/content_type; fetch-by-depositor exact bytes; fetch-by-admin; fetch-by-different-worker → 403 (cross-worker isolation); fetch-unknown → 404; fresh-id-per-deposit (no-overwrite projection). `WireClient` gained multipart support. The full reference suite passes (263 scenarios).
+
+**Deferrals (each tracked as a GitHub issue):**
+
+- **Hard cutover** (migrate writers to deposit, retire the `file://` read path + `_reference` route + web-ui `--artifacts-dir`, rewire Compose/Helm/setup-experiment, run smoke+e2e) → [#290](https://github.com/ealt/eden/issues/290).
+- **S3/GCS `ArtifactBackend`** → Phase 13d / [#174](https://github.com/ealt/eden/issues/174).
+- **Cross-role peer-worker read ACL** (an evaluator reading the executor artifact of the variant under evaluation) → [#288](https://github.com/ealt/eden/issues/288), gated on [#143](https://github.com/ealt/eden/issues/143). The v0 posture (depositor-or-admin) is secure-by-default.
+- **Orphaned-artifact GC** (deposit-without-reference sweep; the deposit needs no read-back ladder, so a lost response leaves an orphan) → [#289](https://github.com/ealt/eden/issues/289).
+- **Content-addressed checkpoint substrate** + artifact-metadata round-trip through checkpoint export/import → [#102](https://github.com/ealt/eden/issues/102) (this chunk does **not** checkpoint artifact-metadata rows; `artifacts_uri` continues to ride checkpoints verbatim per chapter 10 §7).
+- **Over-cap 413 is not portably conformance-testable** (the cap is operator-configured latitude — a third-party IUT may set it above any payload the suite uploads), so `payload-too-large` is in the conformance `IUT_OPTIONAL_TYPES` tier; reference 413 coverage lives in the eden-wire unit tests.
+
+Gates: markdownlint, check-jsonschema (metaschema), spec-xref-check, check-rename-discipline, check-complexity, full `uv run pytest` across eden-contracts / eden-storage / eden-wire / task-store-server, the full conformance suite (`-n auto`), and check_citations — all green. Plan at [`docs/plans/issue-166-wire-artifact-upload.md`](docs/plans/issue-166-wire-artifact-upload.md).
+
 ### Fix: align spec prose + integrator manifest to the `evaluation` field name (issue #273)
 
 Resolves the pre-existing drift the #122 entry surfaced (below, "Pre-existing drift surfaced"): the variant's evaluation-payload field is `evaluation` in `variant.schema.json` + the `eden_contracts.Variant` model + the storage/wire impl, but the spec **prose** spelled it `metrics` in several chapters and the integrator-manifest table. Two names for one field is a readability + onboarding hazard and a latent parity trap (the `schema-parity` job only checks schema↔model — both already say `evaluation` — so the prose `metrics` naming was unguarded). **Option 1** from the issue was selected: align prose + manifest to the schema/model `evaluation` naming, keeping the wire + on-tree manifest key stable (the reference integrator already emitted `evaluation` in `.eden/variants/<id>/evaluation.json` — see [`_manifest.py`](reference/packages/eden-git/src/eden_git/_manifest.py) — so this is a prose-and-docstring correction, not a manifest-shape change).
