@@ -11,7 +11,7 @@ The behavioral state machine that all worker roles participate in — claim, exe
 The ideator, executor, and evaluator are **worker roles**: they participate in the task protocol as consumers. Each worker role progresses through the same outer lifecycle for every task it handles:
 
 1. **Discover.** The worker becomes aware of a pending task whose `kind` matches its role. Mechanisms include polling the task store, subscribing to an event stream, or receiving a dispatch call — all are permitted; none are mandated.
-2. **Claim.** The worker atomically moves the task from `pending` to `claimed`; the task store records the worker's `worker_id` as the claim owner. Semantics are in [`04-task-protocol.md`](04-task-protocol.md) §3.
+2. **Claim.** The worker atomically moves the task from `pending` to `claimed`; the task store records the worker's `worker_id` (an opaque, system-minted identifier per [`02-data-model.md`](02-data-model.md) §1.6) as the claim owner. Semantics are in [`04-task-protocol.md`](04-task-protocol.md) §3.
 3. **Execute.** The worker performs its role-specific work using the task payload and any context the protocol grants it (§2–§4 below). The worker MAY report progress. It MUST NOT mutate any protocol-owned object other than (a) the task it holds a claim on and (b) the outputs its role is specified to produce (§2.2, §3.2, §4.2). The restrictions in §1.2 apply to every worker role in addition to the per-role rules below.
 4. **Submit.** The worker atomically moves the task from `claimed` to `submitted` by authenticating as the recorded claimant; the task store performs the atomic claim-match per [`04-task-protocol.md`](04-task-protocol.md) §4.1. A submitted task then advances to `completed` or `failed` per the rules in [`04-task-protocol.md`](04-task-protocol.md) §4.
 5. **Release on reclaim.** If the task store reclaims the task before submit (task store policy per [`04-task-protocol.md`](04-task-protocol.md) §5), the claim is cleared. A worker that discovers its claim has been cleared MUST NOT subsequently attempt to submit against that task; it MUST discard any partial result.
@@ -224,9 +224,9 @@ The orchestrator runs **five** decision types per iteration. Decision-type 0 (te
 
 ### 6.3 Authority boundary
 
-The orchestrator MUST authenticate as a registered worker per [`07-wire-protocol.md`](07-wire-protocol.md) §13. The orchestrator's `worker_id` MUST be a member of the reserved `orchestrators` group ([`02-data-model.md`](02-data-model.md) §7.5); wire endpoints that gate on `orchestrators` membership ([`07-wire-protocol.md`](07-wire-protocol.md) §13.3) MUST refuse calls from workers outside the group.
+The orchestrator MUST authenticate as a registered worker per [`07-wire-protocol.md`](07-wire-protocol.md) §13. Its `worker_id` is an opaque, system-minted identifier ([`02-data-model.md`](02-data-model.md) §1.6) and MUST be a member of the reserved-name `orchestrators` group ([`02-data-model.md`](02-data-model.md) §7.5) — the group resolved at startup by its reserved **name** to the system-minted `grp_*` id that holds it. Wire endpoints that gate on `orchestrators` membership ([`07-wire-protocol.md`](07-wire-protocol.md) §13.3) MUST refuse calls from workers outside the group.
 
-The orchestrator MUST NOT impersonate other workers when finalizing submissions. The `submitted_by` field on a terminalized task ([`02-data-model.md`](02-data-model.md) §3.1) reflects the **claimant**'s `worker_id` written at §4.1 submit time, not the orchestrator's. Similarly the `executed_by` / `evaluated_by` attribution on variants ([`02-data-model.md`](02-data-model.md) §9) is written from `task.submitted_by` on the accept and reject paths, never overridden by whoever invoked `accept` / `reject`.
+The orchestrator MUST NOT impersonate other workers when finalizing submissions. The `submitted_by` field on a terminalized task ([`02-data-model.md`](02-data-model.md) §3.1) reflects the **claimant**'s opaque `worker_id` ([`02-data-model.md`](02-data-model.md) §1.6) written at §4.1 submit time, not the orchestrator's. Similarly the `executed_by` / `evaluated_by` attribution on variants ([`02-data-model.md`](02-data-model.md) §9) — each an opaque `wkr_*` id — is written from `task.submitted_by` on the accept and reject paths, never overridden by whoever invoked `accept` / `reject`.
 
 ### 6.4 Multi-instance safety
 
@@ -259,7 +259,7 @@ Both `terminate_experiment` and `integrate_variant` are composite commits whose 
 
 ### 6.5 Manual mode
 
-When `dispatch_mode.<decision>` is `"manual"`, the decision is driven by an authorized external caller using the same wire ops the orchestrator would have used:
+When `dispatch_mode.<decision>` is `"manual"`, the decision is driven by an authorized external caller using the same wire ops the orchestrator would have used. The authority groups named below (`admins`, `orchestrators`) are reserved **names** ([`02-data-model.md`](02-data-model.md) §7.5) resolved to their system-minted `grp_*` ids; membership is checked against the opaque caller `worker_id`, never against a literal id string:
 
 - Manual `termination`: a caller in `admins` calls `terminate_experiment` ([`07-wire-protocol.md`](07-wire-protocol.md) §2.9) with body `{"reason": "<string>"}`. The terminate wire op accepts a caller in `admins` OR `orchestrators` ([`04-task-protocol.md`](04-task-protocol.md) §8.2) and is accepted regardless of `dispatch_mode.termination`'s value: an operator MAY terminate even when termination is auto (the §6.4.1 race resolves both paths to the same final state). `dispatch_mode.termination == "manual"` ONLY suppresses the orchestrator's policy consultation; it does not gate the wire op.
 - Manual `ideation_creation`: a caller in `admins` ([`02-data-model.md`](02-data-model.md) §7.5) calls `create_task(kind="ideation")` ([`07-wire-protocol.md`](07-wire-protocol.md) §2.1) with the appropriate `payload`.

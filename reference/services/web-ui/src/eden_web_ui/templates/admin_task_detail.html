@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_macros.html" import name_id %}
 {% block title %}EDEN — admin task {{ task.task_id }}{% endblock %}
 {% block main %}
 <h1>task <code>{{ task.task_id }}</code></h1>
@@ -13,7 +14,7 @@
     <dt>created_at</dt><dd>{{ task.created_at }}</dd>
     <dt>updated_at</dt><dd>{{ task.updated_at }}</dd>
     {% if task.claim %}
-    <dt>worker</dt><dd><a href="/admin/workers/{{ task.claim.worker_id }}/"><code>{{ task.claim.worker_id }}</code></a></dd>
+    <dt>worker</dt><dd><a href="/admin/workers/{{ task.claim.worker_id }}/">{{ name_id(worker_names.get(task.claim.worker_id), task.claim.worker_id) }}</a></dd>
     <dt>claimed_at</dt><dd>{{ task.claim.claimed_at }}</dd>
     <dt>expires_at</dt><dd>{% if task.claim.expires_at %}{{ task.claim.expires_at }}{% else %}—{% endif %}</dd>
     <dt>claim age (s)</dt><dd>{% if claim_age is not none %}{{ "%.1f"|format(claim_age) }}{% else %}—{% endif %}</dd>
@@ -26,7 +27,7 @@
         <dt>target</dt>
         <dd>
             {% if task.target %}
-                {{ task.target.kind }}:<code>{{ task.target.id }}</code>
+                {{ task.target.kind }}:{{ name_id(worker_names.get(task.target.id), task.target.id) }}
             {% else %}
                 anyone
             {% endif %}
@@ -34,7 +35,7 @@
         <dt>created_by</dt>
         <dd>
             {% if task.created_by %}
-                <a href="/admin/workers/{{ task.created_by }}/"><code>{{ task.created_by }}</code></a>
+                <a href="/admin/workers/{{ task.created_by }}/">{{ name_id(worker_names.get(task.created_by), task.created_by) }}</a>
             {% else %}
                 —
             {% endif %}
@@ -42,7 +43,7 @@
         <dt>submitted_by</dt>
         <dd>
             {% if task.submitted_by %}
-                <a href="/admin/workers/{{ task.submitted_by }}/"><code>{{ task.submitted_by }}</code></a>
+                <a href="/admin/workers/{{ task.submitted_by }}/">{{ name_id(worker_names.get(task.submitted_by), task.submitted_by) }}</a>
             {% else %}
                 —
             {% endif %}
@@ -50,7 +51,7 @@
         <dt>claim.worker_id</dt>
         <dd>
             {% if task.claim %}
-                <a href="/admin/workers/{{ task.claim.worker_id }}/"><code>{{ task.claim.worker_id }}</code></a>
+                <a href="/admin/workers/{{ task.claim.worker_id }}/">{{ name_id(worker_names.get(task.claim.worker_id), task.claim.worker_id) }}</a>
             {% else %}
                 —
             {% endif %}

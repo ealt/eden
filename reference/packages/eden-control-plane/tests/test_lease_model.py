@@ -53,8 +53,8 @@ def _validator() -> Draft202012Validator:
 
 CANONICAL: dict[str, Any] = {
     "lease_id": "lease-abc-123",
-    "experiment_id": "exp-1",
-    "holder": "auto-orchestrator-1",
+    "experiment_id": "exp_0123456789abcdefghjkmnpqrs",
+    "holder": "wkr_0123456789abcdefghjkmnpqrs",
     "holder_instance": "f1f2f3f4-f5f6-f7f8-f9fa-fbfcfdfeff00",
     "acquired_at": "2026-05-19T12:00:00Z",
     "expires_at": "2026-05-19T12:00:30Z",
@@ -82,9 +82,13 @@ def test_model_dump_roundtrips_through_schema() -> None:
     [
         ("lease_id", ""),
         ("experiment_id", ""),
-        ("holder", "Auto-Orchestrator-1"),  # uppercase breaks worker_id grammar
-        ("holder", "x" * 65),  # exceeds 64-char cap
-        ("holder", ":"),  # disallowed by grammar
+        ("experiment_id", "exp-1"),  # legacy kebab grammar retired
+        ("experiment_id", "wkr_0123456789abcdefghjkmnpqrs"),  # wrong prefix
+        ("experiment_id", "exp_0123456789abcdefghjkmnpqr"),  # 25-char suffix
+        ("experiment_id", "exp_0123456789abcdefghjkmnpqri"),  # 'i' not Crockford
+        ("holder", "auto-orchestrator-1"),  # legacy kebab grammar retired
+        ("holder", "grp_0123456789abcdefghjkmnpqrs"),  # group prefix, not worker
+        ("holder", "wkr_0123456789abcdefghjkmnpqr"),  # 25-char suffix
         ("holder_instance", ""),
         ("acquired_at", "2026-05-19T12:00:00"),  # missing Z
         ("acquired_at", "2026-13-99T12:00:00Z"),  # impossible date

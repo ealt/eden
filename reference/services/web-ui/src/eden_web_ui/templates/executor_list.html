@@ -11,7 +11,7 @@
 {{ pl.pending_section('executor', '/executor', 'execution', 'idea read(s) failed',
                       session, view, links, pending_rows, pending_groups,
                       registered, registration_unknown,
-                      eligibility_unresolved_count, read_failed_count) }}
+                      eligibility_unresolved_count, read_failed_count, worker_names) }}
 <section class="recent">
     <h2>recent variants (most recent {{ recent_variants | length }})</h2>
     {% if recent_variants %}

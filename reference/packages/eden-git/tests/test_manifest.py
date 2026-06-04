@@ -13,7 +13,7 @@ from eden_git._manifest import ManifestFieldMissing, build_manifest
 def _base_variant(**overrides: Any) -> Variant:
     defaults: dict[str, Any] = {
         "variant_id": "variant-1",
-        "experiment_id": "exp-1",
+        "experiment_id": "exp_0123456789abcdefghjkmnpqrs",
         "idea_id": "idea-1",
         "status": "success",
         "parent_commits": ["a" * 40],

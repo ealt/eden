@@ -1,6 +1,11 @@
 """Per-route, flow, security, and partial-write tests for the groups admin module.
 
 Mirrors the chunk-9e admin-test patterns and the workers-admin tests.
+
+Identity rename (#128): registration POSTs an OPTIONAL display ``name``;
+the server mints the opaque ``grp_*`` id. Members are opaque ``wkr_*`` /
+``grp_*`` ids (resolved from the ``worker_ids`` fixture or by minting).
+Detail / mutate routes are keyed by the minted id.
 """
 
 from __future__ import annotations
@@ -9,12 +14,15 @@ from typing import Any
 
 import pytest
 from conftest import (
+    WEB_UI_WORKER_NAME,
     get_csrf,
 )
 from eden_storage import InMemoryStore
 from eden_storage.errors import (
     CycleDetected,
+    InvalidName,
     NotFound,
+    ReservedIdentifier,
 )
 from fastapi.testclient import TestClient
 
@@ -30,7 +38,7 @@ class TestAdminGroupsAuthGate:
         assert resp.headers["location"] == "/signin"
 
     def test_get_detail_redirects_unauthenticated(self, client: TestClient) -> None:
-        resp = client.get("/admin/groups/team-a/", follow_redirects=False)
+        resp = client.get("/admin/groups/grp_x/", follow_redirects=False)
         assert resp.status_code == 303
         assert resp.headers["location"] == "/signin"
 
@@ -39,7 +47,7 @@ class TestAdminGroupsAuthGate:
     ) -> None:
         resp = client.post(
             "/admin/groups/",
-            data={"csrf_token": "bogus", "group_id": "team-a"},
+            data={"csrf_token": "bogus", "name": "team-a"},
             follow_redirects=False,
         )
         assert resp.status_code == 303
@@ -49,8 +57,8 @@ class TestAdminGroupsAuthGate:
         self, client: TestClient
     ) -> None:
         resp = client.post(
-            "/admin/groups/team-a/members",
-            data={"csrf_token": "bogus", "member_id": "alice"},
+            "/admin/groups/grp_x/members",
+            data={"csrf_token": "bogus", "member_id": "wkr_x"},
             follow_redirects=False,
         )
         assert resp.status_code == 303
@@ -60,7 +68,7 @@ class TestAdminGroupsAuthGate:
         self, client: TestClient
     ) -> None:
         resp = client.post(
-            "/admin/groups/team-a/members/alice/remove",
+            "/admin/groups/grp_x/members/wkr_y/remove",
             data={"csrf_token": "bogus"},
             follow_redirects=False,
         )
@@ -71,7 +79,7 @@ class TestAdminGroupsAuthGate:
         self, client: TestClient
     ) -> None:
         resp = client.post(
-            "/admin/groups/team-a/delete",
+            "/admin/groups/grp_x/delete",
             data={"csrf_token": "bogus"},
             follow_redirects=False,
         )
@@ -86,12 +94,18 @@ class TestAdminGroupsAuthGate:
 
 class TestAdminGroupsList:
     def test_renders_existing_groups(
-        self, signed_in_client: TestClient, store: InMemoryStore
+        self,
+        signed_in_client: TestClient,
+        store: InMemoryStore,
+        worker_ids: dict[str, str],
     ) -> None:
-        store.register_group("team-a", members=["ui-w"])
+        group = store.register_group(
+            "team-a", members=[worker_ids[WEB_UI_WORKER_NAME]]
+        )
         resp = signed_in_client.get("/admin/groups/")
         assert resp.status_code == 200
         assert "team-a" in resp.text
+        assert group.group_id in resp.text
 
     def test_filter_substring(
         self, signed_in_client: TestClient, store: InMemoryStore
@@ -101,6 +115,24 @@ class TestAdminGroupsList:
         resp = signed_in_client.get("/admin/groups/?q=alpha")
         assert "team-alpha" in resp.text
         assert "team-beta" not in resp.text
+
+    def test_filter_by_name_exact(
+        self, signed_in_client: TestClient, store: InMemoryStore
+    ) -> None:
+        store.register_group("team-exact")
+        store.register_group("team-exact-suffix")
+        resp = signed_in_client.get("/admin/groups/?name=team-exact")
+        assert "team-exact" in resp.text
+        assert "team-exact-suffix" not in resp.text
+
+    def test_reserved_groups_grouped_into_section(
+        self, signed_in_client: TestClient, store: InMemoryStore
+    ) -> None:
+        # The store fixture seeds an ``admins`` reserved group.
+        resp = signed_in_client.get("/admin/groups/")
+        assert resp.status_code == 200
+        assert "reserved groups" in resp.text
+        assert "admins" in resp.text
 
 
 # ---------------------------------------------------------------------
@@ -112,12 +144,12 @@ class TestAdminGroupsRegister:
     def test_csrf_failure_returns_403(self, signed_in_client: TestClient) -> None:
         resp = signed_in_client.post(
             "/admin/groups/",
-            data={"csrf_token": "bogus", "group_id": "team-a"},
+            data={"csrf_token": "bogus", "name": "team-a"},
             follow_redirects=False,
         )
         assert resp.status_code == 403
 
-    def test_reserved_identifier_rejected_locally(
+    def test_reserved_name_rejected_locally(
         self,
         signed_in_client: TestClient,
         store: InMemoryStore,
@@ -130,29 +162,29 @@ class TestAdminGroupsRegister:
         store.register_group = _boom
         try:
             csrf = get_csrf(signed_in_client)
-            for rid in ("admin", "system", "internal"):
+            for rid in ("admins", "orchestrators"):
                 resp = signed_in_client.post(
                     "/admin/groups/",
-                    data={"csrf_token": csrf, "group_id": rid},
+                    data={"csrf_token": csrf, "name": rid},
                     follow_redirects=False,
                 )
                 assert resp.status_code == 303
-                assert "error=reserved-identifier" in resp.headers["location"]
+                assert "error=reserved-name" in resp.headers["location"]
         finally:
             store.register_group = original
 
-    def test_grammar_violation_rejected_locally(
+    def test_invalid_name_rejected_locally(
         self, signed_in_client: TestClient
     ) -> None:
         csrf = get_csrf(signed_in_client)
-        for bad in ("UPPER", "with space", "-leading", ""):
+        for bad in (" leading", "trailing ", "x" * 129):
             resp = signed_in_client.post(
                 "/admin/groups/",
-                data={"csrf_token": csrf, "group_id": bad},
+                data={"csrf_token": csrf, "name": bad},
                 follow_redirects=False,
             )
             assert resp.status_code == 303
-            assert "error=invalid-group-id" in resp.headers["location"]
+            assert "error=invalid-name" in resp.headers["location"]
 
     def test_fresh_register_redirects_to_detail(
         self,
@@ -162,63 +194,74 @@ class TestAdminGroupsRegister:
         csrf = get_csrf(signed_in_client)
         resp = signed_in_client.post(
             "/admin/groups/",
-            data={"csrf_token": csrf, "group_id": "team-x"},
+            data={"csrf_token": csrf, "name": "team-x"},
             follow_redirects=False,
         )
         assert resp.status_code == 303
-        assert resp.headers["location"] == "/admin/groups/team-x/?ok=registered"
+        # Redirect target carries the minted group_id.
+        loc = resp.headers["location"]
+        assert loc.startswith("/admin/groups/grp_")
+        assert loc.endswith("/?ok=registered")
 
     def test_register_with_initial_members(
         self,
         signed_in_client: TestClient,
         store: InMemoryStore,
+        worker_ids: dict[str, str],
     ) -> None:
+        ui_w = worker_ids[WEB_UI_WORKER_NAME]
+        ui_w_other = worker_ids["ui-w-other"]
         csrf = get_csrf(signed_in_client)
         resp = signed_in_client.post(
             "/admin/groups/",
             data={
                 "csrf_token": csrf,
-                "group_id": "team-init",
-                "members": "ui-w\n# comment line\nui-w-other",
+                "name": "team-init",
+                "members": f"{ui_w}\n# comment line\n{ui_w_other}",
             },
             follow_redirects=False,
         )
         assert resp.status_code == 303
-        group = store.read_group("team-init")
-        assert sorted(group.members) == ["ui-w", "ui-w-other"]
+        group = store.list_groups(name="team-init")[0]
+        assert sorted(group.members) == sorted([ui_w, ui_w_other])
 
-    def test_register_with_reserved_member_rejected_locally(
+    def test_register_with_invalid_member_rejected_locally(
         self,
         signed_in_client: TestClient,
         store: InMemoryStore,
+        worker_ids: dict[str, str],
     ) -> None:
         csrf = get_csrf(signed_in_client)
         resp = signed_in_client.post(
             "/admin/groups/",
             data={
                 "csrf_token": csrf,
-                "group_id": "team-bad",
-                "members": "ui-w\nadmin",
+                "name": "team-bad",
+                # "admin" is not an opaque member id.
+                "members": f"{worker_ids[WEB_UI_WORKER_NAME]}\nadmin",
             },
             follow_redirects=False,
         )
         assert resp.status_code == 303
         assert "error=invalid-members" in resp.headers["location"]
 
-    def test_already_exists_classified(
+    def test_every_register_mints_fresh(
         self,
         signed_in_client: TestClient,
         store: InMemoryStore,
     ) -> None:
-        store.register_group("team-exists")
+        # No id-based idempotency; names may collide and each mints a
+        # distinct group (#128).
+        store.register_group("team-dup")
         csrf = get_csrf(signed_in_client)
         resp = signed_in_client.post(
             "/admin/groups/",
-            data={"csrf_token": csrf, "group_id": "team-exists"},
+            data={"csrf_token": csrf, "name": "team-dup"},
             follow_redirects=False,
         )
         assert resp.status_code == 303
-        assert "error=already-exists" in resp.headers["location"]
+        assert resp.headers["location"].endswith("/?ok=registered")
+        assert len(store.list_groups(name="team-dup")) == 2
 
 
 # ---------------------------------------------------------------------
@@ -228,28 +271,32 @@ class TestAdminGroupsRegister:
 
 class TestAdminGroupsDetail:
     def test_detail_renders(
-        self, signed_in_client: TestClient, store: InMemoryStore
+        self,
+        signed_in_client: TestClient,
+        store: InMemoryStore,
+        worker_ids: dict[str, str],
     ) -> None:
-        store.register_group("team-d", members=["ui-w"])
-        resp = signed_in_client.get("/admin/groups/team-d/")
+        ui_w = worker_ids[WEB_UI_WORKER_NAME]
+        group = store.register_group("team-d", members=[ui_w])
+        resp = signed_in_client.get(f"/admin/groups/{group.group_id}/")
         assert resp.status_code == 200
         assert "team-d" in resp.text
-        # Direct member rendered
+        # Direct member rendered (as name(id) → name "ui-w" appears).
         assert "ui-w" in resp.text
 
     def test_detail_404_for_unknown_group(
         self, signed_in_client: TestClient
     ) -> None:
-        resp = signed_in_client.get("/admin/groups/never-registered-id/")
+        resp = signed_in_client.get("/admin/groups/grp_never000000000000000000000/")
         assert resp.status_code == 404
 
     def test_detail_transitive_closure_via_nested_group(
         self, signed_in_client: TestClient, store: InMemoryStore
     ) -> None:
-        store.register_worker("alice-nest")
-        store.register_group("team-leaf", members=["alice-nest"])
-        store.register_group("team-parent", members=["team-leaf"])
-        resp = signed_in_client.get("/admin/groups/team-parent/")
+        alice, _ = store.register_worker("alice-nest")
+        leaf = store.register_group("team-leaf", members=[alice.worker_id])
+        parent = store.register_group("team-parent", members=[leaf.group_id])
+        resp = signed_in_client.get(f"/admin/groups/{parent.group_id}/")
         assert resp.status_code == 200
         # Transitive closure section shows the nested worker.
         assert "alice-nest" in resp.text
@@ -261,52 +308,57 @@ class TestAdminGroupsDetail:
 
 
 class TestAdminGroupsAddMember:
-    def test_csrf_failure_returns_403(self, signed_in_client: TestClient) -> None:
+    def test_csrf_failure_returns_403(
+        self, signed_in_client: TestClient, worker_ids: dict[str, str]
+    ) -> None:
         resp = signed_in_client.post(
-            "/admin/groups/team-a/members",
-            data={"csrf_token": "bogus", "member_id": "ui-w"},
+            "/admin/groups/grp_x/members",
+            data={"csrf_token": "bogus", "member_id": worker_ids[WEB_UI_WORKER_NAME]},
             follow_redirects=False,
         )
         assert resp.status_code == 403
 
     def test_add_succeeds(
-        self, signed_in_client: TestClient, store: InMemoryStore
+        self,
+        signed_in_client: TestClient,
+        store: InMemoryStore,
+        worker_ids: dict[str, str],
     ) -> None:
-        store.register_group("team-add")
+        ui_w = worker_ids[WEB_UI_WORKER_NAME]
+        group = store.register_group("team-add")
         csrf = get_csrf(signed_in_client)
         resp = signed_in_client.post(
-            "/admin/groups/team-add/members",
-            data={"csrf_token": csrf, "member_id": "ui-w"},
+            f"/admin/groups/{group.group_id}/members",
+            data={"csrf_token": csrf, "member_id": ui_w},
             follow_redirects=False,
         )
         assert resp.status_code == 303
         assert "ok=added" in resp.headers["location"]
-        assert "ui-w" in store.read_group("team-add").members
+        assert ui_w in store.read_group(group.group_id).members
 
-    def test_add_reserved_rejected_locally(
+    def test_add_invalid_member_rejected_locally(
         self, signed_in_client: TestClient, store: InMemoryStore
     ) -> None:
-        store.register_group("team-add-bad")
+        group = store.register_group("team-add-bad")
         csrf = get_csrf(signed_in_client)
         resp = signed_in_client.post(
-            "/admin/groups/team-add-bad/members",
+            f"/admin/groups/{group.group_id}/members",
+            # "admin" is not an opaque member id.
             data={"csrf_token": csrf, "member_id": "admin"},
             follow_redirects=False,
         )
         assert resp.status_code == 303
-        assert "error=reserved-member-id" in resp.headers["location"]
+        assert "error=invalid-member-id" in resp.headers["location"]
 
     def test_add_cycle_detected(
         self, signed_in_client: TestClient, store: InMemoryStore
     ) -> None:
-        # team-a ∋ team-b ; attempt to add team-a to team-b would
-        # close a cycle.
-        store.register_group("team-a-cyc")
-        store.register_group("team-b-cyc", members=["team-a-cyc"])
+        a = store.register_group("team-a-cyc")
+        b = store.register_group("team-b-cyc", members=[a.group_id])
         csrf = get_csrf(signed_in_client)
         resp = signed_in_client.post(
-            "/admin/groups/team-a-cyc/members",
-            data={"csrf_token": csrf, "member_id": "team-b-cyc"},
+            f"/admin/groups/{a.group_id}/members",
+            data={"csrf_token": csrf, "member_id": b.group_id},
             follow_redirects=False,
         )
         assert resp.status_code == 303
@@ -319,50 +371,64 @@ class TestAdminGroupsAddMember:
 
 
 class TestAdminGroupsRemoveMember:
-    def test_csrf_failure_returns_403(self, signed_in_client: TestClient) -> None:
+    def test_csrf_failure_returns_403(
+        self, signed_in_client: TestClient, worker_ids: dict[str, str]
+    ) -> None:
         resp = signed_in_client.post(
-            "/admin/groups/team-a/members/ui-w/remove",
+            f"/admin/groups/grp_x/members/{worker_ids[WEB_UI_WORKER_NAME]}/remove",
             data={"csrf_token": "bogus"},
             follow_redirects=False,
         )
         assert resp.status_code == 403
 
     def test_remove_succeeds(
-        self, signed_in_client: TestClient, store: InMemoryStore
+        self,
+        signed_in_client: TestClient,
+        store: InMemoryStore,
+        worker_ids: dict[str, str],
     ) -> None:
-        store.register_group("team-r", members=["ui-w"])
+        ui_w = worker_ids[WEB_UI_WORKER_NAME]
+        group = store.register_group("team-r", members=[ui_w])
         csrf = get_csrf(signed_in_client)
         resp = signed_in_client.post(
-            "/admin/groups/team-r/members/ui-w/remove",
+            f"/admin/groups/{group.group_id}/members/{ui_w}/remove",
             data={"csrf_token": csrf},
             follow_redirects=False,
         )
         assert resp.status_code == 303
         assert "ok=removed" in resp.headers["location"]
-        assert store.read_group("team-r").members == []
+        assert store.read_group(group.group_id).members == []
 
     def test_remove_absent_member_is_no_op(
-        self, signed_in_client: TestClient, store: InMemoryStore
+        self,
+        signed_in_client: TestClient,
+        store: InMemoryStore,
+        worker_ids: dict[str, str],
     ) -> None:
         """Per spec §7 storage idempotency, remove on absent member is no-op."""
-        store.register_group("team-r-absent", members=["ui-w-other"])
+        other = worker_ids["ui-w-other"]
+        group = store.register_group("team-r-absent", members=[other])
         csrf = get_csrf(signed_in_client)
         resp = signed_in_client.post(
-            "/admin/groups/team-r-absent/members/never-a-member/remove",
+            f"/admin/groups/{group.group_id}/members/"
+            "wkr_never000000000000000000000/remove",
             data={"csrf_token": csrf},
             follow_redirects=False,
         )
         assert resp.status_code == 303
         assert "ok=removed" in resp.headers["location"]
-        # Group unchanged
-        assert store.read_group("team-r-absent").members == ["ui-w-other"]
+        assert store.read_group(group.group_id).members == [other]
 
     def test_remove_unknown_group_classified(
-        self, signed_in_client: TestClient, store: InMemoryStore
+        self,
+        signed_in_client: TestClient,
+        store: InMemoryStore,
+        worker_ids: dict[str, str],
     ) -> None:
         csrf = get_csrf(signed_in_client)
         resp = signed_in_client.post(
-            "/admin/groups/never-existed/members/ui-w/remove",
+            f"/admin/groups/grp_never000000000000000000000/members/"
+            f"{worker_ids[WEB_UI_WORKER_NAME]}/remove",
             data={"csrf_token": csrf},
             follow_redirects=False,
         )
@@ -378,7 +444,7 @@ class TestAdminGroupsRemoveMember:
 class TestAdminGroupsDelete:
     def test_csrf_failure_returns_403(self, signed_in_client: TestClient) -> None:
         resp = signed_in_client.post(
-            "/admin/groups/team-d/delete",
+            "/admin/groups/grp_x/delete",
             data={"csrf_token": "bogus"},
             follow_redirects=False,
         )
@@ -387,25 +453,24 @@ class TestAdminGroupsDelete:
     def test_delete_succeeds(
         self, signed_in_client: TestClient, store: InMemoryStore
     ) -> None:
-        store.register_group("team-del")
+        group = store.register_group("team-del")
         csrf = get_csrf(signed_in_client)
         resp = signed_in_client.post(
-            "/admin/groups/team-del/delete",
+            f"/admin/groups/{group.group_id}/delete",
             data={"csrf_token": csrf},
             follow_redirects=False,
         )
         assert resp.status_code == 303
         assert "ok=deleted" in resp.headers["location"]
-        # Wire confirms it's gone
         with pytest.raises(NotFound):
-            store.read_group("team-del")
+            store.read_group(group.group_id)
 
     def test_delete_unknown_group_classified(
         self, signed_in_client: TestClient
     ) -> None:
         csrf = get_csrf(signed_in_client)
         resp = signed_in_client.post(
-            "/admin/groups/never-existed-del/delete",
+            "/admin/groups/grp_never000000000000000000000/delete",
             data={"csrf_token": csrf},
             follow_redirects=False,
         )
@@ -425,7 +490,7 @@ class TestAdminGroupsDisabled:
         csrf = get_csrf(signed_in_client_no_admin)
         resp = signed_in_client_no_admin.post(
             "/admin/groups/",
-            data={"csrf_token": csrf, "group_id": "team-x"},
+            data={"csrf_token": csrf, "name": "team-x"},
             follow_redirects=False,
         )
         assert resp.status_code == 303
@@ -435,12 +500,13 @@ class TestAdminGroupsDisabled:
         self,
         signed_in_client_no_admin: TestClient,
         store: InMemoryStore,
+        worker_ids: dict[str, str],
     ) -> None:
-        store.register_group("team-disabled")
+        group = store.register_group("team-disabled")
         csrf = get_csrf(signed_in_client_no_admin)
         resp = signed_in_client_no_admin.post(
-            "/admin/groups/team-disabled/members",
-            data={"csrf_token": csrf, "member_id": "ui-w"},
+            f"/admin/groups/{group.group_id}/members",
+            data={"csrf_token": csrf, "member_id": worker_ids[WEB_UI_WORKER_NAME]},
             follow_redirects=False,
         )
         assert resp.status_code == 303
@@ -450,11 +516,13 @@ class TestAdminGroupsDisabled:
         self,
         signed_in_client_no_admin: TestClient,
         store: InMemoryStore,
+        worker_ids: dict[str, str],
     ) -> None:
-        store.register_group("team-rem-disabled", members=["ui-w"])
+        ui_w = worker_ids[WEB_UI_WORKER_NAME]
+        group = store.register_group("team-rem-disabled", members=[ui_w])
         csrf = get_csrf(signed_in_client_no_admin)
         resp = signed_in_client_no_admin.post(
-            "/admin/groups/team-rem-disabled/members/ui-w/remove",
+            f"/admin/groups/{group.group_id}/members/{ui_w}/remove",
             data={"csrf_token": csrf},
             follow_redirects=False,
         )
@@ -466,10 +534,10 @@ class TestAdminGroupsDisabled:
         signed_in_client_no_admin: TestClient,
         store: InMemoryStore,
     ) -> None:
-        store.register_group("team-del-disabled")
+        group = store.register_group("team-del-disabled")
         csrf = get_csrf(signed_in_client_no_admin)
         resp = signed_in_client_no_admin.post(
-            "/admin/groups/team-del-disabled/delete",
+            f"/admin/groups/{group.group_id}/delete",
             data={"csrf_token": csrf},
             follow_redirects=False,
         )
@@ -494,32 +562,35 @@ class TestAdminGroupsFlow:
         self,
         signed_in_client: TestClient,
         store: InMemoryStore,
+        worker_ids: dict[str, str],
     ) -> None:
+        ui_w = worker_ids[WEB_UI_WORKER_NAME]
         csrf = get_csrf(signed_in_client)
         signed_in_client.post(
             "/admin/groups/",
-            data={"csrf_token": csrf, "group_id": "team-flow"},
+            data={"csrf_token": csrf, "name": "team-flow"},
             follow_redirects=False,
         )
+        gid = store.list_groups(name="team-flow")[0].group_id
         signed_in_client.post(
-            "/admin/groups/team-flow/members",
-            data={"csrf_token": csrf, "member_id": "ui-w"},
+            f"/admin/groups/{gid}/members",
+            data={"csrf_token": csrf, "member_id": ui_w},
             follow_redirects=False,
         )
-        assert "ui-w" in store.read_group("team-flow").members
+        assert ui_w in store.read_group(gid).members
         signed_in_client.post(
-            "/admin/groups/team-flow/members/ui-w/remove",
+            f"/admin/groups/{gid}/members/{ui_w}/remove",
             data={"csrf_token": csrf},
             follow_redirects=False,
         )
-        assert store.read_group("team-flow").members == []
+        assert store.read_group(gid).members == []
         signed_in_client.post(
-            "/admin/groups/team-flow/delete",
+            f"/admin/groups/{gid}/delete",
             data={"csrf_token": csrf},
             follow_redirects=False,
         )
         with pytest.raises(NotFound):
-            store.read_group("team-flow")
+            store.read_group(gid)
 
 
 # ---------------------------------------------------------------------
@@ -543,7 +614,7 @@ class TestAdminGroupsPartialWrite:
         try:
             resp = signed_in_client.post(
                 "/admin/groups/",
-                data={"csrf_token": csrf, "group_id": "team-pw"},
+                data={"csrf_token": csrf, "name": "team-pw"},
                 follow_redirects=False,
             )
             assert resp.status_code == 303
@@ -551,12 +622,59 @@ class TestAdminGroupsPartialWrite:
         finally:
             store.register_group = original
 
-    def test_add_member_transport_failure(
+    def test_register_reserved_from_wire_classified(
         self,
         signed_in_client: TestClient,
         store: InMemoryStore,
     ) -> None:
-        store.register_group("team-transport")
+        csrf = get_csrf(signed_in_client)
+        original = store.register_group
+
+        def _raise(*a: Any, **kw: Any) -> Any:
+            raise ReservedIdentifier("from wire")
+
+        store.register_group = _raise
+        try:
+            resp = signed_in_client.post(
+                "/admin/groups/",
+                data={"csrf_token": csrf, "name": "would-be-fine"},
+                follow_redirects=False,
+            )
+            assert resp.status_code == 303
+            assert "error=reserved-name" in resp.headers["location"]
+        finally:
+            store.register_group = original
+
+    def test_register_invalid_name_from_wire_classified(
+        self,
+        signed_in_client: TestClient,
+        store: InMemoryStore,
+    ) -> None:
+        csrf = get_csrf(signed_in_client)
+        original = store.register_group
+
+        def _raise(*a: Any, **kw: Any) -> Any:
+            raise InvalidName("from wire")
+
+        store.register_group = _raise
+        try:
+            resp = signed_in_client.post(
+                "/admin/groups/",
+                data={"csrf_token": csrf, "name": "would-be-fine"},
+                follow_redirects=False,
+            )
+            assert resp.status_code == 303
+            assert "error=invalid-name" in resp.headers["location"]
+        finally:
+            store.register_group = original
+
+    def test_add_member_transport_failure(
+        self,
+        signed_in_client: TestClient,
+        store: InMemoryStore,
+        worker_ids: dict[str, str],
+    ) -> None:
+        group = store.register_group("team-transport")
         csrf = get_csrf(signed_in_client)
         original = store.add_to_group
 
@@ -566,8 +684,11 @@ class TestAdminGroupsPartialWrite:
         store.add_to_group = _raise
         try:
             resp = signed_in_client.post(
-                "/admin/groups/team-transport/members",
-                data={"csrf_token": csrf, "member_id": "ui-w"},
+                f"/admin/groups/{group.group_id}/members",
+                data={
+                    "csrf_token": csrf,
+                    "member_id": worker_ids[WEB_UI_WORKER_NAME],
+                },
                 follow_redirects=False,
             )
             assert resp.status_code == 303
@@ -590,42 +711,30 @@ class TestAdminGroupsTransitiveWalk:
         self,
         signed_in_client: TestClient,
         store: InMemoryStore,
+        worker_ids: dict[str, str],
     ) -> None:
-        store.register_group("team-w-ghost", members=["ghost-worker", "ui-w"])
-        resp = signed_in_client.get("/admin/groups/team-w-ghost/")
+        ghost = "wkr_ghst0000000000000000000000"
+        group = store.register_group(
+            "team-w-ghost", members=[ghost, worker_ids[WEB_UI_WORKER_NAME]]
+        )
+        resp = signed_in_client.get(f"/admin/groups/{group.group_id}/")
         assert resp.status_code == 200
         assert "ui-w" in resp.text
-        assert "ghost-worker" in resp.text
+        assert ghost in resp.text
         assert "dangling member references" in resp.text
 
     def test_pure_registered_membership_has_no_dangling_section(
         self,
         signed_in_client: TestClient,
         store: InMemoryStore,
+        worker_ids: dict[str, str],
     ) -> None:
-        store.register_group("team-clean", members=["ui-w"])
-        resp = signed_in_client.get("/admin/groups/team-clean/")
+        group = store.register_group(
+            "team-clean", members=[worker_ids[WEB_UI_WORKER_NAME]]
+        )
+        resp = signed_in_client.get(f"/admin/groups/{group.group_id}/")
         assert resp.status_code == 200
         assert "dangling member references" not in resp.text
-
-
-class TestAdminGroupsCrossRegistryCollision:
-    """Round-1 review finding: cross-registry namespace collisions."""
-
-    def test_register_group_collides_with_existing_worker(
-        self,
-        signed_in_client: TestClient,
-        store: InMemoryStore,
-    ) -> None:
-        store.register_worker("g-collision-id")
-        csrf = get_csrf(signed_in_client)
-        resp = signed_in_client.post(
-            "/admin/groups/",
-            data={"csrf_token": csrf, "group_id": "g-collision-id"},
-            follow_redirects=False,
-        )
-        assert resp.status_code == 303
-        assert "error=id-collides-with-worker" in resp.headers["location"]
 
 
 class TestAdminGroupsListShowsTransitiveCount:
@@ -635,8 +744,12 @@ class TestAdminGroupsListShowsTransitiveCount:
         self,
         signed_in_client: TestClient,
         store: InMemoryStore,
+        worker_ids: dict[str, str],
     ) -> None:
-        store.register_group("team-count", members=["ui-w", "ui-w-other"])
+        store.register_group(
+            "team-count",
+            members=[worker_ids[WEB_UI_WORKER_NAME], worker_ids["ui-w-other"]],
+        )
         resp = signed_in_client.get("/admin/groups/")
         assert resp.status_code == 200
         assert "transitive workers" in resp.text
@@ -647,9 +760,6 @@ class TestAdminGroupsSecurity:
         self,
         signed_in_client: TestClient,
     ) -> None:
-        # ``q`` is a filter substring; gets reflected into the rendered
-        # HTML on the filter input value. Jinja autoescape MUST handle
-        # this.
         payload = "<script>alert(1)</script>"
         resp = signed_in_client.get(
             "/admin/groups/", params={"q": payload}
@@ -663,7 +773,7 @@ class TestAdminGroupsSecurity:
         signed_in_client: TestClient,
         store: InMemoryStore,
     ) -> None:
-        store.register_group("team-sec")
+        group = store.register_group("team-sec")
         original = store.add_to_group
 
         def _boom(*a: Any, **kw: Any) -> Any:
@@ -673,7 +783,7 @@ class TestAdminGroupsSecurity:
         try:
             csrf = get_csrf(signed_in_client)
             resp = signed_in_client.post(
-                "/admin/groups/team-sec/members",
+                f"/admin/groups/{group.group_id}/members",
                 data={"csrf_token": csrf, "member_id": "UPPER"},
                 follow_redirects=False,
             )

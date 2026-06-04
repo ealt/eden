@@ -16,10 +16,10 @@ from eden_git import GitRepo
 from eden_service_common import seed_bare_repo
 from eden_storage import InMemoryStore, VariantSubmission
 
-EXPERIMENT_ID = "exp-1"
+EXPERIMENT_ID = "exp_0123456789abcdefghjkmnpqrs"
 
 
-def _store_with_idea(tmp_path: Path) -> tuple[InMemoryStore, str, str]:
+def _store_with_idea(tmp_path: Path) -> tuple[InMemoryStore, str, str, str]:
     repo_path = tmp_path / "bare.git"
     GitRepo.init_bare(repo_path)
     seed_sha = seed_bare_repo(str(repo_path))
@@ -27,10 +27,12 @@ def _store_with_idea(tmp_path: Path) -> tuple[InMemoryStore, str, str]:
         experiment_id=EXPERIMENT_ID,
         evaluation_schema=EvaluationSchema.model_validate({"score": "real"}),
     )
-    # 12a-1 wave 5: pre-register the worker_ids the executor-subprocess
-    # tests drive through Store.claim (§3.5 step-2 registration check).
-    for wid in ("ideator-1", "executor-1", "execution-1"):
-        store.register_worker(wid)
+    # Issue #128: worker_ids are now system-minted/opaque. Mint the
+    # executor worker the subprocess tests drive through Store.claim
+    # (§3.5 step-2 registration check) and return its id so each
+    # _handle_one call threads the minted claimant.
+    _w, _ = store.register_worker(name="executor-1")
+    worker_id = _w.worker_id
     idea_id = "idea-x1"
     artifacts_dir = tmp_path / "artifacts" / "ideas" / idea_id
     artifacts_dir.mkdir(parents=True)
@@ -48,7 +50,7 @@ def _store_with_idea(tmp_path: Path) -> tuple[InMemoryStore, str, str]:
     store.create_idea(idea)
     store.mark_idea_ready(idea_id)
     store.create_execution_task("execution-1", idea_id)
-    return store, str(repo_path), seed_sha
+    return store, str(repo_path), seed_sha, worker_id
 
 
 def _config(
@@ -77,7 +79,7 @@ def _write_command(tmp_path: Path, body: str) -> str:
 
 
 def test_success_path_creates_variant_and_ref(tmp_path: Path) -> None:
-    store, repo_path, _ = _store_with_idea(tmp_path)
+    store, repo_path, _, executor_id = _store_with_idea(tmp_path)
     body = """
     import json, os, subprocess, sys
     from pathlib import Path
@@ -110,7 +112,7 @@ def test_success_path_creates_variant_and_ref(tmp_path: Path) -> None:
     task = task_raw
     _handle_one(
         store=store,
-        worker_id="execution-1",
+        worker_id=executor_id,
         task=task,
         config=config,
         host_subdir=host_subdir,
@@ -126,7 +128,7 @@ def test_success_path_creates_variant_and_ref(tmp_path: Path) -> None:
 
 
 def test_subprocess_nonzero_exit_routes_to_error(tmp_path: Path) -> None:
-    store, repo_path, _ = _store_with_idea(tmp_path)
+    store, repo_path, _, executor_id = _store_with_idea(tmp_path)
     config = _config(
         command="false",
         repo_path=repo_path,
@@ -140,7 +142,7 @@ def test_subprocess_nonzero_exit_routes_to_error(tmp_path: Path) -> None:
     task = task_raw
     _handle_one(
         store=store,
-        worker_id="execution-1",
+        worker_id=executor_id,
         task=task,
         config=config,
         host_subdir=host_subdir,
@@ -152,7 +154,7 @@ def test_subprocess_nonzero_exit_routes_to_error(tmp_path: Path) -> None:
 
 
 def test_missing_outcome_routes_to_error(tmp_path: Path) -> None:
-    store, repo_path, _ = _store_with_idea(tmp_path)
+    store, repo_path, _, executor_id = _store_with_idea(tmp_path)
     config = _config(
         command="true",
         repo_path=repo_path,
@@ -166,7 +168,7 @@ def test_missing_outcome_routes_to_error(tmp_path: Path) -> None:
     task = task_raw
     _handle_one(
         store=store,
-        worker_id="execution-1",
+        worker_id=executor_id,
         task=task,
         config=config,
         host_subdir=host_subdir,
@@ -177,7 +179,7 @@ def test_missing_outcome_routes_to_error(tmp_path: Path) -> None:
 
 
 def test_invalid_commit_sha_routes_to_error(tmp_path: Path) -> None:
-    store, repo_path, _ = _store_with_idea(tmp_path)
+    store, repo_path, _, executor_id = _store_with_idea(tmp_path)
     body = """
     import json, os
     from pathlib import Path
@@ -197,7 +199,7 @@ def test_invalid_commit_sha_routes_to_error(tmp_path: Path) -> None:
     task = task_raw
     _handle_one(
         store=store,
-        worker_id="execution-1",
+        worker_id=executor_id,
         task=task,
         config=config,
         host_subdir=host_subdir,
@@ -215,7 +217,7 @@ def test_no_op_variant_routes_to_error(tmp_path: Path) -> None:
     tree equals the parent's) to ``status="error"`` before the
     server-side enforcement kicks in.
     """
-    store, repo_path, _ = _store_with_idea(tmp_path)
+    store, repo_path, _, executor_id = _store_with_idea(tmp_path)
     # Subprocess writes nothing and commits with --allow-empty so the
     # commit's tree is identical to its parent's tree (the seed tree).
     body = """
@@ -248,7 +250,7 @@ def test_no_op_variant_routes_to_error(tmp_path: Path) -> None:
     task = task_raw
     _handle_one(
         store=store,
-        worker_id="execution-1",
+        worker_id=executor_id,
         task=task,
         config=config,
         host_subdir=host_subdir,
@@ -263,7 +265,7 @@ def test_no_op_variant_routes_to_error(tmp_path: Path) -> None:
 
 
 def test_subprocess_timeout_routes_to_error(tmp_path: Path) -> None:
-    store, repo_path, _ = _store_with_idea(tmp_path)
+    store, repo_path, _, executor_id = _store_with_idea(tmp_path)
     config = _config(
         command="python3 -c 'import time; time.sleep(60)'",
         repo_path=repo_path,
@@ -279,7 +281,7 @@ def test_subprocess_timeout_routes_to_error(tmp_path: Path) -> None:
     start = time.monotonic()
     _handle_one(
         store=store,
-        worker_id="execution-1",
+        worker_id=executor_id,
         task=task,
         config=config,
         host_subdir=host_subdir,

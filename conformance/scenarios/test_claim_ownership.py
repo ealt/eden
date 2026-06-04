@@ -28,7 +28,8 @@ def test_worker_id_present_on_claim(wire_client: WireClient) -> None:
     """spec/v0/04-task-protocol.md §3.2 — claim object carries `worker_id`."""
     tid = _seed.create_ideation_task(wire_client)
     c = _seed.claim(wire_client, tid, worker_id="test-worker")
-    assert isinstance(c.get("worker_id"), str) and c["worker_id"] == "test-worker"
+    assert isinstance(c.get("worker_id"), str)
+    assert c["worker_id"] == wire_client.worker_id_for("test-worker")
 
 
 def test_task_records_claim_worker_id(wire_client: WireClient) -> None:
@@ -37,7 +38,7 @@ def test_task_records_claim_worker_id(wire_client: WireClient) -> None:
     _seed.claim(wire_client, tid, worker_id="worker-a")
     task = _seed.read_task(wire_client, tid)
     claim = task.get("claim") or {}
-    assert claim.get("worker_id") == "worker-a"
+    assert claim.get("worker_id") == wire_client.worker_id_for("worker-a")
 
 
 def test_no_reclaim_while_claimed(wire_client: WireClient) -> None:

@@ -24,15 +24,22 @@ from pydantic import (
     model_validator,
 )
 
-from ._common import CommitSha, DateTimeStr, NotNone
+from ._common import (
+    ACTOR_ID_PATTERN,
+    EXPERIMENT_ID_PATTERN,
+    WORKER_ID_PATTERN,
+    CommitSha,
+    DateTimeStr,
+    NotNone,
+)
 from .config import DispatchModeValue
 from .task import TaskTarget
 
-EVENT_TYPE_PATTERN = r"^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$"
+# ``MEMBER_ID_PATTERN`` is enforced via ``TaskTarget.id`` (typed ``MemberId``);
+# ``ACTOR_ID_PATTERN`` / ``WORKER_ID_PATTERN`` / ``EXPERIMENT_ID_PATTERN`` are
+# the shared opaque-id grammars from ``_common`` (spec/v0/02-data-model.md §1.6).
 
-# Reserved-id grammar from spec §6.1; used for the actor-id slot in
-# attribution-bearing event payloads (``reassigned_by`` / ``updated_by``).
-ACTOR_ID_PATTERN = r"^[a-z0-9][a-z0-9_-]{0,63}$"
+EVENT_TYPE_PATTERN = r"^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$"
 
 TaskKind = Literal["ideation", "execution", "evaluation"]
 FailReason = Literal["worker_error", "validation_error", "policy_limit"]
@@ -47,7 +54,7 @@ class Event(BaseModel):
     event_id: Annotated[str, Field(min_length=1)]
     type: Annotated[str, StringConstraints(pattern=EVENT_TYPE_PATTERN)]
     occurred_at: DateTimeStr
-    experiment_id: Annotated[str, Field(min_length=1)]
+    experiment_id: Annotated[str, StringConstraints(pattern=EXPERIMENT_ID_PATTERN)]
     data: dict[str, Any]
 
 
@@ -58,7 +65,7 @@ class _RegisteredEventBase(BaseModel):
 
     event_id: Annotated[str, Field(min_length=1)]
     occurred_at: DateTimeStr
-    experiment_id: Annotated[str, Field(min_length=1)]
+    experiment_id: Annotated[str, StringConstraints(pattern=EXPERIMENT_ID_PATTERN)]
 
 
 class _TaskCreatedData(BaseModel):
@@ -77,7 +84,7 @@ class TaskCreatedEvent(_RegisteredEventBase):
 class _TaskClaimedData(BaseModel):
     model_config = ConfigDict(strict=True, extra="allow")
     task_id: Annotated[str, Field(min_length=1)]
-    worker_id: Annotated[str, Field(min_length=1)]
+    worker_id: Annotated[str, StringConstraints(pattern=WORKER_ID_PATTERN)]
 
 
 class TaskClaimedEvent(_RegisteredEventBase):

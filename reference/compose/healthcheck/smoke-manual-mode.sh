@@ -35,7 +35,17 @@ REPO_ROOT="$(cd "${COMPOSE_DIR}/../.." && pwd)"
 cd "$COMPOSE_DIR"
 
 ENV_FILE="$(mktemp)"
-EXPERIMENT_ID="smoke-manual"
+# #128: mint an opaque `exp_*` experiment id (the wire grammar rejects
+# the old typed "smoke-manual" mnemonic). The reissue + admins-group
+# bearer path below already reads the opaque EDEN_ADMINS_INITIAL_MEMBER
+# from `.env`. Passed via `--experiment-id`.
+EXPERIMENT_ID="$(python3 - <<'PY'
+import secrets, time
+alphabet = "0123456789abcdefghjkmnpqrstvwxyz"
+value = ((int(time.time() * 1000) & ((1 << 48) - 1)) << 80) | secrets.randbits(80)
+print("exp_" + "".join(alphabet[(value >> (5 * i)) & 31] for i in range(26))[::-1])
+PY
+)"
 
 cleanup() {
     local rc=$?

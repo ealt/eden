@@ -21,12 +21,12 @@ from conftest import (
     EXPERIMENT_ID,
     SESSION_SECRET,
     SHARED_TOKEN,
-    WORKER_ID,
     _config,
     _now,
     _one_experiment_factory,
     get_csrf,
     seed_implement_task,
+    web_ui_worker_id,
 )
 from eden_contracts import Idea
 from eden_git import GitRepo
@@ -140,7 +140,7 @@ class TestCookieAttributes:
             store_factory=_one_experiment_factory(store),
             experiment_id=EXPERIMENT_ID,
             experiment_config=_config(),
-            worker_id=WORKER_ID,
+            worker_id=web_ui_worker_id(store),
             session_secret=SESSION_SECRET,
             claim_ttl_seconds=3600,
             artifacts_dir=artifacts_dir,
@@ -157,7 +157,7 @@ class TestArtifactTrustBoundary:
     def _make_idea(self, artifacts_uri: str) -> Idea:
         return Idea(
             idea_id="p",
-            experiment_id="e",
+            experiment_id=EXPERIMENT_ID,
             slug="s",
             priority=1.0,
             parent_commits=["a" * 40],

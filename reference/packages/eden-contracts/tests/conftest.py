@@ -31,7 +31,7 @@ from eden_contracts import (
     Variant,
     Worker,
 )
-from eden_contracts._common import _check_duration
+from eden_contracts._common import _check_display_name, _check_duration
 from jsonschema import Draft202012Validator, FormatChecker
 from referencing import Registry, Resource
 from referencing.jsonschema import DRAFT202012
@@ -104,6 +104,20 @@ def _check_duration_format(instance: Any) -> bool:
     # side accept/reject identical strings (no two-source-of-truth for
     # "what counts as a valid, positive ISO-8601 duration").
     _check_duration(instance)
+    return True
+
+
+@_register_format("display-name")
+def _check_display_name_format(instance: Any) -> bool:
+    if not isinstance(instance, str):
+        return True
+    # Reuse the model-side validator so schema and model accept/reject
+    # identical display-name strings. The JSON Schema `pattern` keyword
+    # cannot express NFC-normalization, Unicode-category exclusions, or
+    # the leading/trailing-whitespace rule (spec/v0/02-data-model.md §1.7);
+    # the format handler carries those, mirroring how `date-time` /
+    # `duration` are paired across the parity surface.
+    _check_display_name(instance)
     return True
 
 

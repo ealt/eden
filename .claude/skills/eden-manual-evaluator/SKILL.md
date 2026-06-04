@@ -71,8 +71,15 @@ Present:
 ### Phase 3: Claim (automatic)
 
 ```bash
-$EDEN claim <task-id> --worker-id eden-manual
+$EDEN claim <task-id> --worker-name eden-manual
 ```
+
+Post-#128: worker ids are opaque, system-minted `wkr_*` strings; supply
+a display *name*, not the id. On first use the CLI registers a worker
+with `--worker-name eden-manual` (default `eden-manual`), reads the
+minted `worker_id` from the wire response, and caches
+`{worker_id, name, token}` at `/tmp/eden-manual/.credentials.json`.
+Render the claimant as `<name> (<worker_id>)` when echoing it back.
 
 ### Phase 4: Clone at the variant commit (automatic)
 
@@ -146,6 +153,12 @@ of integration.
 - **Use the variant's own `parent_commits`** as the diff base, not the
   experiment's seed — the variant's parent might be an integrated prior
   variant (chained evolution).
+- **Worker identity is name-supplied, id-returned.** Never hardcode an
+  opaque `worker_id` (`wkr_<26-char-ULID>`, minted by the server). Pass
+  `--worker-name <name>`; the CLI reads the minted id from the wire
+  response and caches it. To find a worker by display name,
+  `GET .../workers?name=<name>` returns 0..N matches (names MAY collide)
+  — disambiguate by id.
 - **`wire error 401` on `/workers...`?** The running stack's
   `EDEN_ADMIN_TOKEN` has diverged from the `.env` file the CLI is
   reading. Bounce the stack against the current `.env`, or re-checkout

@@ -203,6 +203,27 @@ def _apply_v7(cur: Any) -> None:
         cur.execute(stmt)
 
 
+# Issue #128 (identity rename): parallels the SQLite v8 migration.
+# Adds an optional display `name` to the experiment / worker /
+# worker_group rows plus an index on each. `experiment.name` is the
+# durable storage; `worker.name` / `worker_group.name` are
+# denormalized index columns (JSON `data` remains the source of
+# truth). Clean break — pre-#128 rows pick up NULL.
+_V8_STATEMENTS: list[str] = [
+    "ALTER TABLE experiment ADD COLUMN name text",
+    "ALTER TABLE worker ADD COLUMN name text",
+    "ALTER TABLE worker_group ADD COLUMN name text",
+    "CREATE INDEX experiment_by_name ON experiment(name)",
+    "CREATE INDEX worker_by_name ON worker(name)",
+    "CREATE INDEX worker_group_by_name ON worker_group(name)",
+]
+
+
+def _apply_v8(cur: Any) -> None:
+    for stmt in _V8_STATEMENTS:
+        cur.execute(stmt)
+
+
 _MIGRATIONS: list[Callable[[Any], None]] = [
     _apply_v1,
     _apply_v2,
@@ -211,6 +232,7 @@ _MIGRATIONS: list[Callable[[Any], None]] = [
     _apply_v5,
     _apply_v6,
     _apply_v7,
+    _apply_v8,
 ]
 
 

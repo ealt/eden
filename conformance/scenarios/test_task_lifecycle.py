@@ -31,7 +31,7 @@ def test_pending_to_claimed(wire_client: WireClient) -> None:
     """spec/v0/04-task-protocol.md §1.2 — `claim` transitions pending → claimed."""
     tid = _seed.create_ideation_task(wire_client)
     c = _seed.claim(wire_client, tid)
-    assert c.get("worker_id") == "test-worker"
+    assert c.get("worker_id") == wire_client.worker_id_for("test-worker")
     task = _seed.read_task(wire_client, tid)
     assert task["state"] == "claimed"
 

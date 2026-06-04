@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_macros.html" import name_id %}
 {% block title %}EDEN — admin idea {{ idea.idea_id }}{% endblock %}
 {% block main %}
 <h1>idea <code>{{ idea.idea_id }}</code></h1>
@@ -32,12 +33,13 @@
         <dt>created_at</dt><dd>{{ idea.created_at }}</dd>
         <dt>created_by</dt><dd>
             {% if idea.created_by %}
-            <a href="/admin/workers/{{ idea.created_by }}/"><code>{{ idea.created_by }}</code></a>
+            <a href="/admin/workers/{{ idea.created_by }}/">{{ name_id(worker_names.get(idea.created_by), idea.created_by) }}</a>
             {% else %}—{% endif %}
         </dd>
         <dt>intended_executor</dt><dd>
             {% if idea.intended_executor %}
-                <code>{{ idea.intended_executor.kind }}:{{ idea.intended_executor.id }}</code>
+                {% set ie_names = worker_names if idea.intended_executor.kind == "worker" else group_names %}
+                <code>{{ idea.intended_executor.kind }}:</code>{{ name_id(ie_names.get(idea.intended_executor.id), idea.intended_executor.id) }}
                 &mdash; the orchestrator's execution_dispatch decision will copy this to <code>task.target</code>
                 on the resulting execution task (spec/v0/03-roles.md §6.2 decision-type 2).
             {% else %}

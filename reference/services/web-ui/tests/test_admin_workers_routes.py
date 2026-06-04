@@ -3,6 +3,11 @@
 Bundles the test shapes plan §6.1 split into four files (chunk-9e
 parity). Kept as one file per module to keep PR-review surface
 tighter; classes inside the file map onto the four shapes.
+
+Identity rename (#128): registration POSTs an OPTIONAL display ``name``
+(not a ``worker_id``); the server mints the opaque ``wkr_*`` id and the
+response carries it. Detail / reissue routes are keyed by the minted id,
+resolved from the ``worker_ids`` fixture.
 """
 
 from __future__ import annotations
@@ -10,12 +15,12 @@ from __future__ import annotations
 from typing import Any
 
 from conftest import (
-    WORKER_ID,
+    WEB_UI_WORKER_NAME,
     get_csrf,
 )
 from eden_storage import InMemoryStore
 from eden_storage.errors import (
-    InvalidPrecondition,
+    InvalidName,
     ReservedIdentifier,
 )
 from fastapi.testclient import TestClient
@@ -32,7 +37,7 @@ class TestAdminWorkersAuthGate:
         assert resp.headers["location"] == "/signin"
 
     def test_get_detail_redirects_unauthenticated(self, client: TestClient) -> None:
-        resp = client.get("/admin/workers/eric/", follow_redirects=False)
+        resp = client.get("/admin/workers/wkr_x/", follow_redirects=False)
         assert resp.status_code == 303
         assert resp.headers["location"] == "/signin"
 
@@ -42,7 +47,7 @@ class TestAdminWorkersAuthGate:
         """Auth gate runs BEFORE CSRF check (plan §D.2)."""
         resp = client.post(
             "/admin/workers/",
-            data={"csrf_token": "bogus", "worker_id": "alice"},
+            data={"csrf_token": "bogus", "name": "alice"},
             follow_redirects=False,
         )
         assert resp.status_code == 303
@@ -52,7 +57,7 @@ class TestAdminWorkersAuthGate:
         self, client: TestClient
     ) -> None:
         resp = client.post(
-            "/admin/workers/alice/reissue-credential",
+            "/admin/workers/wkr_x/reissue-credential",
             data={"csrf_token": "bogus"},
             follow_redirects=False,
         )
@@ -69,7 +74,8 @@ class TestAdminWorkersList:
     def test_renders_existing_workers(
         self, signed_in_client: TestClient, store: InMemoryStore
     ) -> None:
-        # ``ui-w`` (WORKER_ID) is pre-registered by the store fixture.
+        # ``ui-w`` is pre-registered (by name) by the store fixture; the
+        # list renders ``<name> (<id>)``.
         resp = signed_in_client.get("/admin/workers/")
         assert resp.status_code == 200
         assert "ui-w" in resp.text
@@ -92,6 +98,28 @@ class TestAdminWorkersList:
         assert resp.status_code == 200
         assert "alice-labeled" in resp.text
 
+    def test_filter_by_name_exact(
+        self, signed_in_client: TestClient, store: InMemoryStore
+    ) -> None:
+        # The ?name= box maps to the wire ``list_workers(name=…)`` exact
+        # filter (#128).
+        store.register_worker("exact-name-w")
+        store.register_worker("exact-name-w-suffix")
+        resp = signed_in_client.get("/admin/workers/?name=exact-name-w")
+        assert resp.status_code == 200
+        assert "exact-name-w" in resp.text
+        assert "exact-name-w-suffix" not in resp.text
+
+    def test_renders_name_and_id(
+        self, signed_in_client: TestClient, store: InMemoryStore
+    ) -> None:
+        worker, _ = store.register_worker("named-and-id")
+        resp = signed_in_client.get("/admin/workers/?name=named-and-id")
+        assert resp.status_code == 200
+        # name(id) rendering: both the name and the opaque id appear.
+        assert "named-and-id" in resp.text
+        assert worker.worker_id in resp.text
+
 
 # ---------------------------------------------------------------------
 # Register POST
@@ -102,17 +130,17 @@ class TestAdminWorkersRegister:
     def test_csrf_failure_returns_403(self, signed_in_client: TestClient) -> None:
         resp = signed_in_client.post(
             "/admin/workers/",
-            data={"csrf_token": "bogus", "worker_id": "alice"},
+            data={"csrf_token": "bogus", "name": "alice"},
             follow_redirects=False,
         )
         assert resp.status_code == 403
 
-    def test_reserved_identifier_rejected_locally(
+    def test_reserved_name_rejected_locally(
         self,
         signed_in_client: TestClient,
         store: InMemoryStore,
     ) -> None:
-        # Reserved names MUST be rejected client-side before the wire
+        # Reserved NAMES MUST be rejected client-side before the wire
         # is touched. We verify wire was not touched by patching
         # register_worker to raise on entry.
         called: list[Any] = []
@@ -127,26 +155,28 @@ class TestAdminWorkersRegister:
         for rid in ("admin", "system", "internal"):
             resp = signed_in_client.post(
                 "/admin/workers/",
-                data={"csrf_token": csrf, "worker_id": rid},
+                data={"csrf_token": csrf, "name": rid},
                 follow_redirects=False,
             )
             assert resp.status_code == 303
-            assert "error=reserved-identifier" in resp.headers["location"]
+            assert "error=reserved-name" in resp.headers["location"]
         assert called == []
 
-    def test_grammar_violation_rejected_locally(
+    def test_invalid_name_rejected_locally(
         self, signed_in_client: TestClient
     ) -> None:
         csrf = get_csrf(signed_in_client)
-        for bad in ("UPPER", "with space", "with/slash", "", "-leading-hyphen",
-                    "x" * 65, "x@y"):
+        # Leading/trailing whitespace, control chars, and over-length
+        # all fail the display-name grammar. (A bare empty submission
+        # registers a NAMELESS worker — that's valid, tested below.)
+        for bad in (" leading", "trailing ", "x" * 129, "with\ttab"):
             resp = signed_in_client.post(
                 "/admin/workers/",
-                data={"csrf_token": csrf, "worker_id": bad},
+                data={"csrf_token": csrf, "name": bad},
                 follow_redirects=False,
             )
             assert resp.status_code == 303
-            assert "error=invalid-worker-id" in resp.headers["location"]
+            assert "error=invalid-name" in resp.headers["location"]
 
     def test_fresh_registration_renders_token_page(
         self, signed_in_client: TestClient
@@ -154,7 +184,7 @@ class TestAdminWorkersRegister:
         csrf = get_csrf(signed_in_client)
         resp = signed_in_client.post(
             "/admin/workers/",
-            data={"csrf_token": csrf, "worker_id": "fresh-worker"},
+            data={"csrf_token": csrf, "name": "fresh-worker"},
             follow_redirects=False,
         )
         assert resp.status_code == 200
@@ -165,21 +195,36 @@ class TestAdminWorkersRegister:
         assert resp.headers.get("cache-control") == "no-store"
         # The "this is the only time" banner appears.
         assert "shown only once" in resp.text
+        # The minted opaque id is shown.
+        assert "wkr_" in resp.text
 
-    def test_idempotent_re_register_shows_no_token(
-        self, signed_in_client: TestClient, store: InMemoryStore
+    def test_nameless_registration_mints_id(
+        self, signed_in_client: TestClient
     ) -> None:
-        # WORKER_ID ("ui-w") is already registered by the store fixture.
+        # An empty name registers a nameless worker (bare opaque id).
         csrf = get_csrf(signed_in_client)
         resp = signed_in_client.post(
             "/admin/workers/",
-            data={"csrf_token": csrf, "worker_id": WORKER_ID},
+            data={"csrf_token": csrf, "name": ""},
             follow_redirects=False,
         )
         assert resp.status_code == 200
-        # The idempotent path renders the banner but NO token.
-        assert "no new token was issued" in resp.text
-        assert '<code class="token">' not in resp.text
+        assert "wkr_" in resp.text
+        assert '<code class="token">' in resp.text
+
+    def test_every_register_mints_fresh(
+        self, signed_in_client: TestClient
+    ) -> None:
+        # No id-based idempotency: each register with the same name
+        # mints a distinct worker + token (#128).
+        csrf = get_csrf(signed_in_client)
+        resp = signed_in_client.post(
+            "/admin/workers/",
+            data={"csrf_token": csrf, "name": WEB_UI_WORKER_NAME},
+            follow_redirects=False,
+        )
+        assert resp.status_code == 200
+        assert '<code class="token">' in resp.text
 
     def test_label_parse_with_comments(
         self, signed_in_client: TestClient, store: InMemoryStore
@@ -189,14 +234,15 @@ class TestAdminWorkersRegister:
             "/admin/workers/",
             data={
                 "csrf_token": csrf,
-                "worker_id": "labeled-w",
+                "name": "labeled-w",
                 "labels": "# a comment\nrole=ideator\n\nmodel=claude-opus-4-7",
             },
             follow_redirects=False,
         )
         assert resp.status_code == 200
-        w = store.read_worker("labeled-w")
-        assert w.labels == {"role": "ideator", "model": "claude-opus-4-7"}
+        matches = store.list_workers(name="labeled-w")
+        assert len(matches) == 1
+        assert matches[0].labels == {"role": "ideator", "model": "claude-opus-4-7"}
 
     def test_invalid_label_line(self, signed_in_client: TestClient) -> None:
         csrf = get_csrf(signed_in_client)
@@ -204,7 +250,7 @@ class TestAdminWorkersRegister:
             "/admin/workers/",
             data={
                 "csrf_token": csrf,
-                "worker_id": "label-bad",
+                "name": "label-bad",
                 "labels": "no-equals-sign",
             },
             follow_redirects=False,
@@ -222,27 +268,29 @@ class TestAdminWorkersDetail:
     def test_detail_renders(
         self, signed_in_client: TestClient, store: InMemoryStore
     ) -> None:
-        store.register_worker("alice", labels={"role": "ideator"})
-        resp = signed_in_client.get("/admin/workers/alice/")
+        worker, _ = store.register_worker("alice", labels={"role": "ideator"})
+        resp = signed_in_client.get(f"/admin/workers/{worker.worker_id}/")
         assert resp.status_code == 200
         assert "alice" in resp.text
+        assert worker.worker_id in resp.text
         assert "role=ideator" in resp.text
 
     def test_detail_404_for_unknown_worker(
         self, signed_in_client: TestClient
     ) -> None:
-        resp = signed_in_client.get("/admin/workers/never-registered-id/")
+        resp = signed_in_client.get("/admin/workers/wkr_never000000000000000000000/")
         assert resp.status_code == 404
 
     def test_detail_shows_attributed_tasks_via_claim(
         self,
         signed_in_client: TestClient,
         store: InMemoryStore,
+        worker_ids: dict[str, str],
     ) -> None:
-        # Seed an idea + ideation task; claim it as ui-w.
+        wid = worker_ids[WEB_UI_WORKER_NAME]
         store.create_ideation_task("ideation-1")
-        store.claim("ideation-1", WORKER_ID)
-        resp = signed_in_client.get(f"/admin/workers/{WORKER_ID}/")
+        store.claim("ideation-1", wid)
+        resp = signed_in_client.get(f"/admin/workers/{wid}/")
         assert resp.status_code == 200
         assert "ideation-1" in resp.text
 
@@ -251,11 +299,13 @@ class TestAdminWorkersDetail:
         signed_in_client: TestClient,
         store: InMemoryStore,
     ) -> None:
-        store.register_worker("alice")
-        store.register_group("team-a", members=["alice"])
-        resp = signed_in_client.get("/admin/workers/alice/")
+        worker, _ = store.register_worker("alice")
+        group = store.register_group("team-a", members=[worker.worker_id])
+        resp = signed_in_client.get(f"/admin/workers/{worker.worker_id}/")
         assert resp.status_code == 200
+        # group rendered as name(id)
         assert "team-a" in resp.text
+        assert group.group_id in resp.text
 
 
 # ---------------------------------------------------------------------
@@ -264,9 +314,11 @@ class TestAdminWorkersDetail:
 
 
 class TestAdminWorkersReissue:
-    def test_csrf_failure_returns_403(self, signed_in_client: TestClient) -> None:
+    def test_csrf_failure_returns_403(
+        self, signed_in_client: TestClient, worker_ids: dict[str, str]
+    ) -> None:
         resp = signed_in_client.post(
-            "/admin/workers/ui-w/reissue-credential",
+            f"/admin/workers/{worker_ids[WEB_UI_WORKER_NAME]}/reissue-credential",
             data={"csrf_token": "bogus"},
             follow_redirects=False,
         )
@@ -276,10 +328,11 @@ class TestAdminWorkersReissue:
         self,
         signed_in_client: TestClient,
         store: InMemoryStore,
+        worker_ids: dict[str, str],
     ) -> None:
         csrf = get_csrf(signed_in_client)
         resp = signed_in_client.post(
-            f"/admin/workers/{WORKER_ID}/reissue-credential",
+            f"/admin/workers/{worker_ids[WEB_UI_WORKER_NAME]}/reissue-credential",
             data={"csrf_token": csrf},
             follow_redirects=False,
         )
@@ -295,7 +348,7 @@ class TestAdminWorkersReissue:
     ) -> None:
         csrf = get_csrf(signed_in_client)
         resp = signed_in_client.post(
-            "/admin/workers/never-registered/reissue-credential",
+            "/admin/workers/wkr_never000000000000000000000/reissue-credential",
             data={"csrf_token": csrf},
             follow_redirects=False,
         )
@@ -324,18 +377,20 @@ class TestAdminWorkersDisabled:
         csrf = get_csrf(signed_in_client_no_admin)
         resp = signed_in_client_no_admin.post(
             "/admin/workers/",
-            data={"csrf_token": csrf, "worker_id": "fresh"},
+            data={"csrf_token": csrf, "name": "fresh"},
             follow_redirects=False,
         )
         assert resp.status_code == 303
         assert "error=admin-disabled" in resp.headers["location"]
 
     def test_post_reissue_short_circuits_with_banner(
-        self, signed_in_client_no_admin: TestClient
+        self,
+        signed_in_client_no_admin: TestClient,
+        worker_ids: dict[str, str],
     ) -> None:
         csrf = get_csrf(signed_in_client_no_admin)
         resp = signed_in_client_no_admin.post(
-            f"/admin/workers/{WORKER_ID}/reissue-credential",
+            f"/admin/workers/{worker_ids[WEB_UI_WORKER_NAME]}/reissue-credential",
             data={"csrf_token": csrf},
             follow_redirects=False,
         )
@@ -360,20 +415,23 @@ class TestAdminWorkersFlow:
             "/admin/workers/",
             data={
                 "csrf_token": csrf,
-                "worker_id": "flow-worker",
+                "name": "flow-worker",
                 "labels": "role=executor",
             },
             follow_redirects=False,
         )
         assert resp.status_code == 200
-        # Token page should contain a plaintext token.
         assert '<code class="token">' in resp.text
+        # Capture the minted id from the registry.
+        matches = store.list_workers(name="flow-worker")
+        assert len(matches) == 1
+        wid = matches[0].worker_id
         # List
         resp = signed_in_client.get("/admin/workers/")
         assert "flow-worker" in resp.text
         # Reissue
         resp = signed_in_client.post(
-            "/admin/workers/flow-worker/reissue-credential",
+            f"/admin/workers/{wid}/reissue-credential",
             data={"csrf_token": csrf},
             follow_redirects=False,
         )
@@ -390,12 +448,12 @@ class TestAdminWorkersFlow:
 
 
 class TestAdminWorkersPartialWrite:
-    def test_reserved_identifier_from_wire_classified(
+    def test_reserved_name_from_wire_classified(
         self,
         signed_in_client: TestClient,
         store: InMemoryStore,
     ) -> None:
-        """Defensive: if client-side regex was bypassed, server-side
+        """Defensive: if client-side check was bypassed, server-side
         ReservedIdentifier MUST surface the correct banner."""
         csrf = get_csrf(signed_in_client)
         original = store.register_worker
@@ -407,15 +465,15 @@ class TestAdminWorkersPartialWrite:
         try:
             resp = signed_in_client.post(
                 "/admin/workers/",
-                data={"csrf_token": csrf, "worker_id": "would-be-fine"},
+                data={"csrf_token": csrf, "name": "would-be-fine"},
                 follow_redirects=False,
             )
             assert resp.status_code == 303
-            assert "error=reserved-identifier" in resp.headers["location"]
+            assert "error=reserved-name" in resp.headers["location"]
         finally:
             store.register_worker = original
 
-    def test_invalid_precondition_from_wire_classified(
+    def test_invalid_name_from_wire_classified(
         self,
         signed_in_client: TestClient,
         store: InMemoryStore,
@@ -424,17 +482,17 @@ class TestAdminWorkersPartialWrite:
         original = store.register_worker
 
         def _raise(*a: Any, **kw: Any) -> Any:
-            raise InvalidPrecondition("from wire")
+            raise InvalidName("from wire")
 
         store.register_worker = _raise
         try:
             resp = signed_in_client.post(
                 "/admin/workers/",
-                data={"csrf_token": csrf, "worker_id": "would-be-fine"},
+                data={"csrf_token": csrf, "name": "would-be-fine"},
                 follow_redirects=False,
             )
             assert resp.status_code == 303
-            assert "error=invalid-worker-id" in resp.headers["location"]
+            assert "error=invalid-name" in resp.headers["location"]
         finally:
             store.register_worker = original
 
@@ -453,7 +511,7 @@ class TestAdminWorkersPartialWrite:
         try:
             resp = signed_in_client.post(
                 "/admin/workers/",
-                data={"csrf_token": csrf, "worker_id": "would-be-fine"},
+                data={"csrf_token": csrf, "name": "would-be-fine"},
                 follow_redirects=False,
             )
             assert resp.status_code == 303
@@ -467,30 +525,6 @@ class TestAdminWorkersPartialWrite:
 # ---------------------------------------------------------------------
 
 
-class TestAdminWorkersCrossRegistryCollision:
-    """Round-1 review finding: cross-registry namespace collisions.
-
-    Per spec §7.4 worker_ids / group_ids share a namespace.
-    Registering a worker whose id is already a group must surface a
-    distinct banner (not the generic transport error).
-    """
-
-    def test_register_worker_collides_with_existing_group(
-        self,
-        signed_in_client: TestClient,
-        store: InMemoryStore,
-    ) -> None:
-        store.register_group("collision-id")
-        csrf = get_csrf(signed_in_client)
-        resp = signed_in_client.post(
-            "/admin/workers/",
-            data={"csrf_token": csrf, "worker_id": "collision-id"},
-            follow_redirects=False,
-        )
-        assert resp.status_code == 303
-        assert "error=id-collides-with-group" in resp.headers["location"]
-
-
 class TestAdminWorkersLabelLineNumber:
     """Round-1 review finding: invalid-labels banner names the line."""
 
@@ -502,7 +536,7 @@ class TestAdminWorkersLabelLineNumber:
             "/admin/workers/",
             data={
                 "csrf_token": csrf,
-                "worker_id": "label-line-test",
+                "name": "label-line-test",
                 "labels": "valid=value\nno-equals-sign\nalso=valid",
             },
             follow_redirects=False,
@@ -528,7 +562,7 @@ class TestAdminWorkersTokenCopyAffordance:
         csrf = get_csrf(signed_in_client)
         resp = signed_in_client.post(
             "/admin/workers/",
-            data={"csrf_token": csrf, "worker_id": "copy-btn"},
+            data={"csrf_token": csrf, "name": "copy-btn"},
             follow_redirects=False,
         )
         assert resp.status_code == 200
@@ -545,19 +579,19 @@ class TestAdminWorkersSecurity:
         csrf = get_csrf(signed_in_client)
         resp = signed_in_client.post(
             "/admin/workers/",
-            data={"csrf_token": csrf, "worker_id": "tok-worker"},
+            data={"csrf_token": csrf, "name": "tok-worker"},
             follow_redirects=False,
         )
         assert resp.status_code == 200
-        # Extract the token from the response.
         import re
 
         m = re.search(r'<code class="token">([^<]+)</code>', resp.text)
         assert m is not None
         token = m.group(1)
         assert len(token) > 32  # registration tokens are ≥256 bits
+        wid = store.list_workers(name="tok-worker")[0].worker_id
         # Subsequent detail page MUST NOT carry it.
-        resp = signed_in_client.get("/admin/workers/tok-worker/")
+        resp = signed_in_client.get(f"/admin/workers/{wid}/")
         assert token not in resp.text
         # List page MUST NOT carry it.
         resp = signed_in_client.get("/admin/workers/")
@@ -570,25 +604,24 @@ class TestAdminWorkersSecurity:
         csrf = get_csrf(signed_in_client)
         resp = signed_in_client.post(
             "/admin/workers/",
-            data={"csrf_token": csrf, "worker_id": "admin"},
+            data={"csrf_token": csrf, "name": "admin"},
             follow_redirects=True,
         )
-        # Reserved-identifier path; the error page renders the list.
+        # Reserved-name path; the error page renders the list.
         assert resp.status_code == 200
         assert '<code class="token">' not in resp.text
 
-    def test_invalid_worker_id_xss_attempt_is_escaped(
+    def test_invalid_name_xss_attempt_is_escaped(
         self, signed_in_client: TestClient
     ) -> None:
-        # The grammar regex rejects this, so we never reach the wire,
-        # and any echo back into the rendered banner MUST be escaped.
+        # A control-char-bearing name fails the grammar, so we never
+        # reach the wire; the closed-allowlist banner key means the raw
+        # value never reaches the rendered HTML.
         csrf = get_csrf(signed_in_client)
         resp = signed_in_client.post(
             "/admin/workers/",
-            data={"csrf_token": csrf, "worker_id": "<script>alert(1)</script>"},
+            data={"csrf_token": csrf, "name": "<script>\talert(1)</script>"},
             follow_redirects=False,
         )
-        # Redirects with safe banner key — querystring is closed
-        # allowlist; ``<script>`` doesn't reach the rendered HTML.
         assert resp.status_code == 303
-        assert "error=invalid-worker-id" in resp.headers["location"]
+        assert "error=invalid-name" in resp.headers["location"]

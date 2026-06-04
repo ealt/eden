@@ -53,7 +53,9 @@ def test_terminate_commits_state_and_event_atomically(
     term_events = [e for e in events if e["type"] == "experiment.terminated"]
     assert len(term_events) == 1, term_events
     assert term_events[0]["data"]["reason"] == "policy fired"
-    assert term_events[0]["data"]["terminated_by"] == "orchestrator"
+    assert term_events[0]["data"]["terminated_by"] == wire_client.worker_id_for(
+        "orchestrator"
+    )
 
 
 def test_terminate_is_exactly_idempotent_under_concurrent_callers(
@@ -87,7 +89,9 @@ def test_terminate_is_exactly_idempotent_under_concurrent_callers(
     term_events = [e for e in events if e["type"] == "experiment.terminated"]
     assert len(term_events) == 1
     assert term_events[0]["data"]["reason"] == "first reason"
-    assert term_events[0]["data"]["terminated_by"] == "orchestrator"
+    assert term_events[0]["data"]["terminated_by"] == wire_client.worker_id_for(
+        "orchestrator"
+    )
 
 
 def test_terminate_decision_blocks_subsequent_create_task(

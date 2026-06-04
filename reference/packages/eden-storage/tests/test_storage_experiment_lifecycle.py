@@ -10,6 +10,7 @@ Parametrized across the three reference backends (``memory`` /
 [`conftest.py`](conftest.py). The postgres rows skip when
 ``EDEN_TEST_POSTGRES_DSN`` is unset.
 """
+# pyright: reportAttributeAccessIssue=false
 
 from __future__ import annotations
 
@@ -31,7 +32,14 @@ _SHA1 = "a" * 40
 
 
 def _seed_admin(store: Store) -> None:
-    store.register_worker("admin-eric")
+    """No-op since the identity rename (#128).
+
+    Actor fields (``terminated_by`` etc.) are ActorId
+    (``admin`` | ``wkr_*``) and are trusted by the store as data — no
+    registered worker row is required. Tests use the literal ``admin``
+    bearer principal directly. Retained as a no-op so the per-test call
+    sites read unchanged.
+    """
 
 
 def _seed_idea(store: Store, idea_id: str, *, ready: bool = True) -> Idea:
@@ -74,7 +82,7 @@ def test_terminate_experiment_transitions_atomically(
     _seed_admin(store)
     pre_events = len(store.events())
     exp = store.terminate_experiment(
-        reason="max_variants policy reached", terminated_by="admin-eric"
+        reason="max_variants policy reached", terminated_by="admin"
     )
     assert exp.state == "terminated"
     assert store.read_experiment_state() == "terminated"
@@ -82,7 +90,7 @@ def test_terminate_experiment_transitions_atomically(
     assert [e.type for e in new_events] == ["experiment.terminated"]
     payload = new_events[0].data
     assert payload["reason"] == "max_variants policy reached"
-    assert payload["terminated_by"] == "admin-eric"
+    assert payload["terminated_by"] == "admin"
 
 
 def test_terminate_is_idempotent_on_terminated_state(
@@ -90,14 +98,13 @@ def test_terminate_is_idempotent_on_terminated_state(
 ) -> None:
     """A second ``terminate_experiment`` returns success without a new event."""
     store = make_store()
-    _seed_admin(store)
-    store.register_worker("admin-different")
-    store.terminate_experiment(reason="first", terminated_by="admin-eric")
+    other_actor, _ = store.register_worker(name="admin-different")
+    store.terminate_experiment(reason="first", terminated_by="admin")
     pre_events = len(store.events())
     # Different caller + different reason: idempotency wins; the first
     # call's reason stays recorded.
     result = store.terminate_experiment(
-        reason="different reason", terminated_by="admin-different"
+        reason="different reason", terminated_by=other_actor.worker_id
     )
     assert result.state == "terminated"
     assert store.events()[pre_events:] == []
@@ -107,13 +114,13 @@ def test_terminate_is_idempotent_on_terminated_state(
     ]
     assert len(term_events) == 1
     assert term_events[0].data["reason"] == "first"
-    assert term_events[0].data["terminated_by"] == "admin-eric"
+    assert term_events[0].data["terminated_by"] == "admin"
 
 
 def test_terminate_rejects_reserved_actor_id(
     make_store: Callable[..., Store],
 ) -> None:
-    """``terminated_by`` MUST satisfy the §6.1 grammar."""
+    """``terminated_by`` MUST satisfy the ActorId (``admin`` | ``wkr_*``) grammar."""
     store = make_store()
     with pytest.raises(InvalidPrecondition):
         store.terminate_experiment(reason="x", terminated_by="Admin")
@@ -125,7 +132,7 @@ def test_create_ideation_task_rejected_after_termination(
     """The terminated-experiment guard rejects new ideation tasks."""
     store = make_store()
     _seed_admin(store)
-    store.terminate_experiment(reason="done", terminated_by="admin-eric")
+    store.terminate_experiment(reason="done", terminated_by="admin")
     with pytest.raises(IllegalTransition):
         store.create_ideation_task("plan-1")
 
@@ -137,7 +144,7 @@ def test_create_execution_task_rejected_after_termination(
     store = make_store()
     _seed_admin(store)
     _seed_idea(store, "idea-1", ready=True)
-    store.terminate_experiment(reason="done", terminated_by="admin-eric")
+    store.terminate_experiment(reason="done", terminated_by="admin")
     with pytest.raises(IllegalTransition):
         store.create_execution_task("exec-1", "idea-1")
 
@@ -160,7 +167,7 @@ def test_create_evaluation_task_rejected_after_termination(
             started_at=_DT,
         )
     )
-    store.terminate_experiment(reason="done", terminated_by="admin-eric")
+    store.terminate_experiment(reason="done", terminated_by="admin")
     with pytest.raises(IllegalTransition):
         store.create_evaluation_task("eval-1", "variant-1")
 
@@ -178,9 +185,9 @@ def test_claim_rejected_after_termination(
     store = make_store()
     _seed_admin(store)
     store.create_ideation_task("plan-1")
-    store.terminate_experiment(reason="done", terminated_by="admin-eric")
+    store.terminate_experiment(reason="done", terminated_by="admin")
     with pytest.raises(IllegalTransition):
-        store.claim("plan-1", "ideator-1")
+        store.claim("plan-1", store.seeded_workers["ideator-1"])
 
 
 def test_already_claimed_tasks_complete_after_termination(
@@ -197,13 +204,13 @@ def test_already_claimed_tasks_complete_after_termination(
     store = make_store()
     _seed_admin(store)
     store.create_ideation_task("plan-1")
-    store.claim("plan-1", "ideator-1")
-    store.terminate_experiment(reason="done", terminated_by="admin-eric")
+    store.claim("plan-1", store.seeded_workers["ideator-1"])
+    store.terminate_experiment(reason="done", terminated_by="admin")
     # Submit should still succeed; the claim was committed before
     # the lifecycle transition.
     store.submit(
         "plan-1",
-        "ideator-1",
+        store.seeded_workers["ideator-1"],
         IdeaSubmission(status="success", idea_ids=()),
     )
     task = store.read_task("plan-1")
@@ -222,7 +229,7 @@ def test_integrate_variant_continues_after_termination(
     # evaluator flow so `integrate_variant` has a legal target.
     _seed_idea(store, "idea-1", ready=True)
     store.create_execution_task("t-exec", "idea-1")
-    store.claim("t-exec", "executor-w")
+    store.claim("t-exec", store.seeded_workers["executor-w"])
     store.create_variant(
         Variant(
             variant_id="variant-1",
@@ -236,17 +243,17 @@ def test_integrate_variant_continues_after_termination(
     )
     store.submit(
         "t-exec",
-        "executor-w",
+        store.seeded_workers["executor-w"],
         VariantSubmission(
             status="success", variant_id="variant-1", commit_sha="b" * 40
         ),
     )
     store.accept("t-exec")
     store.create_evaluation_task("t-eval", "variant-1")
-    store.claim("t-eval", "evaluator-w")
+    store.claim("t-eval", store.seeded_workers["evaluator-w"])
     store.submit(
         "t-eval",
-        "evaluator-w",
+        store.seeded_workers["evaluator-w"],
         EvaluationSubmission(
             status="success", variant_id="variant-1", evaluation={"score": 0.9}
         ),
@@ -254,7 +261,7 @@ def test_integrate_variant_continues_after_termination(
     store.accept("t-eval")
     assert store.read_variant("variant-1").status == "success"
 
-    store.terminate_experiment(reason="done", terminated_by="admin-eric")
+    store.terminate_experiment(reason="done", terminated_by="admin")
     # Integrator continues to drain per the §2.5 contract.
     store.integrate_variant("variant-1", "c" * 40)
     variant = store.read_variant("variant-1")
@@ -289,7 +296,7 @@ def test_create_execution_task_inherits_idea_intended_executor(
 ) -> None:
     """The auto-orchestrator path: idea.intended_executor flows to task.target."""
     store = make_store()
-    store.register_worker("executor-a")
+    executor_a, _ = store.register_worker(name="executor-a")
     # Build an idea that names a specific intended executor (worker).
     store.create_idea(
         Idea(
@@ -301,14 +308,14 @@ def test_create_execution_task_inherits_idea_intended_executor(
             artifacts_uri="s3://b/",
             state="drafting",
             created_at=_DT,
-            intended_executor=TaskTarget(kind="worker", id="executor-a"),
+            intended_executor=TaskTarget(kind="worker", id=executor_a.worker_id),
         )
     )
     store.mark_idea_ready("idea-1")
     task = store.create_execution_task("exec-1", "idea-1")
     assert task.target is not None
     assert task.target.kind == "worker"
-    assert task.target.id == "executor-a"
+    assert task.target.id == executor_a.worker_id
 
 
 def test_create_execution_task_explicit_target_overrides_intended_executor(
@@ -316,8 +323,8 @@ def test_create_execution_task_explicit_target_overrides_intended_executor(
 ) -> None:
     """Admin override: explicit target wins over idea.intended_executor."""
     store = make_store()
-    store.register_worker("executor-a")
-    store.register_worker("executor-b")
+    executor_a, _ = store.register_worker(name="executor-a")
+    executor_b, _ = store.register_worker(name="executor-b")
     store.create_idea(
         Idea(
             idea_id="idea-1",
@@ -328,17 +335,17 @@ def test_create_execution_task_explicit_target_overrides_intended_executor(
             artifacts_uri="s3://b/",
             state="drafting",
             created_at=_DT,
-            intended_executor=TaskTarget(kind="worker", id="executor-a"),
+            intended_executor=TaskTarget(kind="worker", id=executor_a.worker_id),
         )
     )
     store.mark_idea_ready("idea-1")
     task = store.create_execution_task(
         "exec-1",
         "idea-1",
-        target=TaskTarget(kind="worker", id="executor-b"),
+        target=TaskTarget(kind="worker", id=executor_b.worker_id),
     )
     assert task.target is not None
-    assert task.target.id == "executor-b"
+    assert task.target.id == executor_b.worker_id
 
 
 def test_create_execution_task_no_target_when_idea_has_no_hint(
@@ -372,8 +379,8 @@ def test_intended_executor_resolves_at_claim_time(
     cannot claim, even though both are registered.
     """
     store = make_store()
-    store.register_worker("executor-a")
-    store.register_worker("executor-b")
+    executor_a, _ = store.register_worker(name="executor-a")
+    executor_b, _ = store.register_worker(name="executor-b")
     store.create_idea(
         Idea(
             idea_id="idea-1",
@@ -384,12 +391,12 @@ def test_intended_executor_resolves_at_claim_time(
             artifacts_uri="s3://b/",
             state="drafting",
             created_at=_DT,
-            intended_executor=TaskTarget(kind="worker", id="executor-a"),
+            intended_executor=TaskTarget(kind="worker", id=executor_a.worker_id),
         )
     )
     store.mark_idea_ready("idea-1")
     store.create_execution_task("exec-1", "idea-1")
     with pytest.raises(WorkerNotEligible):
-        store.claim("exec-1", "executor-b")
+        store.claim("exec-1", executor_b.worker_id)
     # The intended executor's claim succeeds.
-    store.claim("exec-1", "executor-a")
+    store.claim("exec-1", executor_a.worker_id)

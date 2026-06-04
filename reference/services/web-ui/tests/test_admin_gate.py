@@ -26,10 +26,10 @@ import pytest
 from conftest import (
     EXPERIMENT_ID,
     SESSION_SECRET,
-    WORKER_ID,
     _config,
     _now,
     _one_experiment_factory,
+    web_ui_worker_id,
 )
 from eden_storage import InMemoryStore
 from eden_web_ui import make_app
@@ -43,23 +43,26 @@ from fastapi.testclient import TestClient
 
 @pytest.fixture
 def store_non_admin(artifacts_dir: Path) -> InMemoryStore:
-    """A store where WORKER_ID is registered but NOT a member of admins.
+    """A store where the session worker is registered but NOT in admins.
 
     The default ``store`` fixture in ``conftest.py`` adds every
     registered test worker to ``admins`` so existing tests pass the
     gate. Tests for the gate-rejection path need the opposite: an
-    ``admins`` group that does NOT contain ``WORKER_ID``.
+    ``admins`` group that does NOT contain the session worker (#128).
     """
     cfg = _config()
     s = InMemoryStore(
         experiment_id=EXPERIMENT_ID,
         evaluation_schema=cfg.evaluation_schema,
     )
-    s.register_worker(WORKER_ID)
+    session_worker, _ = s.register_worker("ui-w")
     # Register admins with a different worker so the group exists
     # (mirrors a real deployment) but the signed-in user isn't in it.
-    s.register_worker("some-admin-worker")
-    s.register_group("admins", members=["some-admin-worker"])
+    admin_worker, _ = s.register_worker("some-admin-worker")
+    s.register_group(
+        "admins", members=[admin_worker.worker_id], allow_reserved=True
+    )
+    s._session_worker_id = session_worker.worker_id  # type: ignore[attr-defined]
     return s
 
 
@@ -71,7 +74,7 @@ def app_non_admin(
         store_factory=_one_experiment_factory(store_non_admin, admin_store=store_non_admin),
         experiment_id=EXPERIMENT_ID,
         experiment_config=_config(),
-        worker_id=WORKER_ID,
+        worker_id=store_non_admin._session_worker_id,  # type: ignore[attr-defined]
         session_secret=SESSION_SECRET,
         claim_ttl_seconds=3600,
         artifacts_dir=artifacts_dir,
@@ -219,7 +222,7 @@ class TestMembershipCheckFailure:
             store_factory=_one_experiment_factory(store, admin_store=store),
             experiment_id=EXPERIMENT_ID,
             experiment_config=_config(),
-            worker_id=WORKER_ID,
+            worker_id=web_ui_worker_id(store),
             session_secret=SESSION_SECRET,
             claim_ttl_seconds=3600,
             artifacts_dir=artifacts_dir,

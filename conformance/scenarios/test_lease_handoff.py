@@ -35,6 +35,8 @@ def test_handoff_via_release_then_acquire(
     chapter 11 §4.3 lease_duration is deployment-fixed.
     """
     control_plane_client.register_experiment("exp-a", "file:///etc/a.yaml")
+    control_plane_client.register_worker("auto-orchestrator-1")
+    control_plane_client.register_worker("auto-orchestrator-2")
     a_lease = control_plane_client.acquire_lease(
         "exp-a", "auto-orchestrator-1", "uuid-a"
     ).json()

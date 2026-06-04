@@ -15,7 +15,7 @@ from eden_storage import InMemoryStore
 from eden_wire import StoreClient, make_app
 from fastapi.testclient import TestClient
 
-EXPERIMENT_ID = "exp-ref"
+EXPERIMENT_ID = "exp_zp0q3v6xsnk0jf9hfb54m73626"
 
 
 @pytest.fixture

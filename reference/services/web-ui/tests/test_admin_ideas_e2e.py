@@ -10,7 +10,6 @@ Pattern follows ``test_admin_workers_e2e.py``.
 
 from __future__ import annotations
 
-import contextlib
 import re
 import signal
 import subprocess
@@ -106,7 +105,8 @@ def test_admin_ideas_list_and_detail_resolve_lineage(tmp_path: Path) -> None:
     artifacts_dir.mkdir()
     credentials_dir = tmp_path / "credentials"
     credentials_dir.mkdir()
-    experiment_id = "exp-admin-ideas-e2e"
+    # Identity rename (#128): opaque experiment id.
+    experiment_id = "exp_0123456789abcdefghjkmnpqrs"
     admin_token = "z" * 64
     logs_dir = tmp_path / "logs"
     logs_dir.mkdir()
@@ -135,6 +135,43 @@ def test_admin_ideas_list_and_detail_resolve_lineage(tmp_path: Path) -> None:
     server_port = _read_port(server_log, server, _TASK_STORE_RE)
     task_store_url = f"http://127.0.0.1:{server_port}"
 
+    # Identity rename (#128): mint all workers + reserved groups BEFORE
+    # the web-ui spawn (server-minted opaque ids); persist the web-ui
+    # worker credential for its startup bootstrap.
+    from eden_contracts import Idea
+    from eden_service_common.auth import credential_path
+    from eden_storage import IdeaSubmission
+    from eden_wire import StoreClient
+
+    admin = StoreClient(
+        base_url=task_store_url,
+        experiment_id=experiment_id,
+        bearer=f"admin:{admin_token}",
+    )
+    try:
+        ui_worker, ui_token = admin.register_worker("ui-admin-ideas")
+        ui_worker_id = ui_worker.worker_id
+        assert ui_token is not None
+        exp_cred_dir = credentials_dir / experiment_id
+        exp_cred_dir.mkdir(parents=True, exist_ok=True)
+        credential_path(exp_cred_dir, ui_worker_id).write_text(ui_token)
+
+        op_worker, op_token = admin.register_worker("operator-e2e")
+        operator_id = op_worker.worker_id
+        ideator_worker, ideator_token = admin.register_worker("ideator-e2e")
+        ideator_id = ideator_worker.worker_id
+        # §13.3: business ops need a worker in admins / orchestrators.
+        admin.register_group(
+            "admins",
+            members=[operator_id, ui_worker_id],
+            allow_reserved=True,
+        )
+        admin.register_group(
+            "orchestrators", members=[operator_id], allow_reserved=True
+        )
+    finally:
+        admin.close()
+
     web_ui_log = logs_dir / "web-ui.log"
     web_ui = _spawn(
         [
@@ -148,7 +185,7 @@ def test_admin_ideas_list_and_detail_resolve_lineage(tmp_path: Path) -> None:
             "--session-secret",
             "z" * 32,
             "--worker-id",
-            "ui-admin-ideas",
+            ui_worker_id,
             "--admin-token",
             admin_token,
             "--credentials-dir",
@@ -173,51 +210,19 @@ def test_admin_ideas_list_and_detail_resolve_lineage(tmp_path: Path) -> None:
     }
 
     try:
-        # Pre-seed an ideation submission via direct StoreClient.
-        # Per spec §13.3 the admin bearer cannot drive business ops;
-        # we need a worker bearer in the `admins` (or `orchestrators`)
-        # group to create tasks and call accept().
-        from eden_contracts import Idea
-        from eden_storage import IdeaSubmission
-        from eden_wire import StoreClient
-        from eden_wire.errors import AlreadyExists
-
-        admin = StoreClient(
-            base_url=task_store_url,
-            experiment_id=experiment_id,
-            bearer=f"admin:{admin_token}",
-        )
-        try:
-            # Register the bootstrap "operator" worker + put it in
-            # admins group so it can drive create_task / accept.
-            _, op_token = admin.register_worker("operator-e2e")
-            with contextlib.suppress(AlreadyExists):
-                admin.register_group("admins")
-            with contextlib.suppress(AlreadyExists):
-                admin.register_group("orchestrators")
-            admin.add_to_group("admins", "operator-e2e")
-            admin.add_to_group("orchestrators", "operator-e2e")
-            # Issue #144: also add the web-ui worker to admins so its
-            # /admin/* page loads pass the route-layer gate.
-            admin.add_to_group("admins", "ui-admin-ideas")
-            # Register the ideator worker for the claim/submit phase.
-            _, ideator_token = admin.register_worker("ideator-e2e")
-        finally:
-            admin.close()
-
         operator = StoreClient(
             base_url=task_store_url,
             experiment_id=experiment_id,
-            bearer=f"operator-e2e:{op_token}",
+            bearer=f"{operator_id}:{op_token}",
         )
         ideator = StoreClient(
             base_url=task_store_url,
             experiment_id=experiment_id,
-            bearer=f"ideator-e2e:{ideator_token}",
+            bearer=f"{ideator_id}:{ideator_token}",
         )
         try:
             operator.create_ideation_task("plan-e2e")
-            claim = ideator.claim("plan-e2e", "ideator-e2e")
+            claim = ideator.claim("plan-e2e", ideator_id)
             idea_id = "idea-e2e"
             ideator.create_idea(
                 Idea(

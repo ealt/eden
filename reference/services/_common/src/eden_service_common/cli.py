@@ -62,10 +62,12 @@ def add_common_arguments(
         default=None,
         help=(
             "Deployment admin token (also read from $EDEN_ADMIN_TOKEN). "
-            "Used at startup to register this worker with the task-store "
-            "if no persisted credential exists, or to reissue a stale "
-            "credential. Worker-host requests run under the per-worker "
-            "credential, NOT the admin token."
+            "Used at startup to reissue this worker's credential when no "
+            "persisted token exists or the persisted one is stale. The "
+            "worker_id itself is minted once by setup-experiment (read "
+            "via the service's EDEN_*_WORKER_ID env var); the service "
+            "never fresh-registers. Worker-host requests run under the "
+            "per-worker credential, NOT the admin token."
         ),
     )
     parser.add_argument(

@@ -1,4 +1,5 @@
 """Per-route validation for the evaluator module."""
+# pyright: reportAttributeAccessIssue=false
 
 from __future__ import annotations
 
@@ -99,7 +100,7 @@ class TestClaim:
         eval_id, _, _ = seed_evaluate_task(store)
         # Claim the task directly so the route's claim sees an
         # IllegalTransition.
-        store.claim(eval_id, "other-w")
+        store.claim(eval_id, store._test_worker_ids["other-w"])
         csrf = get_csrf(signed_in_client)
         resp = _post_form(
             signed_in_client,
@@ -383,7 +384,7 @@ class TestIneligibleClaimRegression:
             store,
             slug="targeted",
             variant_id="vt",
-            target=TaskTarget(kind="worker", id="other-w"),
+            target=TaskTarget(kind="worker", id=store._test_worker_ids["other-w"]),
         )
         csrf = get_csrf(signed_in_client)
         resp = _post_form(

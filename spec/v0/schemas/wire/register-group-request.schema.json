@@ -3,22 +3,18 @@
   "title": "EDEN wire — register-group request",
   "description": "Request body for POST /v0/experiments/{E}/groups (07-wire-protocol.md §7.1). Admin-gated.",
   "type": "object",
-  "required": ["group_id"],
   "additionalProperties": false,
   "properties": {
-    "group_id": {
+    "name": {
       "type": "string",
-      "minLength": 1,
-      "maxLength": 64,
-      "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
+      "description": "OPTIONAL operator-supplied display label (spec/v0/02-data-model.md §1.7). The server mints the opaque group_id; the caller never supplies it. Display-name well-formedness (length, charset) and reserved-name rejection (`admins`, `orchestrators`) are enforced server-side → 422 eden://error/invalid-name; an ill-formed name is NOT a request-validation (400) failure."
     },
     "members": {
       "type": "array",
       "items": {
         "type": "string",
-        "minLength": 1,
-        "maxLength": 64,
-        "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
+        "pattern": "^(wkr|grp)_[0-9a-hjkmnp-tv-z]{26}$",
+        "description": "Member id — a worker_id (wkr_*) or a group_id (grp_*) (spec/v0/02-data-model.md §1.6)."
       }
     }
   }

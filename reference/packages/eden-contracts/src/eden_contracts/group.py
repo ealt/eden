@@ -9,12 +9,12 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict
 
-from ._common import DateTimeStr, NotNone, WorkerId
+from ._common import ActorId, DateTimeStr, DisplayName, ExperimentId, GroupId, MemberId, NotNone
 
-GroupMember = WorkerId
-"""A group member is either a `worker_id` or another `group_id`; same grammar."""
+GroupMember = MemberId
+"""A group member is either a `worker_id` (wkr_*) or a `group_id` (grp_*)."""
 
 
 class Group(BaseModel):
@@ -22,8 +22,9 @@ class Group(BaseModel):
 
     model_config = ConfigDict(strict=True, extra="allow")
 
-    group_id: WorkerId
-    experiment_id: Annotated[str, Field(min_length=1)]
+    group_id: GroupId
+    name: Annotated[DisplayName | None, NotNone] = None
+    experiment_id: ExperimentId
     members: list[GroupMember]
     created_at: DateTimeStr
-    created_by: Annotated[str | None, NotNone, Field(min_length=1)] = None
+    created_by: Annotated[ActorId | None, NotNone] = None

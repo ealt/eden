@@ -30,10 +30,13 @@ from eden_wire.errors import Forbidden, Unauthorized
 
 BASE_URL = "http://control-plane.test"
 
+EXP_ID = "exp_0123456789abcdefghjkmnpqrs"
+WKR_ID = "wkr_0123456789abcdefghjkmnpqrs"
+
 LEASE_PAYLOAD: dict[str, Any] = {
     "lease_id": "lease-abc-123",
-    "experiment_id": "exp-1",
-    "holder": "auto-orchestrator-1",
+    "experiment_id": EXP_ID,
+    "holder": WKR_ID,
     "holder_instance": "uuid-aaaa",
     "acquired_at": "2026-05-19T12:00:00Z",
     "expires_at": "2026-05-19T12:00:30Z",
@@ -41,7 +44,7 @@ LEASE_PAYLOAD: dict[str, Any] = {
 }
 
 REGISTRY_PAYLOAD: dict[str, Any] = {
-    "experiment_id": "exp-1",
+    "experiment_id": EXP_ID,
     "config_uri": "https://example.test/exp-1/config.yaml",
     "created_at": "2026-05-19T12:00:00Z",
     "last_known_state": "running",
@@ -50,7 +53,7 @@ REGISTRY_PAYLOAD: dict[str, Any] = {
 
 
 def _client_with_handler(
-    handler: Any, *, bearer: str | None = "auto-orchestrator-1:secret"
+    handler: Any, *, bearer: str | None = WKR_ID + ":secret"
 ) -> ControlPlaneClient:
     transport = httpx.MockTransport(handler)
     inner = httpx.Client(transport=transport, base_url=BASE_URL)
@@ -87,17 +90,20 @@ def test_register_experiment_request_shape() -> None:
         return httpx.Response(201, json=REGISTRY_PAYLOAD)
 
     with _client_with_handler(handler, bearer="admin:T") as cp:
-        entry = cp.register_experiment("exp-1", "https://example.test/c.yaml")
+        entry = cp.register_experiment(
+            "https://example.test/c.yaml", name="My Experiment"
+        )
 
     assert captured["method"] == "POST"
     assert captured["url"].endswith("/v0/control/experiments")
     assert captured["auth"] == "Bearer admin:T"
+    # The caller no longer supplies an id; the server mints exp_*.
     assert captured["body"] == {
-        "experiment_id": "exp-1",
         "config_uri": "https://example.test/c.yaml",
+        "name": "My Experiment",
     }
     assert isinstance(entry, RegisteredExperiment)
-    assert entry.experiment_id == "exp-1"
+    assert entry.experiment_id == EXP_ID
 
 
 def test_register_experiment_409_already_exists() -> None:
@@ -105,7 +111,7 @@ def test_register_experiment_409_already_exists() -> None:
         return _problem("eden://error/already-exists", 409, "differing config_uri")
 
     with _client_with_handler(handler) as cp, pytest.raises(AlreadyExists):
-        cp.register_experiment("exp-1", "https://other.test/c.yaml")
+        cp.register_experiment("https://other.test/c.yaml")
 
 
 def test_unregister_experiment_invalid_precondition() -> None:
@@ -129,7 +135,7 @@ def test_list_experiments_parses_wrapper() -> None:
         entries = cp.list_experiments()
 
     assert len(entries) == 1
-    assert entries[0].experiment_id == "exp-1"
+    assert entries[0].experiment_id == EXP_ID
 
 
 def test_read_experiment_metadata_404() -> None:
@@ -154,11 +160,11 @@ def test_acquire_lease_request_shape() -> None:
         return httpx.Response(201, json=LEASE_PAYLOAD)
 
     with _client_with_handler(handler) as cp:
-        lease = cp.acquire_lease("exp-1", "auto-orchestrator-1", "uuid-aaaa")
+        lease = cp.acquire_lease(EXP_ID, WKR_ID, "uuid-aaaa")
 
-    assert captured["url"].endswith("/v0/control/experiments/exp-1/leases")
+    assert captured["url"].endswith(f"/v0/control/experiments/{EXP_ID}/leases")
     assert captured["body"] == {
-        "holder": "auto-orchestrator-1",
+        "holder": WKR_ID,
         "holder_instance": "uuid-aaaa",
     }
     assert isinstance(lease, ExperimentLease)
@@ -170,7 +176,7 @@ def test_acquire_lease_409_routes_to_lease_held_by_other() -> None:
         return _problem("eden://error/lease-held-by-other", 409)
 
     with _client_with_handler(handler) as cp, pytest.raises(LeaseHeldByOther):
-        cp.acquire_lease("exp-1", "auto-orchestrator-1", "uuid-aaaa")
+        cp.acquire_lease(EXP_ID, WKR_ID, "uuid-aaaa")
 
 
 def test_renew_lease_request_shape() -> None:
@@ -246,12 +252,12 @@ def test_list_active_leases_query_param() -> None:
         return httpx.Response(200, json={"leases": [LEASE_PAYLOAD]})
 
     with _client_with_handler(handler) as cp:
-        leases = cp.list_active_leases("auto-orchestrator-1")
+        leases = cp.list_active_leases(WKR_ID)
 
     assert "/v0/control/leases" in captured["url"]
-    assert "holder=auto-orchestrator-1" in captured["url"]
+    assert f"holder={WKR_ID}" in captured["url"]
     assert len(leases) == 1
-    assert leases[0].holder == "auto-orchestrator-1"
+    assert leases[0].holder == WKR_ID
 
 
 # ---------------------------------------------------------------------
@@ -264,7 +270,7 @@ def test_acquire_lease_403_forbidden() -> None:
         return _problem("eden://error/forbidden", 403, "not in orchestrators")
 
     with _client_with_handler(handler) as cp, pytest.raises(Forbidden):
-        cp.acquire_lease("exp-1", "auto-orchestrator-1", "uuid-aaaa")
+        cp.acquire_lease(EXP_ID, WKR_ID, "uuid-aaaa")
 
 
 def test_acquire_lease_401_unauthorized_without_bearer() -> None:
@@ -275,7 +281,7 @@ def test_acquire_lease_401_unauthorized_without_bearer() -> None:
     with _client_with_handler(handler, bearer=None) as cp, pytest.raises(
         Unauthorized
     ):
-        cp.acquire_lease("exp-1", "auto-orchestrator-1", "uuid-aaaa")
+        cp.acquire_lease(EXP_ID, WKR_ID, "uuid-aaaa")
 
 
 # ---------------------------------------------------------------------
@@ -301,8 +307,11 @@ def test_register_worker_idempotent_response_shape() -> None:
             "auto-orchestrator-1", labels={"deployment": "edge"}
         )
 
+    # Identity rename (#128): the caller supplies a display ``name``;
+    # the server mints the opaque ``wkr_*`` id (no client-supplied
+    # ``worker_id`` on the request body).
     assert captured["body"] == {
-        "worker_id": "auto-orchestrator-1",
+        "name": "auto-orchestrator-1",
         "labels": {"deployment": "edge"},
     }
     assert result["registration_token"] == "tok-1"

@@ -1,6 +1,18 @@
 """Pydantic bindings for the EDEN protocol wire formats (spec/v0)."""
 
-from ._common import CommitSha, DateTimeStr, DurationStr, WorkerId
+from ._common import (
+    ActorId,
+    CommitSha,
+    DateTimeStr,
+    DisplayName,
+    DurationStr,
+    ExperimentId,
+    GroupId,
+    MemberId,
+    WorkerId,
+    mint_opaque_id,
+    mint_ulid,
+)
 from .config import (
     BaselineConfig,
     ConvergenceWindowTerminationConfig,
@@ -71,10 +83,17 @@ from .worker import Worker, WorkerLabels
 
 __all__ = [
     "REGISTERED_EVENT_TYPES",
+    "ActorId",
     "CommitSha",
     "DateTimeStr",
+    "DisplayName",
     "DurationStr",
     "BaselineConfig",
+    "ExperimentId",
+    "GroupId",
+    "MemberId",
+    "mint_opaque_id",
+    "mint_ulid",
     "Direction",
     "DispatchMode",
     "DispatchModeValue",

@@ -1,0 +1,14 @@
+{# Display-convention macros for the identity rename (#128).
+   See eden_web_ui.routes._display for the Python-side mirror. #}
+
+{# Render "<name> (<id>)" when a name is present, else the bare opaque id. #}
+{% macro name_id(name, opaque_id) -%}
+{%- if name -%}{{ name }} (<code>{{ opaque_id }}</code>){%- else -%}<code>{{ opaque_id }}</code>{%- endif -%}
+{%- endmacro %}
+
+{# Resolve an attribution worker id to "<name> (<id>)" via a names map
+   (id -> name), falling back to the bare id. Renders an em dash when the
+   id is empty/None (attribution absent). #}
+{% macro attribution(worker_id, names) -%}
+{%- if worker_id -%}{{ name_id(names.get(worker_id), worker_id) }}{%- else -%}&mdash;{%- endif -%}
+{%- endmacro %}

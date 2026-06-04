@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_macros.html" import name_id %}
 {% block title %}EDEN — admin experiments{% endblock %}
 {% block main %}
 <h1>experiments (cross-experiment dashboard)</h1>
@@ -18,13 +19,16 @@
 
 <section>
     <h2>register a new experiment</h2>
+    <p class="muted">
+        The experiment_id is minted by the control plane. Supply an
+        optional display name; the minted id appears in the list below.
+    </p>
     <form method="post" action="/admin/experiments/register">
         <input type="hidden" name="csrf_token" value="{{ session.csrf }}">
         <p>
-            <label>experiment_id
-                <input type="text" name="experiment_id" required maxlength="64"
-                       pattern="[a-z0-9][a-z0-9_-]{0,63}"
-                       title="lowercase alphanumeric, hyphen, underscore; first char non-hyphen; max 64 chars">
+            <label>name <span class="muted">(optional)</span>
+                <input type="text" name="name" maxlength="128"
+                       title="1–128 visible characters; no control chars; no leading/trailing whitespace">
             </label>
         </p>
         <p>
@@ -45,7 +49,7 @@
     <table class="experiments-table">
         <thead>
             <tr>
-                <th>experiment_id</th>
+                <th>experiment</th>
                 <th>last_known_state</th>
                 <th>lease holder</th>
                 <th>lease expires_at</th>
@@ -56,7 +60,7 @@
         <tbody>
         {% for r in rows %}
             <tr {% if r.is_selected %}class="selected"{% endif %}>
-                <td><code>{{ r.experiment_id }}</code>{% if r.is_selected %} ★{% endif %}</td>
+                <td>{{ name_id(r.name, r.experiment_id) }}{% if r.is_selected %} ★{% endif %}</td>
                 <td>{{ r.last_known_state }}</td>
                 <td>
                     {% if r.lease %}

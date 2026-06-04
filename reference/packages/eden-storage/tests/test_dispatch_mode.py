@@ -12,11 +12,17 @@ from collections.abc import Callable
 
 import pytest
 from eden_contracts import DispatchMode
-from eden_storage import InvalidPrecondition, ReservedIdentifier, Store
+from eden_storage import InvalidPrecondition, Store
 
 
 def _seed_admin(store: Store) -> None:
-    store.register_worker("admin-eric")
+    """No-op since the identity rename (#128).
+
+    ``updated_by`` is an ActorId (``admin`` | ``wkr_*``) trusted by the
+    store as data; no registered worker row is required. Tests use the
+    literal ``admin`` principal. Retained as a no-op so call sites read
+    unchanged.
+    """
 
 
 def test_default_dispatch_mode_is_all_auto(
@@ -36,7 +42,7 @@ def test_partial_update_preserves_omitted_keys(
     store = make_store()
     _seed_admin(store)
     result = store.update_dispatch_mode(
-        {"evaluation_dispatch": "manual"}, updated_by="admin-eric"
+        {"evaluation_dispatch": "manual"}, updated_by="admin"
     )
     assert result.evaluation_dispatch == "manual"
     # Unchanged keys retained at "auto".
@@ -58,12 +64,12 @@ def test_update_emits_event_with_diff(
     pre = len(store.events())
     store.update_dispatch_mode(
         {"ideation_creation": "manual", "integration": "manual"},
-        updated_by="admin-eric",
+        updated_by="admin",
     )
     new_events = store.events()[pre:]
     assert [e.type for e in new_events] == ["experiment.dispatch_mode_changed"]
     payload = new_events[0].data
-    assert payload["updated_by"] == "admin-eric"
+    assert payload["updated_by"] == "admin"
     assert payload["changed"] == {
         "ideation_creation": "manual",
         "integration": "manual",
@@ -85,7 +91,7 @@ def test_idempotent_flip_emits_no_event(
     pre = len(store.events())
     result = store.update_dispatch_mode(
         {"ideation_creation": "auto", "execution_dispatch": "auto"},
-        updated_by="admin-eric",
+        updated_by="admin",
     )
     assert result.ideation_creation == "auto"
     assert len(store.events()) == pre  # no event emitted
@@ -98,13 +104,13 @@ def test_partial_idempotent_emits_only_changed_diff(
     store = make_store()
     _seed_admin(store)
     store.update_dispatch_mode(
-        {"integration": "manual"}, updated_by="admin-eric"
+        {"integration": "manual"}, updated_by="admin"
     )
     pre = len(store.events())
     # Re-flip integration to manual (no-op) AND ideation to manual (real diff).
     store.update_dispatch_mode(
         {"integration": "manual", "ideation_creation": "manual"},
-        updated_by="admin-eric",
+        updated_by="admin",
     )
     new_events = store.events()[pre:]
     assert len(new_events) == 1
@@ -119,7 +125,7 @@ def test_dispatch_mode_accepts_model_input(
     store = make_store()
     _seed_admin(store)
     new_mode = DispatchMode(integration="manual")
-    result = store.update_dispatch_mode(new_mode, updated_by="admin-eric")
+    result = store.update_dispatch_mode(new_mode, updated_by="admin")
     assert result.integration == "manual"
 
 
@@ -131,22 +137,26 @@ def test_dispatch_mode_rejects_invalid_value(
     with pytest.raises(InvalidPrecondition):
         store.update_dispatch_mode(
             {"ideation_creation": "paused"},
-            updated_by="admin-eric",
+            updated_by="admin",
         )
 
 
 def test_dispatch_mode_rejects_invalid_actor_id(
     make_store: Callable[..., Store],
 ) -> None:
-    """Actor id must satisfy the §6.1 grammar; reserved id ('admin') rejected."""
+    """``updated_by`` must satisfy the ActorId (``admin`` | ``wkr_*``) grammar.
+
+    Post-#128 the literal ``admin`` is a VALID actor principal; only a
+    malformed value is rejected.
+    """
     store = make_store()
-    with pytest.raises(ReservedIdentifier):
+    with pytest.raises(InvalidPrecondition):
         store.update_dispatch_mode(
             {"integration": "manual"},
-            updated_by="admin",
+            updated_by="Admin",  # uppercase is neither `admin` nor a wkr_* id
         )
     with pytest.raises(InvalidPrecondition):
         store.update_dispatch_mode(
             {"integration": "manual"},
-            updated_by="Admin",  # uppercase violates grammar
+            updated_by="grp_00000000000000000000000000",  # wrong prefix
         )

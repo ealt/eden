@@ -7,7 +7,7 @@ from typing import Any
 
 import httpx
 import pytest
-from conftest import EXPERIMENT_ID, SESSION_SECRET, WORKER_ID, _config
+from conftest import EXPERIMENT_ID, SESSION_SECRET, _config
 from eden_storage.errors import NotFound
 from eden_web_ui import make_app
 from eden_web_ui.routes._helpers import (
@@ -23,6 +23,10 @@ from fastapi import FastAPI
 from starlette.requests import Request
 
 OTHER_ID = "exp-other"
+# A session-principal worker id for the app under test; resolution tests
+# call the resolver helpers directly (not via the admin gate), so this is
+# just an opaque-shaped placeholder (#128).
+WORKER_ID = "wkr_0123456789abcdefghjkmnpqrs"
 
 
 class _FakeControlPlane:

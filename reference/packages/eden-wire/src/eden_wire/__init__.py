@@ -24,6 +24,7 @@ from .client import (
     IndeterminateReassign,
     IndeterminateTermination,
     StoreClient,
+    WhoamiResult,
 )
 from .errors import Forbidden, Unauthorized, WireError, WireReferenceError
 from .server import make_app
@@ -37,6 +38,7 @@ __all__ = [
     "Principal",
     "StoreClient",
     "Unauthorized",
+    "WhoamiResult",
     "WireError",
     "WireReferenceError",
     "authenticate",

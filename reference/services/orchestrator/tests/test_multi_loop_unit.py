@@ -38,7 +38,9 @@ from eden_orchestrator.multi_loop import (
 from eden_service_common import StopFlag
 
 BASE_URL = "http://control-plane.test"
-WORKER_ID = "auto-orchestrator-1"
+WORKER_ID = "wkr_01kt5e4vh7h2a0hfbxwyw9nyh6"
+EXP1 = "exp_01kt5e4vh7cp3s1jy80c0cdbnx"
+EXP2 = "exp_01kt5e4vh7q690thcjaptqrx5s"
 
 # These tests exercise lease / iteration / drain logic, not baseline
 # creation, so suppress the baseline (baseline.enabled: false) — keeps the
@@ -113,7 +115,7 @@ def _control_plane_client_for(
             return renew.get(
                 lease_id,
                 httpx.Response(
-                    200, json=_lease_payload(experiment_id="any", lease_id=lease_id)
+                    200, json=_lease_payload(experiment_id=EXP1, lease_id=lease_id)
                 ),
             )
         if request.method == "POST" and "/release" in path:
@@ -141,7 +143,7 @@ class FakeStore:
     we only assert that it would have been called against this store.
     """
 
-    def __init__(self, *, experiment_id: str = "exp-1") -> None:
+    def __init__(self, *, experiment_id: str = EXP1) -> None:
         self.experiment_id = experiment_id
         self.read_count = 0
         self.list_variants_count = 0
@@ -248,13 +250,13 @@ def test_loop_runs_iteration_for_each_held_experiment(
 ) -> None:
     cp = _control_plane_client_for(
         experiments_response={
-            "experiments": [_registry_payload("exp-1"), _registry_payload("exp-2")]
+            "experiments": [_registry_payload(EXP1), _registry_payload(EXP2)]
         }
     )
     manager = LeaseManager(
         cp, worker_id=WORKER_ID, holder_instance="uuid-aaaa"
     )
-    runtimes = {"exp-1": _make_runtime("exp-1"), "exp-2": _make_runtime("exp-2")}
+    runtimes = {EXP1: _make_runtime(EXP1), EXP2: _make_runtime(EXP2)}
     stop = _stop_after_n_iterations(1)
 
     run_multi_experiment_loop(
@@ -269,7 +271,7 @@ def test_loop_runs_iteration_for_each_held_experiment(
     )
 
     seen_experiments = {s.experiment_id for s in patched_iteration}
-    assert seen_experiments == {"exp-1", "exp-2"}
+    assert seen_experiments == {EXP1, EXP2}
 
 
 def test_loop_tears_down_runtime_when_lease_drops(
@@ -289,12 +291,12 @@ def test_loop_tears_down_runtime_when_lease_drops(
             tick["n"] += 1
             if tick["n"] == 1:
                 return httpx.Response(
-                    200, json={"experiments": [_registry_payload("exp-1")]}
+                    200, json={"experiments": [_registry_payload(EXP1)]}
                 )
             return httpx.Response(200, json={"experiments": []})
         if path.endswith("/leases") and request.method == "POST":
             return httpx.Response(
-                201, json=_lease_payload(experiment_id="exp-1")
+                201, json=_lease_payload(experiment_id=EXP1)
             )
         if "/renew" in path and request.method == "POST":
             return httpx.Response(
@@ -317,7 +319,7 @@ def test_loop_tears_down_runtime_when_lease_drops(
     manager = LeaseManager(
         cp, worker_id=WORKER_ID, holder_instance="uuid-aaaa"
     )
-    runtime = _make_runtime("exp-1")
+    runtime = _make_runtime(EXP1)
     stop = _stop_after_n_iterations(2)
 
     run_multi_experiment_loop(
@@ -345,12 +347,12 @@ def test_release_after_drain_fires_on_terminated_experiment(
     """An experiment in terminated state with no pending success-without-SHA
     triggers mark_drained_terminated → release + drained-terminated skip."""
     cp = _control_plane_client_for(
-        experiments_response={"experiments": [_registry_payload("exp-1")]}
+        experiments_response={"experiments": [_registry_payload(EXP1)]}
     )
     manager = LeaseManager(
         cp, worker_id=WORKER_ID, holder_instance="uuid-aaaa"
     )
-    runtime = _make_runtime("exp-1")
+    runtime = _make_runtime(EXP1)
     store: FakeStore = runtime.store  # type: ignore[assignment]
     store.set_state("terminated")
     # No variants → drain is trivially complete.
@@ -369,7 +371,7 @@ def test_release_after_drain_fires_on_terminated_experiment(
         config=_CONFIG,
     )
 
-    assert "exp-1" in manager.drained_terminated()
+    assert EXP1 in manager.drained_terminated()
     assert manager.held_experiments() == []
 
 
@@ -378,19 +380,19 @@ def test_release_after_drain_holds_until_pending_success_has_sha(
 ) -> None:
     """Terminated + success variant WITHOUT variant_commit_sha → keep lease."""
     cp = _control_plane_client_for(
-        experiments_response={"experiments": [_registry_payload("exp-1")]}
+        experiments_response={"experiments": [_registry_payload(EXP1)]}
     )
     manager = LeaseManager(
         cp, worker_id=WORKER_ID, holder_instance="uuid-aaaa"
     )
-    runtime = _make_runtime("exp-1")
+    runtime = _make_runtime(EXP1)
     store: FakeStore = runtime.store  # type: ignore[assignment]
     store.set_state("terminated")
     pending_success = Variant.model_validate(
         {
             "variant_id": "v-1",
             "idea_id": "i-1",
-            "experiment_id": "exp-1",
+            "experiment_id": EXP1,
             "parent_commits": ["a" * 40],
             "commit_sha": "b" * 40,
             "branch": "work/v-1",
@@ -414,8 +416,8 @@ def test_release_after_drain_holds_until_pending_success_has_sha(
     )
 
     # Lease is still held because the drain has not completed.
-    assert "exp-1" not in manager.drained_terminated()
-    assert "exp-1" in manager.held_experiments()
+    assert EXP1 not in manager.drained_terminated()
+    assert EXP1 in manager.held_experiments()
 
 
 def test_loop_skips_experiment_we_dont_hold_lease_for(
@@ -429,9 +431,9 @@ def test_loop_skips_experiment_we_dont_hold_lease_for(
     fails with `lease-held-by-other`.
     """
     cp = _control_plane_client_for(
-        experiments_response={"experiments": [_registry_payload("exp-1")]},
+        experiments_response={"experiments": [_registry_payload(EXP1)]},
         acquire_responses={
-            "exp-1": httpx.Response(
+            EXP1: httpx.Response(
                 409,
                 headers={"content-type": "application/problem+json"},
                 content=json.dumps(
@@ -489,11 +491,11 @@ def test_factory_failure_releases_lease(
         if path == "/v0/control/experiments" and request.method == "GET":
             return httpx.Response(
                 200,
-                json={"experiments": [_registry_payload("exp-1")]},
+                json={"experiments": [_registry_payload(EXP1)]},
             )
         if request.method == "POST" and path.endswith("/leases"):
             return httpx.Response(
-                201, json=_lease_payload(experiment_id="exp-1")
+                201, json=_lease_payload(experiment_id=EXP1)
             )
         if request.method == "POST" and "/release" in path:
             release_calls.append(path)
@@ -526,5 +528,5 @@ def test_factory_failure_releases_lease(
     # The lease was released (NOT held to expiry) AND not added to
     # the drained-terminated skip set.
     assert manager.held_experiments() == []
-    assert "exp-1" not in manager.drained_terminated()
+    assert EXP1 not in manager.drained_terminated()
     assert len(release_calls) == 1

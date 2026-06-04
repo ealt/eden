@@ -347,7 +347,16 @@ services:
       - --admin-token
       - ${EDEN_ADMIN_TOKEN:?}
       - --worker-id
-      - ${EDEN_ORCHESTRATOR_WORKER_ID:-orchestrator}
+      # #128: opaque wkr_* minted by setup-experiment (was the literal
+      # default `orchestrator`). Plain ${VAR} (not :? / :-): the id is
+      # SERVER-minted, so it cannot exist until setup-experiment has
+      # brought the task-store-server up and registered the worker —
+      # which is AFTER setup's own `docker compose build`. A :? guard
+      # would trip that build (compose v2 interpolates every service's
+      # command even for an unrelated `build`/`up <svc>`); setup always
+      # writes the minted id to .env before the operator's final
+      # `docker compose up`, mirroring the host-worker vars below.
+      - ${EDEN_ORCHESTRATOR_WORKER_ID}
       - --repo-path
       - /var/lib/eden/repo
       - --forgejo-url
@@ -437,7 +446,14 @@ services:
       - --admin-token
       - ${EDEN_ADMIN_TOKEN:?}
       - --worker-id
-      - ideator-1
+      # #128: opaque wkr_* minted by setup-experiment (was literal
+      # ideator-1). The host's bootstrap_worker_credential reuses the
+      # token setup persisted to credentials/ideator/<id>.token. NOT
+      # guarded with :? — under --no-auto-host-workers this is empty in
+      # .env and the operator brings the stack up WITHOUT the host
+      # services; compose validates ALL services' interpolation on every
+      # operation, so a :? here would break that documented flow.
+      - ${EDEN_IDEATOR_HOST_WORKER_ID}
       - --base-commit-sha
       - ${EDEN_BASE_COMMIT_SHA:?EDEN_BASE_COMMIT_SHA must be set (run setup-experiment)}
       - --log-level
@@ -473,7 +489,9 @@ services:
       - --admin-token
       - ${EDEN_ADMIN_TOKEN:?}
       - --worker-id
-      - executor-1
+      # #128: opaque wkr_* minted by setup-experiment (was literal
+      # executor-1). See ideator-host for the no-:? rationale.
+      - ${EDEN_EXECUTOR_HOST_WORKER_ID}
       - --repo-path
       - /var/lib/eden/repo
       - --forgejo-url
@@ -515,7 +533,9 @@ services:
       - --admin-token
       - ${EDEN_ADMIN_TOKEN:?}
       - --worker-id
-      - evaluator-1
+      # #128: opaque wkr_* minted by setup-experiment (was literal
+      # evaluator-1). See ideator-host for the no-:? rationale.
+      - ${EDEN_EVALUATOR_HOST_WORKER_ID}
       - --experiment-config
       - /etc/eden/experiment-config.yaml
       - --log-level
@@ -593,7 +613,13 @@ services:
       - --base-commit-sha
       - ${EDEN_BASE_COMMIT_SHA:?EDEN_BASE_COMMIT_SHA must be set (run setup-experiment)}
       - --worker-id
-      - ${EDEN_WEB_UI_WORKER_ID:-web-ui-1}
+      # #128: opaque wkr_* minted by setup-experiment (was the literal
+      # default `web-ui-1`). Plain ${VAR} (not :?): server-minted, so it
+      # only exists after setup brings the task-store-server up — AFTER
+      # setup's own `docker compose build`, which a :? guard would trip
+      # (compose interpolates every service's command). setup writes the
+      # minted id to .env before the operator's final `up`.
+      - ${EDEN_WEB_UI_WORKER_ID}
       - --host
       - 0.0.0.0
       - --port

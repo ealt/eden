@@ -1,4 +1,5 @@
 """Lineage + attribution rendering tests for admin task detail (phase 12a-1c)."""
+# pyright: reportAttributeAccessIssue=false
 
 from __future__ import annotations
 
@@ -23,7 +24,7 @@ def _drive_full_pipeline(
     """
     ideation_task_id = "plan-1"
     store.create_ideation_task(ideation_task_id)
-    pclaim = store.claim(ideation_task_id, "ideator-w")
+    pclaim = store.claim(ideation_task_id, store._test_worker_ids["ideator-w"])
 
     # Seed idea + drive to ready, attribute to ideator-w
     from eden_contracts import Idea
@@ -39,7 +40,7 @@ def _drive_full_pipeline(
             artifacts_uri="https://example.invalid/a.md",
             state="drafting",
             created_at="2026-04-24T11:00:00Z",
-            created_by="ideator-w",
+            created_by=store._test_worker_ids["ideator-w"],
         )
     )
     store.mark_idea_ready(idea_id)
@@ -55,7 +56,7 @@ def _drive_full_pipeline(
 
     exec_task_id = "exec-1"
     store.create_execution_task(exec_task_id, idea_id)
-    eclaim = store.claim(exec_task_id, "executor-w")
+    eclaim = store.claim(exec_task_id, store._test_worker_ids["executor-w"])
     variant_id = "v-1"
     store.create_variant(
         Variant(
@@ -66,7 +67,7 @@ def _drive_full_pipeline(
             parent_commits=["a" * 40],
             branch="work/v-1",
             started_at="2026-04-24T12:00:00Z",
-            executed_by="executor-w",
+            executed_by=store._test_worker_ids["executor-w"],
         )
     )
     store.submit(
@@ -113,16 +114,16 @@ class TestTaskAttribution:
             "plan-A",
             None,
             reason="setup",
-            reassigned_by="operator",
+            reassigned_by="admin",
         )
         # Now target it
         from eden_contracts import TaskTarget
 
         store.reassign_task(
             "plan-A",
-            TaskTarget(kind="worker", id="ideator-w"),
+            TaskTarget(kind="worker", id=store._test_worker_ids["ideator-w"]),
             reason="setup",
-            reassigned_by="operator",
+            reassigned_by="admin",
         )
 
         resp = client.get("/admin/tasks/plan-A/")
@@ -139,9 +140,10 @@ class TestTaskAttribution:
         resp = client.get(f"/admin/tasks/{ids['ideation_task_id']}/")
         assert resp.status_code == 200
         body = resp.text
-        # submitted_by is set via the submit flow
+        # submitted_by is set via the submit flow; rendered as name(id)
+        # with the link keyed on the minted opaque id.
         assert "ideator-w" in body
-        assert '/admin/workers/ideator-w/' in body
+        assert f'/admin/workers/{store._test_worker_ids["ideator-w"]}/' in body
 
     def test_attribution_renders_claim_worker_id(
         self, client: TestClient, store: InMemoryStore
@@ -153,15 +155,16 @@ class TestTaskAttribution:
         attribution surface."""
         _signed_in(client)
         store.create_ideation_task("plan-claim-A")
-        store.register_worker("ideator-claim")
-        store.claim("plan-claim-A", "ideator-claim")
+        worker, _ = store.register_worker("ideator-claim")
+        store.claim("plan-claim-A", worker.worker_id)
         resp = client.get("/admin/tasks/plan-claim-A/")
         assert resp.status_code == 200
         body = resp.text
         attribution_block = body.split("attribution", 1)[1].split("payload", 1)[0]
         assert "claim.worker_id" in attribution_block
+        # Rendered as name(id): both the name and the minted id appear.
         assert "ideator-claim" in attribution_block
-        assert "/admin/workers/ideator-claim/" in attribution_block
+        assert f"/admin/workers/{worker.worker_id}/" in attribution_block
 
     def test_attribution_claim_worker_id_em_dash_when_unclaimed(
         self, client: TestClient, store: InMemoryStore

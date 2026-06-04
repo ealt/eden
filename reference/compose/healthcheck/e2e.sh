@@ -40,7 +40,16 @@ ENV_FILE="$(mktemp)"
 # Phase 12a-1g: per-smoke ephemeral data root, cleaned up on every
 # exit path.
 SMOKE_DATA_ROOT="$(mktemp -d -t eden-e2e-XXXXXX)"
-EXPERIMENT_ID="e2e-exp"
+# #128: mint an opaque `exp_*` experiment id (the wire grammar rejects
+# the old typed "e2e-exp" mnemonic). Passed via `--experiment-id` and
+# echoed back to `.env` as EDEN_EXPERIMENT_ID.
+EXPERIMENT_ID="$(python3 - <<'PY'
+import secrets, time
+alphabet = "0123456789abcdefghjkmnpqrstvwxyz"
+value = ((int(time.time() * 1000) & ((1 << 48) - 1)) << 80) | secrets.randbits(80)
+print("exp_" + "".join(alphabet[(value >> (5 * i)) & 31] for i in range(26))[::-1])
+PY
+)"
 
 # Stage 1's wait-list — deliberately omits forgejo (deferred 10d
 # follow-up, not consumed by this drill) and ideator-host (the whole
@@ -127,12 +136,20 @@ test "$status" = "running" || {
 # --- Run the python driver (ideator walkthrough + admin reclaim) ---
 WEB_UI_HOST_PORT="$(grep -E '^WEB_UI_HOST_PORT=' "$ENV_FILE" | cut -d= -f2-)"
 EDEN_BASE_COMMIT_SHA="$(grep -E '^EDEN_BASE_COMMIT_SHA=' "$ENV_FILE" | cut -d= -f2-)"
+# #128: the reassign drill targets the headless ideator-host's worker,
+# which is now an opaque `wkr_*` id (was the literal "ideator-1"). Read
+# the setup-minted id from `.env` and pass it to the driver so the
+# reassign form posts the opaque id the web-ui dropdown actually
+# renders.
+EDEN_IDEATOR_HOST_WORKER_ID="$(grep -E '^EDEN_IDEATOR_HOST_WORKER_ID=' "$ENV_FILE" | cut -d= -f2-)"
 test -n "$WEB_UI_HOST_PORT"
 test -n "$EDEN_BASE_COMMIT_SHA"
+test -n "$EDEN_IDEATOR_HOST_WORKER_ID"
 
 echo "--- running e2e_drive.py against http://localhost:${WEB_UI_HOST_PORT} ---"
 EDEN_E2E_WEB_UI_URL="http://localhost:${WEB_UI_HOST_PORT}" \
     EDEN_BASE_COMMIT_SHA="$EDEN_BASE_COMMIT_SHA" \
+    EDEN_E2E_REASSIGN_TARGET_WORKER_ID="$EDEN_IDEATOR_HOST_WORKER_ID" \
     python3 "${SCRIPT_DIR}/e2e_drive.py"
 
 echo "--- stage 2: bring up ideator-host ---"
@@ -214,25 +231,28 @@ test "$RECLAIMED_OPERATOR" -ge 1 || {
 
 # 12a-2 wave 7: the e2e drill reassigns one ideation task via the
 # admin UI. Verify the resulting `task.reassigned` event matches the
-# exact shape the drill requested: target is worker:ideator-1, AND
-# reassigned_by is stamped from the web-ui's worker_id (the
-# admins-group principal that drove the wire call). A bare
-# "task.reassigned count >= 1" assertion would pass even if the
-# event recorded a different target or attribution, so filter by
-# all three fields.
+# exact shape the drill requested: target is the ideator-host's
+# opaque worker_id (#128 — was literal "ideator-1"), AND reassigned_by
+# is stamped from the web-ui's worker_id (the admins-group principal
+# that drove the wire call). Both ids are opaque `wkr_*` read from
+# `.env`. A bare "task.reassigned count >= 1" assertion would pass even
+# if the event recorded a different target or attribution, so filter
+# by all three fields.
 EDEN_WEB_UI_WORKER_ID="$(grep -E '^EDEN_WEB_UI_WORKER_ID=' "$ENV_FILE" | cut -d= -f2-)"
 test -n "$EDEN_WEB_UI_WORKER_ID"
 TASK_REASSIGNED="$(
     echo "$EVENTS_JSON" \
-        | jq --arg actor "$EDEN_WEB_UI_WORKER_ID" '(.events // .) | [.[] | select(
+        | jq --arg actor "$EDEN_WEB_UI_WORKER_ID" \
+             --arg target "$EDEN_IDEATOR_HOST_WORKER_ID" \
+             '(.events // .) | [.[] | select(
             .type == "task.reassigned"
             and .data.new_target.kind == "worker"
-            and .data.new_target.id == "ideator-1"
+            and .data.new_target.id == $target
             and .data.reassigned_by == $actor
           )] | length'
 )"
 test "$TASK_REASSIGNED" -ge 1 || {
-    echo "expected >= 1 task.reassigned event with new_target=worker:ideator-1 reassigned_by=${EDEN_WEB_UI_WORKER_ID}; got $TASK_REASSIGNED" >&2
+    echo "expected >= 1 task.reassigned event with new_target=worker:${EDEN_IDEATOR_HOST_WORKER_ID} reassigned_by=${EDEN_WEB_UI_WORKER_ID}; got $TASK_REASSIGNED" >&2
     echo "all task.reassigned events:" >&2
     echo "$EVENTS_JSON" | jq '(.events // .) | [.[] | select(.type == "task.reassigned")]' >&2 || true
     exit 1

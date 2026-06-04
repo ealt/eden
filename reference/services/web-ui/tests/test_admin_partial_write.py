@@ -17,13 +17,13 @@ import pytest
 from conftest import (
     EXPERIMENT_ID,
     SESSION_SECRET,
-    WORKER_ID,
     _config,
     _now,
     _one_experiment_factory,
     get_csrf,
     make_child_commit,
     seed_evaluate_task,
+    web_ui_worker_id,
 )
 from eden_git import GitRepo
 from eden_storage import InMemoryStore
@@ -40,7 +40,7 @@ def admin_repo_app(
         store_factory=_one_experiment_factory(store),
         experiment_id=EXPERIMENT_ID,
         experiment_config=_config(),
-        worker_id=WORKER_ID,
+        worker_id=web_ui_worker_id(store),
         session_secret=SESSION_SECRET,
         claim_ttl_seconds=3600,
         artifacts_dir=artifacts_dir,
@@ -65,13 +65,16 @@ def _seed_ideation_task(store: InMemoryStore, task_id: str = "ideation-A") -> st
 
 class TestTaskReclaimFailures:
     def test_illegal_transition_redirects_with_error_banner(
-        self, signed_in_client: TestClient, store: InMemoryStore
+        self,
+        signed_in_client: TestClient,
+        store: InMemoryStore,
+        worker_ids: dict[str, str],
     ) -> None:
         """Terminal task → reclaim raises IllegalTransition → ?error=illegal-transition."""
         from eden_storage import IdeaSubmission
 
         task_id = _seed_ideation_task(store, "ideation-A")
-        claim = store.claim(task_id, "w-1")
+        claim = store.claim(task_id, worker_ids["w-1"])
         store.submit(task_id, claim.worker_id, IdeaSubmission(status="success", idea_ids=()))
         store.accept(task_id)
         csrf = get_csrf(signed_in_client)
@@ -89,11 +92,12 @@ class TestTaskReclaimFailures:
         self,
         signed_in_client: TestClient,
         store: InMemoryStore,
+        worker_ids: dict[str, str],
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """A non-IllegalTransition Exception from store.reclaim → ?error=transport."""
         task_id = _seed_ideation_task(store, "ideation-A")
-        store.claim(task_id, "w-1")
+        store.claim(task_id, worker_ids["w-1"])
         call_count = {"n": 0}
 
         def explode(self, *args, **kwargs):

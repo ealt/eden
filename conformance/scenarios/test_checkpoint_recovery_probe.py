@@ -56,12 +56,16 @@ def test_imported_from_matches_source_manifest(
     sender_wire_client: WireClient,
     receiver_wire_client: WireClient,
 ) -> None:
-    """spec/v0/10-checkpoints.md §10 — imported_from.checkpoint_exported_at matches source.
+    """spec/v0/10-checkpoints.md §10 — imported_from anchors the recovery probe.
 
     Per chapter 10 §10 the recovery-probe anchor on a post-import
-    Experiment ``imported_from.checkpoint_exported_at`` equals the
-    source manifest's ``exported_at`` value, verbatim. The
-    ``checkpoint_format_version`` also round-trips verbatim.
+    Experiment carries ``checkpoint_exported_at`` equal to the source
+    manifest's ``exported_at`` value, verbatim; ``checkpoint_format_version``
+    likewise round-trips verbatim; and ``source_experiment_id`` MUST be
+    the manifest's ``experiment_id`` (the source opaque ``exp_*``,
+    02-data-model.md §1.6) verbatim — recorded for provenance even when
+    an ``as_experiment_id`` override pins the imported experiment's
+    primary key, since the source id is never reused as the PK (§11).
     """
     archive = _seed.export_checkpoint(sender_wire_client)
     manifest = _parse_manifest(archive)
@@ -81,6 +85,12 @@ def test_imported_from_matches_source_manifest(
         imported["checkpoint_format_version"]
         == manifest["checkpoint_format_version"]
     )
+    # The source id is the manifest's opaque ``exp_*``; the importer
+    # records it for provenance and never reuses it as the PK (§10/§11).
+    assert imported["source_experiment_id"] == manifest["experiment_id"]
+    assert imported["source_experiment_id"] == sender_wire_client.experiment_id
+    # PK is the override id, NOT the source id (the rename's core change).
+    assert received["experiment_id"] != manifest["experiment_id"]
 
 
 def test_double_import_returns_conflict(

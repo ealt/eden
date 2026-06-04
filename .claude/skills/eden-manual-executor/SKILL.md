@@ -61,14 +61,18 @@ Present a digest:
 ### Phase 3: Claim (automatic)
 
 ```bash
-$EDEN claim <task-id> --worker-id eden-manual
+$EDEN claim <task-id> --worker-name eden-manual
 ```
 
-The variant_id is persisted to `/tmp/eden-manual/.claims.json`
-(post-12a-1, claim ownership is identity-keyed — no per-claim
-opaque token; the CLI's worker bearer is cached at
-`/tmp/eden-manual/.credentials.json`). The variant_id is stable
-for the life of this claim.
+Post-#128: worker ids are opaque, system-minted `wkr_*` strings; you
+supply a display *name*, not the id. On first use the CLI registers a
+worker with `--worker-name eden-manual` (default `eden-manual`), reads
+the minted `worker_id` back from the wire response, and caches
+`{worker_id, name, token}` at `/tmp/eden-manual/.credentials.json`. The
+variant_id is persisted to `/tmp/eden-manual/.claims.json` (claim
+ownership is identity-keyed — no per-claim opaque token). The variant_id
+is stable for the life of this claim. When you echo the claimant to the
+user, render `<name> (<worker_id>)`.
 
 ### Phase 4: Clone at the parent commit (automatic)
 
@@ -164,6 +168,14 @@ task_id — the user can play evaluator next via `/eden-manual-evaluator`.
   proposed variant doesn't actually change the parent's tree. Either
   produce a real change or — if the intent is to declare "I tried
   and failed" — use `--status error` instead.
+- **Worker identity is name-supplied, id-returned.** Never hardcode an
+  opaque `worker_id` (`wkr_<26-char-ULID>`, minted by the server). Pass
+  `--worker-name <name>`; the CLI reads the minted id from the wire
+  response and caches it. The `created by` / `target` columns in the
+  web-ui executor table render `<name> (<id>)` when a name exists, the
+  bare opaque id otherwise. To find a worker by display name,
+  `GET .../workers?name=<name>` returns 0..N matches (names MAY collide)
+  — disambiguate by id.
 - **`wire error 401` on `/workers...`?** The running stack's
   `EDEN_ADMIN_TOKEN` has diverged from the `.env` file the CLI is
   reading. Bounce the stack against the current `.env`, or re-checkout

@@ -39,10 +39,19 @@ def _register_group(deps: RouterDeps):
     ) -> dict[str, Any]:
         check_experiment(deps, experiment_id, x_eden_experiment_id)
         principal = require_admin(request) if deps.admin_token is not None else None
+        # The server mints the opaque group_id; the caller supplies only
+        # an optional display name + member list. The deployment admin
+        # may create reserved-named groups (the setup-experiment
+        # bootstrap path, §7.5); ordinary workers cannot reach this
+        # admin-gated route at all, but when auth is disabled (test
+        # harness) we default ``allow_reserved`` off so the reserved-name
+        # guard still exercises.
+        allow_reserved = principal is not None and principal.is_admin()
         group = deps.store.register_group(
-            body.group_id,
+            name=body.name,
             members=body.members,
-            created_by=principal.kind if principal is not None else None,
+            created_by=principal.actor_id if principal is not None else None,
+            allow_reserved=allow_reserved,
         )
         return group.model_dump(mode="json", exclude_none=True)
 
@@ -52,10 +61,12 @@ def _register_group(deps: RouterDeps):
 def _list_groups(deps: RouterDeps):
     async def list_groups(
         experiment_id: str,
+        name: str | None = None,
         x_eden_experiment_id: str | None = Header(None),
     ) -> dict[str, Any]:
         check_experiment(deps, experiment_id, x_eden_experiment_id)
-        groups = deps.store.list_groups()
+        # Optional ``?name=<n>`` exact, case-sensitive filter (§7.2).
+        groups = deps.store.list_groups(name=name)
         return {
             "groups": [
                 g.model_dump(mode="json", exclude_none=True) for g in groups

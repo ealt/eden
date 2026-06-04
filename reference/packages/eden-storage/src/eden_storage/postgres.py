@@ -470,6 +470,7 @@ class PostgresStore(_StoreBase):
         experiment_id: str,
         dsn: str,
         *,
+        name: str | None = None,
         evaluation_schema: EvaluationSchema | None = None,
         now: Callable[[], datetime] | None = None,
         event_id_factory: Callable[[], str] | None = None,
@@ -478,6 +479,7 @@ class PostgresStore(_StoreBase):
     ) -> None:
         super().__init__(
             experiment_id,
+            name=name,
             evaluation_schema=evaluation_schema,
             now=now,
             event_id_factory=event_id_factory,
@@ -527,7 +529,7 @@ class PostgresStore(_StoreBase):
             )
         with self._conn.cursor() as cur:
             cur.execute(
-                "SELECT experiment_id, evaluation_schema FROM experiment"
+                "SELECT experiment_id, evaluation_schema, name FROM experiment"
             )
             row = cur.fetchone()
             if row is None:
@@ -538,17 +540,23 @@ class PostgresStore(_StoreBase):
                 created_at = self._ts()
                 cur.execute(
                     "INSERT INTO experiment(experiment_id, evaluation_schema, "
-                    "state, created_at, base_commit_sha) VALUES (%s, %s, %s, %s, %s)",
+                    "state, created_at, base_commit_sha, name) "
+                    "VALUES (%s, %s, %s, %s, %s, %s)",
                     (
                         experiment_id,
                         schema_json,
                         _DEFAULT_EXPERIMENT_STATE,
                         created_at,
                         self._base_commit_sha,
+                        self._experiment_name,
                     ),
                 )
                 return
-            stored_id, stored_schema = row
+            stored_id, stored_schema, stored_name = row
+            # On reopen the persisted name is authoritative (issue #128),
+            # mirroring evaluation_schema immutability (§4.2). A `name=`
+            # arg on reopen is ignored.
+            self._experiment_name = stored_name
         if stored_id != experiment_id:
             raise InvalidPrecondition(
                 f"database at {self._dsn!r} belongs to experiment "
@@ -779,7 +787,7 @@ class PostgresStore(_StoreBase):
     def _get_experiment(self) -> Experiment:
         with self._conn.cursor() as cur:
             cur.execute(
-                "SELECT state, created_at, imported_from, base_commit_sha "
+                "SELECT state, created_at, imported_from, base_commit_sha, name "
                 "FROM experiment WHERE experiment_id = %s",
                 (self._experiment_id,),
             )
@@ -791,15 +799,20 @@ class PostgresStore(_StoreBase):
         imported_from: ImportProvenance | None = None
         if row[2] is not None:
             imported_from = ImportProvenance.model_validate_json(row[2])
-        # base_commit_sha carries NotNone — omit when absent (passing an
-        # explicit None trips the reject-null validator).
-        return Experiment(
-            experiment_id=self._experiment_id,
-            state=row[0],
-            created_at=row[1],
-            imported_from=imported_from,
-            **({"base_commit_sha": row[3]} if row[3] is not None else {}),
-        )
+        # Omit optional fields when NULL — the `NotNone` validators on
+        # Experiment.base_commit_sha (#122) / .name (#128) reject explicit
+        # null for these optional fields.
+        data: dict[str, object] = {
+            "experiment_id": self._experiment_id,
+            "state": row[0],
+            "created_at": row[1],
+            "imported_from": imported_from,
+        }
+        if row[3] is not None:
+            data["base_commit_sha"] = row[3]
+        if row[4] is not None:
+            data["name"] = row[4]
+        return Experiment.model_validate(data)
 
     # ------------------------------------------------------------------
     # Commit
@@ -858,10 +871,16 @@ class PostgresStore(_StoreBase):
                 )
         if tx.imported_from_update is not None:
             (new_imported_from,) = tx.imported_from_update
+            # exclude_none so the optional `source_experiment_id`
+            # (issue #128) is OMITTED rather than serialized as explicit
+            # null — the `NotNone` validator rejects explicit null on
+            # read-back.
             serialized = (
                 None
                 if new_imported_from is None
-                else json.dumps(new_imported_from.model_dump(mode="json"))
+                else json.dumps(
+                    new_imported_from.model_dump(mode="json", exclude_none=True)
+                )
             )
             with self._conn.cursor() as cur:
                 cur.execute(
@@ -961,13 +980,14 @@ class PostgresStore(_StoreBase):
         with self._conn.cursor() as cur:
             cur.execute(
                 """
-                INSERT INTO worker(worker_id, data, credential_hash)
-                VALUES(%s, %s, %s)
+                INSERT INTO worker(worker_id, data, credential_hash, name)
+                VALUES(%s, %s, %s, %s)
                 ON CONFLICT(worker_id) DO UPDATE SET
                     data = EXCLUDED.data,
-                    credential_hash = EXCLUDED.credential_hash
+                    credential_hash = EXCLUDED.credential_hash,
+                    name = EXCLUDED.name
                 """,
-                (worker_id, _serialize_model(worker), credential_hash),
+                (worker_id, _serialize_model(worker), credential_hash, worker.name),
             )
 
     def _update_worker_credential(
@@ -983,10 +1003,12 @@ class PostgresStore(_StoreBase):
         with self._conn.cursor() as cur:
             cur.execute(
                 """
-                INSERT INTO worker_group(group_id, data) VALUES(%s, %s)
-                ON CONFLICT(group_id) DO UPDATE SET data = EXCLUDED.data
+                INSERT INTO worker_group(group_id, data, name) VALUES(%s, %s, %s)
+                ON CONFLICT(group_id) DO UPDATE SET
+                    data = EXCLUDED.data,
+                    name = EXCLUDED.name
                 """,
-                (group_id, _serialize_model(group)),
+                (group_id, _serialize_model(group), group.name),
             )
             cur.execute(
                 "DELETE FROM group_membership WHERE group_id = %s", (group_id,)

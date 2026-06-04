@@ -58,18 +58,30 @@ def _ideation_factory() -> str:
     return f"t-ide-{itertools.count(1).__next__()}"
 
 
-def _make_store() -> InMemoryStore:
+# A valid opaque exp_* id (Crockford-base32 ULID suffix) for these
+# in-memory store fixtures since #128 enforces the exp_* grammar.
+_EXP_ID = "exp_0123456789abcdefghjkmnpqrs"
+
+
+def _make_store() -> tuple[InMemoryStore, dict[str, str]]:
+    """Return an in-memory store plus a friendly-name → minted worker_id map.
+
+    Since #128 ``register_worker`` MINTS an opaque ``wkr_*`` id; claims,
+    submissions, and the ActorId-typed ``terminated_by`` stamp all need
+    the minted id, so tests look it up via the returned map keyed by the
+    friendly registration name. The terminate path validates
+    ``terminated_by`` against the ActorId grammar (``admin|wkr_*``), so
+    the orchestrator's minted id is used there too.
+    """
     store = InMemoryStore(
-        experiment_id="exp-term",
+        experiment_id=_EXP_ID,
         evaluation_schema=EvaluationSchema({"score": "real"}),
     )
-    for wid in ("orchestrator", "ideator-1", "executor-1", "evaluator-1"):
-        store.register_worker(wid)
-    # The terminate path stamps `terminated_by` from the caller-supplied
-    # `terminated_by=` parameter; in the unit-test posture there's no
-    # admin/orchestrators group enforcement (the binding handles that
-    # outside the Store), so the default "orchestrator" id is fine.
-    return store
+    workers: dict[str, str] = {}
+    for friendly in ("orchestrator", "ideator-1", "executor-1", "evaluator-1"):
+        worker, _token = store.register_worker(friendly)
+        workers[friendly] = worker.worker_id
+    return store, workers
 
 
 # ----------------------------------------------------------------------
@@ -79,20 +91,20 @@ def _make_store() -> InMemoryStore:
 
 class TestNeverTerminate:
     def test_returns_continue(self) -> None:
-        store = _make_store()
+        store, workers = _make_store()
         view = build_experiment_state_view(store)
         assert isinstance(never_terminate(view), Continue)
 
 
 class TestMaxVariantsPolicy:
     def test_continue_below_target(self) -> None:
-        store = _make_store()
+        store, workers = _make_store()
         view = build_experiment_state_view(store)
         # Zero variants attempted; target=2 → Continue.
         assert isinstance(max_variants_policy(2)(view), Continue)
 
     def test_terminate_at_target(self) -> None:
-        store = _make_store()
+        store, workers = _make_store()
         for i in range(2):
             store.create_variant(
                 Variant(
@@ -117,14 +129,14 @@ class TestMaxVariantsPolicy:
 
 class TestMaxWallTimePolicy:
     def test_continue_within_deadline(self) -> None:
-        store = _make_store()
+        store, workers = _make_store()
         view = build_experiment_state_view(store)
         # 1-hour deadline; experiment was just created.
         decision = max_wall_time_policy(timedelta(hours=1))(view)
         assert isinstance(decision, Continue)
 
     def test_terminate_past_deadline(self) -> None:
-        store = _make_store()
+        store, workers = _make_store()
         # Simulate a long-running experiment by overriding created_at
         # via the view directly — the policy only reads
         # `experiment_created_at`, not the Store back-channel.
@@ -150,7 +162,7 @@ class TestConvergenceWindowPolicy:
     ) -> ExperimentStateView:
         from dataclasses import replace
 
-        store = _make_store()
+        store, workers = _make_store()
         base = build_experiment_state_view(store)
         recent: tuple[dict[str, float | int], ...] = tuple(
             {} if v is None else {"score": v} for v in values
@@ -217,7 +229,7 @@ class TestTargetConditionPolicy:
     ) -> ExperimentStateView:
         from dataclasses import replace
 
-        store = _make_store()
+        store, workers = _make_store()
         base = build_experiment_state_view(store)
         return replace(
             base,
@@ -263,13 +275,13 @@ def _auto_termination_mode() -> DispatchMode:
 
 class TestDriverTerminationBranch:
     def test_continue_policy_runs_operational_decisions(self) -> None:
-        store = _make_store()
+        store, workers = _make_store()
         # Seed a submitted ideation task so finalize fires (= progress).
         store.create_ideation_task("t-ide-1")
-        store.claim("t-ide-1", "ideator-1")
+        store.claim("t-ide-1", workers["ideator-1"])
         store.submit(
             "t-ide-1",
-            "ideator-1",
+            workers["ideator-1"],
             IdeaSubmission(status="success", idea_ids=()),
         )
         progress = run_orchestrator_iteration(
@@ -284,7 +296,7 @@ class TestDriverTerminationBranch:
         assert store.read_experiment_state() == "running"
 
     def test_terminate_decision_commits_and_suppresses_creation(self) -> None:
-        store = _make_store()
+        store, workers = _make_store()
         # Seed a ready idea; absent the gate this would dispatch an
         # execution task. With Terminate it MUST NOT.
         store.create_idea(
@@ -307,7 +319,7 @@ class TestDriverTerminationBranch:
             evaluation_task_id_factory=_eval_factory,
             dispatch_mode=_auto_termination_mode(),
             termination_policy=lambda _state: Terminate(reason="test policy"),
-            terminated_by="orchestrator",
+            terminated_by=workers["orchestrator"],
         )
         assert progress is True
         assert store.read_experiment_state() == "terminated"
@@ -324,7 +336,7 @@ class TestDriverTerminationBranch:
 
     def test_terminate_lets_integration_drain(self) -> None:
         """A success variant integrated AFTER terminate fires drains per §2.5."""
-        store = _make_store()
+        store, workers = _make_store()
         # Drive a variant to success status through the normal flow.
         store.create_idea(
             Idea(
@@ -340,7 +352,7 @@ class TestDriverTerminationBranch:
         )
         store.mark_idea_ready("idea-1")
         store.create_execution_task("t-exec-x", "idea-1")
-        store.claim("t-exec-x", "executor-1")
+        store.claim("t-exec-x", workers["executor-1"])
         store.create_variant(
             Variant(
                 variant_id="variant-1",
@@ -354,17 +366,17 @@ class TestDriverTerminationBranch:
         )
         store.submit(
             "t-exec-x",
-            "executor-1",
+            workers["executor-1"],
             VariantSubmission(
                 status="success", variant_id="variant-1", commit_sha="b" * 40
             ),
         )
         store.accept("t-exec-x")
         store.create_evaluation_task("t-eval-x", "variant-1")
-        store.claim("t-eval-x", "evaluator-1")
+        store.claim("t-eval-x", workers["evaluator-1"])
         store.submit(
             "t-eval-x",
-            "evaluator-1",
+            workers["evaluator-1"],
             EvaluationSubmission(
                 status="success",
                 variant_id="variant-1",
@@ -391,7 +403,7 @@ class TestDriverTerminationBranch:
             integrate_variant=integrate,
             dispatch_mode=_auto_termination_mode(),
             termination_policy=lambda _state: Terminate(reason="drain"),
-            terminated_by="orchestrator",
+            terminated_by=workers["orchestrator"],
         )
         assert progress is True
         assert store.read_experiment_state() == "terminated"
@@ -399,7 +411,7 @@ class TestDriverTerminationBranch:
         assert store.read_variant("variant-1").variant_commit_sha == "c" * 40
 
     def test_policy_raises_emits_policy_error_and_continues(self) -> None:
-        store = _make_store()
+        store, workers = _make_store()
         pre_events = len(store.events())
 
         def bad_policy(state: ExperimentStateView) -> Continue:
@@ -426,7 +438,7 @@ class TestDriverTerminationBranch:
         assert "buggy" in policy_errors[0].data["error_message"]
 
     def test_manual_termination_skips_policy(self) -> None:
-        store = _make_store()
+        store, workers = _make_store()
         calls: list[ExperimentStateView] = []
 
         def policy(state: ExperimentStateView) -> Terminate:
@@ -447,9 +459,9 @@ class TestDriverTerminationBranch:
 
     def test_already_terminated_state_suppresses_operational_decisions(self) -> None:
         """Entering a terminated experiment: only finalize + integration run."""
-        store = _make_store()
+        store, workers = _make_store()
         store.terminate_experiment(
-            reason="prior", terminated_by="orchestrator"
+            reason="prior", terminated_by=workers["orchestrator"]
         )
         # Seed a ready idea; under §2.5 the orchestrator MUST NOT
         # dispatch a new execution task for it.
@@ -485,7 +497,7 @@ class TestDriverTerminationBranch:
 
     def test_multi_instance_race_collapses_to_one_event(self) -> None:
         """Two orchestrators each return Terminate; the second's call no-ops."""
-        store = _make_store()
+        store, workers = _make_store()
         pre_events = len(store.events())
 
         # First orchestrator's iteration.
@@ -495,7 +507,7 @@ class TestDriverTerminationBranch:
             evaluation_task_id_factory=_eval_factory,
             dispatch_mode=_auto_termination_mode(),
             termination_policy=lambda _state: Terminate(reason="orch-1"),
-            terminated_by="orchestrator",
+            terminated_by=workers["orchestrator"],
         )
         # Second orchestrator's iteration on the same store.
         run_orchestrator_iteration(
@@ -504,7 +516,7 @@ class TestDriverTerminationBranch:
             evaluation_task_id_factory=_eval_factory,
             dispatch_mode=_auto_termination_mode(),
             termination_policy=lambda _state: Terminate(reason="orch-2"),
-            terminated_by="orchestrator",
+            terminated_by=workers["orchestrator"],
         )
         terminate_events = [
             e
@@ -516,7 +528,7 @@ class TestDriverTerminationBranch:
 
     def test_state_view_carries_lifecycle_fields(self) -> None:
         """The view a policy receives includes the 12a-3 termination slice."""
-        store = _make_store()
+        store, workers = _make_store()
         view = build_experiment_state_view(store)
         # New 12a-3 fields are all populated:
         assert view.attempted_variant_count == 0
@@ -535,7 +547,7 @@ class TestCliResolveTerminationPolicy:
         policy = _resolve_termination_policy(
             "eden_dispatch.termination:default_termination_policy"
         )
-        store = _make_store()
+        store, workers = _make_store()
         view = build_experiment_state_view(store)
         assert isinstance(policy(view), Continue)
 

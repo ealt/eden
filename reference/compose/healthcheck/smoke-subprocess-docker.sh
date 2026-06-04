@@ -34,7 +34,19 @@ ENV_FILE="$(mktemp)"
 # Phase 12a-1g: per-smoke ephemeral data root, cleaned up on every
 # exit path.
 SMOKE_DATA_ROOT="$(mktemp -d -t eden-smoke-sub-docker-XXXXXX)"
-EXPERIMENT_ID="smoke-exp-sub-docker"
+# #128: mint an opaque `exp_*` experiment id (the wire grammar rejects
+# the old typed "smoke-exp-sub-docker" mnemonic). setup-experiment
+# derives the host-side cidfile dir from this id
+# (`.cidfiles-${EXPERIMENT_ID}`), so minting it here (and passing it via
+# `--experiment-id`) keeps the cleanup-side reconstruction below
+# pointing at the same directory.
+EXPERIMENT_ID="$(python3 - <<'PY'
+import secrets, time
+alphabet = "0123456789abcdefghjkmnpqrstvwxyz"
+value = ((int(time.time() * 1000) & ((1 << 48) - 1)) << 80) | secrets.randbits(80)
+print("exp_" + "".join(alphabet[(value >> (5 * i)) & 31] for i in range(26))[::-1])
+PY
+)"
 
 cleanup() {
     local rc=$?

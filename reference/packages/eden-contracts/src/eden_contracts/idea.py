@@ -10,7 +10,7 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
-from ._common import CommitSha, DateTimeStr, NotNone, UriStr, WorkerId
+from ._common import CommitSha, DateTimeStr, ExperimentId, NotNone, UriStr, WorkerId
 from .task import TaskTarget
 
 IdeaState = Literal["drafting", "ready", "dispatched", "completed"]
@@ -26,7 +26,7 @@ class Idea(BaseModel):
     model_config = ConfigDict(strict=True, extra="allow")
 
     idea_id: Annotated[str, Field(min_length=1)]
-    experiment_id: Annotated[str, Field(min_length=1)]
+    experiment_id: ExperimentId
     slug: Slug
     priority: float
     parent_commits: Annotated[list[CommitSha], Field(min_length=1)]

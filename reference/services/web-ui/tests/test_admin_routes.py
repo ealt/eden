@@ -1,4 +1,5 @@
 """Per-route unit tests for the admin module (chunk 9e)."""
+# pyright: reportAttributeAccessIssue=false
 
 from __future__ import annotations
 
@@ -8,13 +9,13 @@ import pytest
 from conftest import (
     EXPERIMENT_ID,
     SESSION_SECRET,
-    WORKER_ID,
     _config,
     _now,
     _one_experiment_factory,
     get_csrf,
     make_child_commit,
     seed_evaluate_task,
+    web_ui_worker_id,
 )
 from eden_git import GitRepo
 from eden_storage import InMemoryStore
@@ -29,8 +30,10 @@ def _seed_ideation_task(store: InMemoryStore, task_id: str = "ideation-A") -> st
 
 
 def _claim_ideation_task(
-    store: InMemoryStore, task_id: str, *, worker_id: str = "ui-w"
+    store: InMemoryStore, task_id: str, *, worker_name: str = "ui-w"
 ) -> str:
+    # Resolve the conventional display name → minted opaque id (#128).
+    worker_id = store._test_worker_ids[worker_name]  # type: ignore[attr-defined]
     claim = store.claim(task_id, worker_id)
     return claim.worker_id
 
@@ -73,7 +76,7 @@ class TestAdminIndex:
         _seed_ideation_task(store, "ideation-A")
         _seed_ideation_task(store, "ideation-B")
         store.create_ideation_task("plan-C")
-        store.claim("plan-C", "w-1")
+        store.claim("plan-C", store._test_worker_ids["w-1"])
         resp = signed_in_client.get("/admin/")
         assert resp.status_code == 200
         assert "admin dashboard" in resp.text
@@ -105,7 +108,7 @@ class TestAdminTasks:
     ) -> None:
         _seed_ideation_task(store, "ideation-A")
         store.create_ideation_task("ideation-B")
-        store.claim("ideation-B", "w-1")
+        store.claim("ideation-B", store._test_worker_ids["w-1"])
         resp = signed_in_client.get("/admin/tasks/?state=claimed")
         assert resp.status_code == 200
         assert "ideation-B" in resp.text
@@ -144,7 +147,7 @@ class TestAdminTaskDetail:
         self, signed_in_client: TestClient, store: InMemoryStore
     ) -> None:
         _seed_ideation_task(store, "ideation-A")
-        store.claim("ideation-A", "w-1")
+        store.claim("ideation-A", store._test_worker_ids["w-1"])
         resp = signed_in_client.get("/admin/tasks/ideation-A/")
         assert resp.status_code == 200
         assert ">reclaim<" in resp.text
@@ -308,7 +311,7 @@ class TestAdminEvents:
         self, signed_in_client: TestClient, store: InMemoryStore
     ) -> None:
         _seed_ideation_task(store, "ideation-A")
-        store.claim("ideation-A", "w-1")
+        store.claim("ideation-A", store._test_worker_ids["w-1"])
         resp = signed_in_client.get("/admin/events/?type=task.claimed")
         assert resp.status_code == 200
         assert "task.claimed" in resp.text
@@ -322,7 +325,7 @@ def admin_repo_app(
         store_factory=_one_experiment_factory(store),
         experiment_id=EXPERIMENT_ID,
         experiment_config=_config(),
-        worker_id=WORKER_ID,
+        worker_id=web_ui_worker_id(store),
         session_secret=SESSION_SECRET,
         claim_ttl_seconds=3600,
         artifacts_dir=artifacts_dir,

@@ -1,22 +1,26 @@
 """Worker registration — chapter 02 §6.
 
-Per-experiment registry of named workers. The MUSTs this scenario
-asserts:
+Per-experiment registry of named workers. Since the identity rename
+(#128) the server MINTS an opaque ``wkr_*`` id (§1.6) on every
+``register_worker`` call; the caller supplies only an OPTIONAL display
+``name`` (§1.7). There is no idempotent re-registration by id. The
+MUSTs this scenario asserts:
 
-- Register-and-read-back: a fresh worker_id is materialized as a
-  record with the wire-visible fields specified in §6.2.
-- Idempotent re-registration: the second call returns the existing
-  record (§6.3 step 1). The §6.3 MUST about "MUST NOT issue or
-  rotate any credential" on idempotent re-register is a
-  binding-layer concern (the conformance harness runs auth-disabled
-  so the credential half is not directly observable); the record
-  identity is.
-- Grammar enforcement: an id that fails §6.1 returns 400 bad-request.
-- Reserved-identifier enforcement: a reserved id (``admin`` per §6.1)
-  returns 409 reserved-identifier.
+- Register-and-read-back: a fresh register mints an opaque ``wkr_*``
+  id and materializes the wire-visible record fields of §6.2.
+- Mint-on-every-call: two registers with the same ``name`` mint two
+  DISTINCT ids (names MAY collide; the id is system-allocated).
+- Display-name grammar: an ill-formed ``name`` returns 422
+  ``invalid-name`` (§1.7).
+- Reserved-name enforcement: a reserved worker NAME (``admin`` /
+  ``system`` / ``internal`` per §6.1) returns 409
+  ``reserved-identifier``.
+- Read / list endpoints don't leak credentials.
 """
 
 from __future__ import annotations
+
+import re
 
 import pytest
 from conformance.harness import _seed
@@ -26,89 +30,83 @@ pytestmark = pytest.mark.conformance
 
 CONFORMANCE_GROUP = 'Worker registration'
 
+# §1.6 worker-id grammar: ``wkr_`` + 26 Crockford-base32-lowercase chars.
+_WKR_ID_RE = re.compile(r"^wkr_[0-9a-hjkmnp-tv-z]{26}$")
 
-def test_register_worker_returns_record(wire_client: WireClient) -> None:
-    """spec/v0/02-data-model.md §6.2 — register-and-read produces a wire-visible record."""
-    wid = _seed.fresh_worker_id("reg")
-    record = _seed.register_worker(wire_client, wid)
-    assert record["worker_id"] == wid
+
+def test_register_worker_mints_opaque_id_record(wire_client: WireClient) -> None:
+    """spec/v0/02-data-model.md §6.1 — register mints an opaque wkr_* record.
+
+    Per §6.1/§1.6 the server mints the ``worker_id`` (the caller MUST
+    NOT supply it); §6.2 fixes the wire-visible record fields. The
+    record's ``worker_id`` MUST match the ``wkr_*`` grammar, the
+    ``experiment_id`` MUST name this experiment, the optional ``name``
+    echoes, and no credential hash leaks.
+    """
+    record = _seed.register_worker(wire_client, name="Eric (laptop)")
+    assert _WKR_ID_RE.match(record["worker_id"]), record["worker_id"]
     assert record["experiment_id"] == wire_client.experiment_id
+    assert record.get("name") == "Eric (laptop)"
     assert isinstance(record.get("registered_at"), str) and record["registered_at"]
     # §6.2 forbids surfacing credentials on the wire-visible record;
-    # an opaque token MAY appear on FIRST registration as
-    # `registration_token` (binding-defined credential half), but no
+    # the plaintext token MAY appear on registration as
+    # ``registration_token`` (binding-defined credential half), but no
     # password-hash-shaped field MUST appear.
     assert "credential_hash" not in record
     assert "password" not in record
 
 
-def test_register_worker_is_idempotent(wire_client: WireClient) -> None:
-    """spec/v0/02-data-model.md §6.3 — re-registration returns the existing record.
+def test_register_worker_mints_distinct_ids_per_call(wire_client: WireClient) -> None:
+    """spec/v0/02-data-model.md §6.3 — every register mints a fresh id; no re-register-by-id.
 
-    Three MUSTs from chapter 02 §6.3 + chapter 07 §6.1:
-
-    1. The second registration returns the existing record (same
-       fields).
-    2. The second registration MUST NOT issue or rotate a credential
-       — the response body MUST NOT include ``registration_token``.
-    3. The wire-visible record fields are preserved across the two
-       calls (registered_at is the first-registration timestamp).
+    Per §6.3: ``register_worker`` "mints a fresh ``worker_id`` on every
+    call"; "there is no idempotent re-registration by id". Two calls
+    with the SAME ``name`` (names MAY collide, §6.1) MUST yield two
+    DISTINCT opaque ids, each with its own freshly-minted credential.
     """
-    wid = _seed.fresh_worker_id("idem")
-    first = _seed.register_worker(wire_client, wid)
-    # First registration MUST include the plaintext token.
-    assert isinstance(first.get("registration_token"), str)
-    assert first["registration_token"]
-    second = _seed.register_worker(wire_client, wid)
-    # Second registration MUST omit registration_token.
-    assert "registration_token" not in second, (
-        "§6.3 violated: idempotent re-registration leaked a fresh "
-        f"registration_token: {second!r}"
+    first = _seed.register_worker(wire_client, name="collision")
+    second = _seed.register_worker(wire_client, name="collision")
+    assert _WKR_ID_RE.match(first["worker_id"])
+    assert _WKR_ID_RE.match(second["worker_id"])
+    assert first["worker_id"] != second["worker_id"], (
+        "§6.3 violated: two register_worker calls with the same name "
+        f"returned the SAME worker_id: {first['worker_id']!r}"
     )
-    # And MUST preserve the record fields unchanged.
-    assert second["worker_id"] == first["worker_id"]
-    assert second["experiment_id"] == first["experiment_id"]
-    assert second["registered_at"] == first["registered_at"]
+    # Each registration carries its own plaintext credential.
+    assert isinstance(first.get("registration_token"), str) and first["registration_token"]
+    assert isinstance(second.get("registration_token"), str) and second["registration_token"]
 
 
-def test_register_worker_rejects_grammar_violation(wire_client: WireClient) -> None:
-    """spec/v0/02-data-model.md §6.1 — id failing the grammar returns 400 bad-request."""
-    # Leading hyphen — banned by ``^[a-z0-9]`` anchor in §6.1.
+def test_register_worker_rejects_ill_formed_name(wire_client: WireClient) -> None:
+    """spec/v0/02-data-model.md §6.1 — an ill-formed name returns 422 invalid-name.
+
+    Per §1.7/§6.1 the display-name grammar forbids control characters,
+    leading/trailing whitespace, and the empty string. A binding MUST
+    reject an ill-formed name; the reference HTTP binding maps it to
+    422 ``eden://error/invalid-name``.
+    """
+    # Leading/trailing whitespace is banned by the §1.7 grammar.
     r = wire_client.post(
         f"{wire_client.base_path}/workers",
-        json={"worker_id": "-bad-leading-hyphen"},
+        json={"name": "  bad leading whitespace"},
     )
-    assert r.status_code == 400, r.text
-    assert r.json().get("type") == "eden://error/bad-request"
+    assert r.status_code == 422, r.text
+    assert r.json().get("type") == "eden://error/invalid-name"
 
 
-def test_register_worker_rejects_reserved_identifier(wire_client: WireClient) -> None:
-    """spec/v0/02-data-model.md §6.1 — reserved id (``admin``) returns 409 reserved-identifier."""
+def test_register_worker_rejects_reserved_name(wire_client: WireClient) -> None:
+    """spec/v0/02-data-model.md §6.1 — a reserved worker name returns 409 reserved-identifier.
+
+    Per §6.1 the names ``admin`` / ``system`` / ``internal`` carry
+    deployment-role meaning and MUST be rejected by ``register_worker``
+    with ``ReservedIdentifier`` (409 ``eden://error/reserved-identifier``).
+    """
     r = wire_client.post(
         f"{wire_client.base_path}/workers",
-        json={"worker_id": "admin"},
+        json={"name": "admin"},
     )
     assert r.status_code == 409, r.text
     assert r.json().get("type") == "eden://error/reserved-identifier"
-
-
-def test_register_worker_rejects_id_already_used_by_group(
-    wire_client: WireClient,
-) -> None:
-    """spec/v0/02-data-model.md §7.1 — worker / group namespaces MUST be disjoint.
-
-    A register_worker(id) whose id is already registered as a group
-    MUST be rejected. The §7.1 MUST cites
-    eden://error/already-exists as the wire mapping.
-    """
-    gid = _seed.fresh_group_id("disjoint")
-    _seed.create_group(wire_client, gid, members=[])
-    r = wire_client.post(
-        f"{wire_client.base_path}/workers",
-        json={"worker_id": gid},
-    )
-    assert r.status_code == 409, r.text
-    assert r.json().get("type") == "eden://error/already-exists"
 
 
 def test_read_worker_returns_record_without_credentials(
@@ -121,21 +119,21 @@ def test_read_worker_returns_record_without_credentials(
     ``registration_token`` or a credential hash on the read endpoint
     is broken even if registration looks correct.
     """
-    wid = _seed.fresh_worker_id("readable")
-    _seed.register_worker(wire_client, wid)
+    record = _seed.register_worker(wire_client, name="readable")
+    wid = record["worker_id"]
     resp = wire_client.get(f"{wire_client.base_path}/workers/{wid}")
     assert resp.status_code == 200, resp.text
-    record = resp.json()
-    assert record["worker_id"] == wid
-    assert record["experiment_id"] == wire_client.experiment_id
-    assert "registration_token" not in record
-    assert "credential_hash" not in record
-    assert "password" not in record
+    read = resp.json()
+    assert read["worker_id"] == wid
+    assert read["experiment_id"] == wire_client.experiment_id
+    assert "registration_token" not in read
+    assert "credential_hash" not in read
+    assert "password" not in read
 
 
 def test_read_unknown_worker_returns_404(wire_client: WireClient) -> None:
     """spec/v0/07-wire-protocol.md §6.2 — GET /workers/{W} on unknown id returns 404 not-found."""
-    resp = wire_client.get(f"{wire_client.base_path}/workers/no-such-worker")
+    resp = wire_client.get(f"{wire_client.base_path}/workers/wkr_00000000000000000000000000")
     assert resp.status_code == 404, resp.text
     assert resp.json().get("type") == "eden://error/not-found"
 
@@ -146,10 +144,8 @@ def test_list_workers_returns_registered_records(wire_client: WireClient) -> Non
     The wire-visible Worker shapes in the list MUST NOT include
     credential material (mirrors the per-worker GET).
     """
-    a = _seed.fresh_worker_id("la")
-    b = _seed.fresh_worker_id("lb")
-    _seed.register_worker(wire_client, a)
-    _seed.register_worker(wire_client, b)
+    a = _seed.register_worker(wire_client, name="la")["worker_id"]
+    b = _seed.register_worker(wire_client, name="lb")["worker_id"]
     resp = wire_client.get(f"{wire_client.base_path}/workers")
     assert resp.status_code == 200, resp.text
     body = resp.json()

@@ -33,7 +33,20 @@ ENV_FILE="$(mktemp)"
 # substrate tree is isolated from the operator's real experiments
 # under ~/.eden/. The trap cleans up on every exit path.
 SMOKE_DATA_ROOT="$(mktemp -d -t eden-smoke-XXXXXX)"
-EXPERIMENT_ID="smoke-exp"
+# #128: the experiment id is now an opaque, system-minted `exp_*`
+# (^exp_[0-9a-hjkmnp-tv-z]{26}$) — a typed mnemonic like the old
+# "smoke-exp" no longer satisfies the wire grammar and the
+# task-store-server would reject it at first use. Mint one with the
+# same Crockford-base32 ULID one-liner setup-experiment uses and pass
+# it through `--experiment-id`; setup writes it back to `.env` as
+# EDEN_EXPERIMENT_ID and every wire URL below uses it.
+EXPERIMENT_ID="$(python3 - <<'PY'
+import secrets, time
+alphabet = "0123456789abcdefghjkmnpqrstvwxyz"
+value = ((int(time.time() * 1000) & ((1 << 48) - 1)) << 80) | secrets.randbits(80)
+print("exp_" + "".join(alphabet[(value >> (5 * i)) & 31] for i in range(26))[::-1])
+PY
+)"
 
 cleanup() {
     local rc=$?
@@ -222,10 +235,20 @@ test "$REGISTERED_WORKERS" -ge 5 || {
 # carries the initial admin member; `orchestrators` carries the
 # auto-orchestrator (added by its own startup helper).
 echo "--- asserting reserved groups + initial admin ---"
+# #128: reserved groups (admins / orchestrators) are now addressed by
+# their OPAQUE `grp_*` id, not by name-in-URL. setup-experiment minted
+# both groups and wrote their ids to `.env`; read them back. Members
+# are opaque `wkr_*` ids, so assert membership by the opaque worker ids
+# setup also persisted (EDEN_ADMINS_INITIAL_MEMBER / the orchestrator's
+# minted worker id), NOT by literal role labels.
 ADMINS_INITIAL_MEMBER="$(grep -E '^EDEN_ADMINS_INITIAL_MEMBER=' "$ENV_FILE" | cut -d= -f2-)"
 ORCH_WORKER_ID="$(grep -E '^EDEN_ORCHESTRATOR_WORKER_ID=' "$ENV_FILE" | cut -d= -f2-)"
+ADMINS_GROUP_ID="$(grep -E '^EDEN_ADMINS_GROUP_ID=' "$ENV_FILE" | cut -d= -f2-)"
+ORCHESTRATORS_GROUP_ID="$(grep -E '^EDEN_ORCHESTRATORS_GROUP_ID=' "$ENV_FILE" | cut -d= -f2-)"
 test -n "$ADMINS_INITIAL_MEMBER"
 test -n "$ORCH_WORKER_ID"
+test -n "$ADMINS_GROUP_ID"
+test -n "$ORCHESTRATORS_GROUP_ID"
 
 ADMINS_JSON="$(
     docker compose -f compose.yaml --env-file "$ENV_FILE" \
@@ -233,12 +256,12 @@ ADMINS_JSON="$(
         curl -fsS \
             -H "Authorization: Bearer admin:${EDEN_ADMIN_TOKEN}" \
             -H "X-Eden-Experiment-Id: ${EXPERIMENT_ID}" \
-            "http://localhost:8080/v0/experiments/${EXPERIMENT_ID}/groups/admins"
+            "http://localhost:8080/v0/experiments/${EXPERIMENT_ID}/groups/${ADMINS_GROUP_ID}"
 )"
 echo "$ADMINS_JSON" \
     | jq -e --arg m "$ADMINS_INITIAL_MEMBER" '.members | index($m)' >/dev/null \
     || {
-        echo "admins group missing initial admin '${ADMINS_INITIAL_MEMBER}': $ADMINS_JSON" >&2
+        echo "admins group (${ADMINS_GROUP_ID}) missing initial admin '${ADMINS_INITIAL_MEMBER}': $ADMINS_JSON" >&2
         exit 1
     }
 
@@ -248,12 +271,12 @@ ORCH_JSON="$(
         curl -fsS \
             -H "Authorization: Bearer admin:${EDEN_ADMIN_TOKEN}" \
             -H "X-Eden-Experiment-Id: ${EXPERIMENT_ID}" \
-            "http://localhost:8080/v0/experiments/${EXPERIMENT_ID}/groups/orchestrators"
+            "http://localhost:8080/v0/experiments/${EXPERIMENT_ID}/groups/${ORCHESTRATORS_GROUP_ID}"
 )"
 echo "$ORCH_JSON" \
     | jq -e --arg w "$ORCH_WORKER_ID" '.members | index($w)' >/dev/null \
     || {
-        echo "orchestrators group missing auto-orchestrator '${ORCH_WORKER_ID}': $ORCH_JSON" >&2
+        echo "orchestrators group (${ORCHESTRATORS_GROUP_ID}) missing auto-orchestrator '${ORCH_WORKER_ID}': $ORCH_JSON" >&2
         exit 1
     }
 EVENTS_JSON="$(

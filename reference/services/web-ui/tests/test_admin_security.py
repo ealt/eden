@@ -8,13 +8,13 @@ import pytest
 from conftest import (
     EXPERIMENT_ID,
     SESSION_SECRET,
-    WORKER_ID,
     _config,
     _now,
     _one_experiment_factory,
     get_csrf,
     make_child_commit,
     seed_evaluate_task,
+    web_ui_worker_id,
 )
 from eden_git import GitRepo
 from eden_storage import InMemoryStore
@@ -36,7 +36,7 @@ def admin_repo_app(
         store_factory=_one_experiment_factory(store),
         experiment_id=EXPERIMENT_ID,
         experiment_config=_config(),
-        worker_id=WORKER_ID,
+        worker_id=web_ui_worker_id(store),
         session_secret=SESSION_SECRET,
         claim_ttl_seconds=3600,
         artifacts_dir=artifacts_dir,

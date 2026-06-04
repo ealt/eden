@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_macros.html" import name_id %}
 {% block title %}EDEN — admin ideas{% endblock %}
 {% block main %}
 <h1>ideas</h1>
@@ -41,7 +42,7 @@
             </td>
             <td>
                 {% if r.created_by %}
-                <a href="/admin/workers/{{ r.created_by }}/"><code>{{ r.created_by }}</code></a>
+                <a href="/admin/workers/{{ r.created_by }}/">{{ name_id(worker_names.get(r.created_by), r.created_by) }}</a>
                 {% else %}—{% endif %}
             </td>
             <td>

@@ -45,8 +45,8 @@ Sign in with principal `admin`, secret from `EDEN_ADMIN_TOKEN` in `.env`.
 | `/admin/variants/` | All variants, filterable by `status`; orphaned-starting badge |
 | `/admin/variants/<id>/` | Per-variant detail: lineage + related-events filter |
 | `/admin/events/` | Event log with limit + reverse + filter; stable indexing across filter operations |
-| `/admin/workers/` | Worker registry; register + reissue-credential forms |
-| `/admin/groups/` | Group registry; add / remove / delete; reserved-id rejection |
+| `/admin/workers/` | Worker registry; register (by display name; server mints the `wkr_*` id) + reissue-credential forms; filter-by-name search box |
+| `/admin/groups/` | Group registry; add / remove / delete; reserved-**name** rejection (`admins` / `orchestrators`) |
 | `/admin/work-refs/` | `refs/heads/work/*` branches classified by status; CAS-guarded deletion (requires web-ui started with `--repo-path`) |
 | `/admin/experiment/` | Experiment state (`running` / `terminated`); terminate form (12a-3) |
 | `/admin/dispatch-mode/` | Per-decision-type dispatch mode toggle: auto vs manual (12a-2) |
@@ -54,6 +54,7 @@ Sign in with principal `admin`, secret from `EDEN_ADMIN_TOKEN` in `.env`.
 
 Notes:
 
+- **Name-vs-id display conventions (issue [#128](https://github.com/ealt/eden/issues/128)).** Experiments, workers, and groups carry an opaque, system-minted id (`exp_*` / `wkr_*` / `grp_*`) plus an optional operator-supplied display `name`. The admin UI and pickers render `<name> (<id>)` when a name exists, the bare opaque id otherwise; a picker submits the opaque id, not the name. **Structured logs and events use the opaque id only** (see [§2.5](#25-container-logs)) — the name is purely a UI affordance, so when you correlate a log line's `worker_id` / `experiment_id` against the UI, match on the id in parentheses. Since names MAY collide, the id is always the stable handle; find an entity by name via the `?name=` query (`GET .../workers?name=`, `GET .../groups?name=`, `GET /v0/control/experiments?name=`), which returns 0..N matches.
 - These are read views over the wire API. Filter changes do not mutate state.
 - Reclaim / reassign / terminate / dispatch-mode toggles do mutate, behind CSRF + the same authorization model as the wire API.
 - **Auth.** Every `/admin/*` page load requires the signed-in session's worker to be a transitive member of the `admins` group; non-admin sessions get a 403 forbidden page from the route-layer middleware (issue #144). The `setup-experiment.sh` script seeds the `admins` group with the web-ui's worker so the default Compose deployment already meets this requirement. Sign-ups created after a deployment is up are not added to `admins` by default and will hit the 403 page until an existing admin adds them via `/admin/groups/admins/`.
@@ -107,15 +108,16 @@ The task-store-server speaks JSON over HTTP. Every state-mutating operation in E
 
 ```bash
 ADMIN=$(grep '^EDEN_ADMIN_TOKEN=' reference/compose/.env | cut -d= -f2)
-EXPERIMENT_ID=demo-phase12
+EXPERIMENT_ID=$(grep '^EDEN_EXPERIMENT_ID=' reference/compose/.env | cut -d= -f2)  # opaque exp_* id (issue #128)
 H=(-H "Authorization: Bearer admin:$ADMIN" -H "X-Eden-Experiment-Id: $EXPERIMENT_ID")
 BASE="http://localhost:8080/v0/experiments/$EXPERIMENT_ID"
 
-curl -s "${H[@]}" "$BASE/tasks"           | jq
-curl -s "${H[@]}" "$BASE/ideas"           | jq
-curl -s "${H[@]}" "$BASE/variants"        | jq
-curl -s "${H[@]}" "$BASE/events?cursor=0" | jq '.events[].type' | tail -30
-curl -s "${H[@]}" "$BASE/workers"         | jq
+curl -s "${H[@]}" "$BASE/tasks"             | jq
+curl -s "${H[@]}" "$BASE/ideas"             | jq
+curl -s "${H[@]}" "$BASE/variants"          | jq
+curl -s "${H[@]}" "$BASE/events?cursor=0"   | jq '.events[].type' | tail -30
+curl -s "${H[@]}" "$BASE/workers"           | jq '.workers[] | {worker_id, name}'  # opaque id + optional display name
+curl -s "${H[@]}" "$BASE/workers?name=operator" | jq '.workers[].worker_id'        # name lookup → 0..N ids
 ```
 
 FastAPI's `/docs`, `/openapi.json`, and `/redoc` are mounted on the task-store-server but auth-gated. For a browsable spec, see [§3.2](#32-swagger-ui-for-the-wire-api).

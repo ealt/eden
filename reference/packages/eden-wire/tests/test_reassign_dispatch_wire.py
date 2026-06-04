@@ -36,7 +36,7 @@ from eden_wire import (
 )
 from fastapi.testclient import TestClient
 
-EXPERIMENT_ID = "exp-wave3"
+EXPERIMENT_ID = "exp_sshezffqkr6a5vxjbhap2g8hdn"
 ADMIN_TOKEN = "test-admin-token-wave3"
 
 
@@ -55,22 +55,25 @@ def _admin_headers() -> dict[str, str]:
     }
 
 
-def _register_worker(client: TestClient, worker_id: str) -> str:
+def _register_worker(client: TestClient, name: str) -> tuple[str, str]:
+    """Register a worker by name; return (minted ``wkr_*`` id, token)."""
     resp = client.post(
         f"/v0/experiments/{EXPERIMENT_ID}/workers",
         headers=_admin_headers(),
-        json={"worker_id": worker_id},
+        json={"name": name},
     )
     assert resp.status_code == 200, resp.text
-    return resp.json()["registration_token"]
+    body = resp.json()
+    return body["worker_id"], body["registration_token"]
 
 
 def _register_group(
     client: TestClient,
-    group_id: str,
+    name: str,
     members: list[str] | None = None,
-) -> None:
-    body: dict[str, Any] = {"group_id": group_id}
+) -> str:
+    """Register a group by name; return the minted ``grp_*`` id."""
+    body: dict[str, Any] = {"name": name}
     if members:
         body["members"] = members
     resp = client.post(
@@ -79,6 +82,7 @@ def _register_group(
         json=body,
     )
     assert resp.status_code == 200, resp.text
+    return resp.json()["group_id"]
 
 
 def _worker_headers(worker_id: str, token: str) -> dict[str, str]:
@@ -88,17 +92,19 @@ def _worker_headers(worker_id: str, token: str) -> dict[str, str]:
     }
 
 
-def _bootstrap_admins_member(client: TestClient, worker_id: str) -> str:
-    """Register a worker and put them in the ``admins`` group; return their token."""
-    token = _register_worker(client, worker_id)
+def _bootstrap_admins_member(client: TestClient, name: str) -> tuple[str, str]:
+    """Register a worker (by name) into ``admins``; return (minted id, token)."""
+    worker_id, token = _register_worker(client, name)
     _register_group(client, "admins", members=[worker_id])
-    return token
+    return worker_id, token
 
 
-def _bootstrap_orchestrators_member(client: TestClient, worker_id: str) -> str:
-    token = _register_worker(client, worker_id)
+def _bootstrap_orchestrators_member(
+    client: TestClient, name: str
+) -> tuple[str, str]:
+    worker_id, token = _register_worker(client, name)
     _register_group(client, "orchestrators", members=[worker_id])
-    return token
+    return worker_id, token
 
 
 # ----------------------------------------------------------------------
@@ -110,44 +116,47 @@ class TestReassignEndpoint:
     def test_pending_task_target_updated(self, store: InMemoryStore) -> None:
         app = make_app(store, admin_token=ADMIN_TOKEN)
         client = TestClient(app)
-        admin_eric_token = _bootstrap_admins_member(client, "admin-eric")
-        _register_worker(client, "ideator-a")
+        admin_eric_id, admin_eric_token = _bootstrap_admins_member(
+            client, "admin-eric"
+        )
+        ideator_a_id, _ = _register_worker(client, "ideator-a")
         store.create_ideation_task("t-1")
 
         resp = client.post(
             f"/v0/experiments/{EXPERIMENT_ID}/tasks/t-1/reassign",
-            headers=_worker_headers("admin-eric", admin_eric_token),
+            headers=_worker_headers(admin_eric_id, admin_eric_token),
             json={
-                "new_target": {"kind": "worker", "id": "ideator-a"},
+                "new_target": {"kind": "worker", "id": ideator_a_id},
                 "reason": "manual route",
             },
         )
         assert resp.status_code == 200, resp.text
         body = resp.json()
-        assert body["target"] == {"kind": "worker", "id": "ideator-a"}
+        assert body["target"] == {"kind": "worker", "id": ideator_a_id}
         # task.reassigned event recorded with stamped reassigned_by.
         events = [e for e in store.events() if e.type == "task.reassigned"]
         assert len(events) == 1
-        assert events[0].data["reassigned_by"] == "admin-eric"
+        assert events[0].data["reassigned_by"] == admin_eric_id
         assert events[0].data["reason"] == "manual route"
 
     def test_reassign_to_null_keeps_key(self, store: InMemoryStore) -> None:
         app = make_app(store, admin_token=ADMIN_TOKEN)
         client = TestClient(app)
-        admin_eric_token = _bootstrap_admins_member(client, "admin-eric")
+        admin_eric_id, admin_eric_token = _register_worker(client, "admin-eric")
+        admins_id = _register_group(client, "admins", members=[admin_eric_id])
         store.create_ideation_task("t-1")
         # First set a target so the second call to null is non-no-op.
         client.post(
             f"/v0/experiments/{EXPERIMENT_ID}/tasks/t-1/reassign",
-            headers=_worker_headers("admin-eric", admin_eric_token),
+            headers=_worker_headers(admin_eric_id, admin_eric_token),
             json={
-                "new_target": {"kind": "group", "id": "admins"},
+                "new_target": {"kind": "group", "id": admins_id},
                 "reason": "initial",
             },
         ).raise_for_status()
         resp = client.post(
             f"/v0/experiments/{EXPERIMENT_ID}/tasks/t-1/reassign",
-            headers=_worker_headers("admin-eric", admin_eric_token),
+            headers=_worker_headers(admin_eric_id, admin_eric_token),
             json={"new_target": None, "reason": "open"},
         )
         assert resp.status_code == 200, resp.text
@@ -160,17 +169,19 @@ class TestReassignEndpoint:
 
         app = make_app(store, admin_token=ADMIN_TOKEN)
         client = TestClient(app)
-        admin_eric_token = _bootstrap_admins_member(client, "admin-eric")
-        _register_worker(client, "ideator-w")
+        admin_eric_id, admin_eric_token = _bootstrap_admins_member(
+            client, "admin-eric"
+        )
+        ideator_w_id, _ = _register_worker(client, "ideator-w")
         store.create_ideation_task("t-1")
-        store.claim("t-1", "ideator-w")
+        store.claim("t-1", ideator_w_id)
         # Drive to submitted; reject the reassign at that state.
         from eden_storage import IdeaSubmission
 
-        store.submit("t-1", "ideator-w", IdeaSubmission(status="success"))
+        store.submit("t-1", ideator_w_id, IdeaSubmission(status="success"))
         resp = client.post(
             f"/v0/experiments/{EXPERIMENT_ID}/tasks/t-1/reassign",
-            headers=_worker_headers("admin-eric", admin_eric_token),
+            headers=_worker_headers(admin_eric_id, admin_eric_token),
             json={"new_target": None, "reason": "too late"},
         )
         assert resp.status_code == 409
@@ -180,7 +191,7 @@ class TestReassignEndpoint:
         store.accept("t-1")
         resp2 = client.post(
             f"/v0/experiments/{EXPERIMENT_ID}/tasks/t-1/reassign",
-            headers=_worker_headers("admin-eric", admin_eric_token),
+            headers=_worker_headers(admin_eric_id, admin_eric_token),
             json={"new_target": None, "reason": "post-terminal"},
         )
         assert resp2.status_code == 409
@@ -193,11 +204,11 @@ class TestReassignEndpoint:
     ) -> None:
         app = make_app(store, admin_token=ADMIN_TOKEN)
         client = TestClient(app)
-        random_token = _register_worker(client, "random-worker")
+        random_id, random_token = _register_worker(client, "random-worker")
         store.create_ideation_task("t-1")
         resp = client.post(
             f"/v0/experiments/{EXPERIMENT_ID}/tasks/t-1/reassign",
-            headers=_worker_headers("random-worker", random_token),
+            headers=_worker_headers(random_id, random_token),
             json={"new_target": None, "reason": "wrong principal"},
         )
         assert resp.status_code == 403
@@ -221,11 +232,13 @@ class TestReassignEndpoint:
         """The wave-3 model forbids ``reassigned_by`` in the body; server stamps it."""
         app = make_app(store, admin_token=ADMIN_TOKEN)
         client = TestClient(app)
-        admin_eric_token = _bootstrap_admins_member(client, "admin-eric")
+        admin_eric_id, admin_eric_token = _bootstrap_admins_member(
+            client, "admin-eric"
+        )
         store.create_ideation_task("t-1")
         resp = client.post(
             f"/v0/experiments/{EXPERIMENT_ID}/tasks/t-1/reassign",
-            headers=_worker_headers("admin-eric", admin_eric_token),
+            headers=_worker_headers(admin_eric_id, admin_eric_token),
             json={
                 "new_target": None,
                 "reason": "spoof",
@@ -250,7 +263,7 @@ class TestDispatchModeEndpoint:
         resp = client.get(
             f"/v0/experiments/{EXPERIMENT_ID}/dispatch_mode",
             headers=_admin_headers(),
-        )
+        )  # admin bearer reads dispatch_mode (either-auth)
         assert resp.status_code == 200
         assert resp.json() == {
             # 12a-3: `termination` defaults to "manual"; the four
@@ -265,10 +278,12 @@ class TestDispatchModeEndpoint:
     def test_partial_patch_returns_full_state(self, store: InMemoryStore) -> None:
         app = make_app(store, admin_token=ADMIN_TOKEN)
         client = TestClient(app)
-        admin_eric_token = _bootstrap_admins_member(client, "admin-eric")
+        admin_eric_id, admin_eric_token = _bootstrap_admins_member(
+            client, "admin-eric"
+        )
         resp = client.patch(
             f"/v0/experiments/{EXPERIMENT_ID}/dispatch_mode",
-            headers=_worker_headers("admin-eric", admin_eric_token),
+            headers=_worker_headers(admin_eric_id, admin_eric_token),
             json={"evaluation_dispatch": "manual"},
         )
         assert resp.status_code == 200, resp.text
@@ -284,16 +299,18 @@ class TestDispatchModeEndpoint:
         ]
         assert len(events) == 1
         assert events[0].data["changed"] == {"evaluation_dispatch": "manual"}
-        assert events[0].data["updated_by"] == "admin-eric"
+        assert events[0].data["updated_by"] == admin_eric_id
 
     def test_idempotent_patch_emits_no_event(self, store: InMemoryStore) -> None:
         app = make_app(store, admin_token=ADMIN_TOKEN)
         client = TestClient(app)
-        admin_eric_token = _bootstrap_admins_member(client, "admin-eric")
+        admin_eric_id, admin_eric_token = _bootstrap_admins_member(
+            client, "admin-eric"
+        )
         # Default is all-auto; patch with all-auto is a no-op.
         client.patch(
             f"/v0/experiments/{EXPERIMENT_ID}/dispatch_mode",
-            headers=_worker_headers("admin-eric", admin_eric_token),
+            headers=_worker_headers(admin_eric_id, admin_eric_token),
             json={"ideation_creation": "auto"},
         ).raise_for_status()
         events = [
@@ -306,10 +323,10 @@ class TestDispatchModeEndpoint:
     def test_non_admin_rejected(self, store: InMemoryStore) -> None:
         app = make_app(store, admin_token=ADMIN_TOKEN)
         client = TestClient(app)
-        random_token = _register_worker(client, "random-worker")
+        random_id, random_token = _register_worker(client, "random-worker")
         resp = client.patch(
             f"/v0/experiments/{EXPERIMENT_ID}/dispatch_mode",
-            headers=_worker_headers("random-worker", random_token),
+            headers=_worker_headers(random_id, random_token),
             json={"integration": "manual"},
         )
         assert resp.status_code == 403
@@ -320,10 +337,12 @@ class TestDispatchModeEndpoint:
     ) -> None:
         app = make_app(store, admin_token=ADMIN_TOKEN)
         client = TestClient(app)
-        admin_eric_token = _bootstrap_admins_member(client, "admin-eric")
+        admin_eric_id, admin_eric_token = _bootstrap_admins_member(
+            client, "admin-eric"
+        )
         resp = client.patch(
             f"/v0/experiments/{EXPERIMENT_ID}/dispatch_mode",
-            headers=_worker_headers("admin-eric", admin_eric_token),
+            headers=_worker_headers(admin_eric_id, admin_eric_token),
             json={"ideation_creation": "paused"},
         )
         assert resp.status_code == 400
@@ -341,25 +360,27 @@ class TestDispatchModeEndpoint:
         """
         app = make_app(store, admin_token=ADMIN_TOKEN)
         client = TestClient(app)
-        admin_eric_token = _bootstrap_admins_member(client, "admin-eric")
+        admin_eric_id, admin_eric_token = _bootstrap_admins_member(
+            client, "admin-eric"
+        )
         # null on an unknown key
         resp = client.patch(
             f"/v0/experiments/{EXPERIMENT_ID}/dispatch_mode",
-            headers=_worker_headers("admin-eric", admin_eric_token),
+            headers=_worker_headers(admin_eric_id, admin_eric_token),
             json={"future_key": None},
         )
         assert resp.status_code == 400, resp.text
         # non-auto/manual value on an unknown key
         resp = client.patch(
             f"/v0/experiments/{EXPERIMENT_ID}/dispatch_mode",
-            headers=_worker_headers("admin-eric", admin_eric_token),
+            headers=_worker_headers(admin_eric_id, admin_eric_token),
             json={"future_key": "paused"},
         )
         assert resp.status_code == 400, resp.text
         # valid value on an unknown key: §2.5 toleration → 200
         resp = client.patch(
             f"/v0/experiments/{EXPERIMENT_ID}/dispatch_mode",
-            headers=_worker_headers("admin-eric", admin_eric_token),
+            headers=_worker_headers(admin_eric_id, admin_eric_token),
             json={"future_key": "auto"},
         )
         assert resp.status_code == 200, resp.text
@@ -376,19 +397,20 @@ class TestAuthorityMatrix:
     @pytest.fixture
     def app_client(
         self, store: InMemoryStore
-    ) -> tuple[TestClient, dict[str, str]]:
+    ) -> tuple[TestClient, dict[str, tuple[str, str]]]:
         app = make_app(store, admin_token=ADMIN_TOKEN)
         client = TestClient(app)
         # Set up three principals: admins-only, orchestrators-only, random.
-        admins_token = _register_worker(client, "admin-eric")
-        orch_token = _register_worker(client, "orch-1")
-        random_token = _register_worker(client, "random-worker")
-        _register_group(client, "admins", members=["admin-eric"])
-        _register_group(client, "orchestrators", members=["orch-1"])
+        # Each maps role-name → (minted wkr_* id, token).
+        admin_eric_id, admins_token = _register_worker(client, "admin-eric")
+        orch_id, orch_token = _register_worker(client, "orch-1")
+        random_id, random_token = _register_worker(client, "random-worker")
+        _register_group(client, "admins", members=[admin_eric_id])
+        _register_group(client, "orchestrators", members=[orch_id])
         tokens = {
-            "admin-eric": admins_token,
-            "orch-1": orch_token,
-            "random-worker": random_token,
+            "admin-eric": (admin_eric_id, admins_token),
+            "orch-1": (orch_id, orch_token),
+            "random-worker": (random_id, random_token),
         }
         return client, tokens
 
@@ -406,7 +428,7 @@ class TestAuthorityMatrix:
         }
         resp = client.post(
             f"/v0/experiments/{EXPERIMENT_ID}/tasks",
-            headers=_worker_headers("admin-eric", tokens["admin-eric"]),
+            headers=_worker_headers(*tokens["admin-eric"]),
             json=body,
         )
         assert resp.status_code == 200, resp.text
@@ -425,7 +447,7 @@ class TestAuthorityMatrix:
         }
         resp = client.post(
             f"/v0/experiments/{EXPERIMENT_ID}/tasks",
-            headers=_worker_headers("orch-1", tokens["orch-1"]),
+            headers=_worker_headers(*tokens["orch-1"]),
             json=body,
         )
         assert resp.status_code == 200, resp.text
@@ -444,7 +466,7 @@ class TestAuthorityMatrix:
         }
         resp = client.post(
             f"/v0/experiments/{EXPERIMENT_ID}/tasks",
-            headers=_worker_headers("random-worker", tokens["random-worker"]),
+            headers=_worker_headers(*tokens["random-worker"]),
             json=body,
         )
         assert resp.status_code == 403
@@ -474,7 +496,7 @@ class TestAuthorityMatrix:
         }
         resp = client.post(
             f"/v0/experiments/{EXPERIMENT_ID}/tasks",
-            headers=_worker_headers("admin-eric", tokens["admin-eric"]),
+            headers=_worker_headers(*tokens["admin-eric"]),
             json=body,
         )
         # The admin gate now lets the request through; the store
@@ -499,7 +521,7 @@ class TestAuthorityMatrix:
         }
         resp = client.post(
             f"/v0/experiments/{EXPERIMENT_ID}/tasks",
-            headers=_worker_headers("random-worker", tokens["random-worker"]),
+            headers=_worker_headers(*tokens["random-worker"]),
             json=body,
         )
         assert resp.status_code == 403
@@ -535,7 +557,7 @@ class TestAuthorityMatrix:
         }
         resp = client.post(
             f"/v0/experiments/{EXPERIMENT_ID}/tasks",
-            headers=_worker_headers("admin-eric", tokens["admin-eric"]),
+            headers=_worker_headers(*tokens["admin-eric"]),
             json=body,
         )
         assert resp.status_code == 200, resp.text
@@ -546,7 +568,7 @@ class TestAuthorityMatrix:
         client, tokens = app_client
         resp = client.post(
             f"/v0/experiments/{EXPERIMENT_ID}/tasks/t1/accept",
-            headers=_worker_headers("random-worker", tokens["random-worker"]),
+            headers=_worker_headers(*tokens["random-worker"]),
         )
         assert resp.status_code == 403
 
@@ -556,7 +578,7 @@ class TestAuthorityMatrix:
         client, tokens = app_client
         resp = client.post(
             f"/v0/experiments/{EXPERIMENT_ID}/tasks/t1/reject",
-            headers=_worker_headers("random-worker", tokens["random-worker"]),
+            headers=_worker_headers(*tokens["random-worker"]),
             json={"reason": "worker_error"},
         )
         assert resp.status_code == 403
@@ -567,7 +589,7 @@ class TestAuthorityMatrix:
         client, tokens = app_client
         resp = client.post(
             f"/v0/experiments/{EXPERIMENT_ID}/variants/v1/integrate",
-            headers=_worker_headers("random-worker", tokens["random-worker"]),
+            headers=_worker_headers(*tokens["random-worker"]),
             json={"variant_commit_sha": "a" * 40},
         )
         assert resp.status_code == 403
@@ -616,20 +638,24 @@ class TestStoreClientEndToEnd:
     def test_reassign_round_trips(self, store: InMemoryStore) -> None:
         app = make_app(store, admin_token=ADMIN_TOKEN)
         test_client = TestClient(app)
-        admin_eric_token = _bootstrap_admins_member(test_client, "admin-eric")
-        _register_worker(test_client, "ideator-a")
+        admin_eric_id, admin_eric_token = _bootstrap_admins_member(
+            test_client, "admin-eric"
+        )
+        ideator_a_id, _ = _register_worker(test_client, "ideator-a")
         store.create_ideation_task("t-1")
 
-        sc = _store_client_for(test_client, bearer=f"admin-eric:{admin_eric_token}")
+        sc = _store_client_for(
+            test_client, bearer=f"{admin_eric_id}:{admin_eric_token}"
+        )
         try:
             updated = sc.reassign_task(
                 "t-1",
-                TaskTarget(kind="worker", id="ideator-a"),
+                TaskTarget(kind="worker", id=ideator_a_id),
                 reason="route",
-                reassigned_by="admin-eric",  # ignored on the wire; server stamps from auth
+                reassigned_by=admin_eric_id,  # ignored on the wire; server stamps from auth
             )
             assert updated.target is not None
-            assert updated.target.id == "ideator-a"
+            assert updated.target.id == ideator_a_id
         finally:
             sc.close()
 
@@ -638,15 +664,19 @@ class TestStoreClientEndToEnd:
     ) -> None:
         app = make_app(store, admin_token=ADMIN_TOKEN)
         test_client = TestClient(app)
-        admin_eric_token = _bootstrap_admins_member(test_client, "admin-eric")
+        admin_eric_id, admin_eric_token = _bootstrap_admins_member(
+            test_client, "admin-eric"
+        )
 
-        sc = _store_client_for(test_client, bearer=f"admin-eric:{admin_eric_token}")
+        sc = _store_client_for(
+            test_client, bearer=f"{admin_eric_id}:{admin_eric_token}"
+        )
         try:
             initial = sc.read_dispatch_mode()
             assert initial.ideation_creation == "auto"
             updated = sc.update_dispatch_mode(
                 DispatchMode(integration="manual"),
-                updated_by="admin-eric",
+                updated_by=admin_eric_id,
             )
             assert updated.integration == "manual"
             re_read = sc.read_dispatch_mode()
