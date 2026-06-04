@@ -12,4 +12,8 @@ metadata:
     {{- include "eden.labels" . | nindent 4 }}
 data:
   experiment-config.yaml: |
+    {{- if .Values.experiment.configRaw }}
+    {{- .Values.experiment.configRaw | nindent 4 }}
+    {{- else }}
     {{- toYaml .Values.experiment.config | nindent 4 }}
+    {{- end }}

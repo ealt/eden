@@ -121,6 +121,10 @@ jobs:
               - 'reference/scripts/setup-experiment-helm.sh'
               - 'reference/packages/**'
               - 'reference/services/**'
+              # helm-smoke builds the image from this Dockerfile (context = repo
+              # root), so the build inputs gate the job too.
+              - 'reference/compose/Dockerfile'
+              - '.dockerignore'
             # rootcfg = workspace-global build config. The workflow file
             # (any job definition) and the root pyproject.toml / uv.lock
             # (consumed by every `uv sync --frozen` job: python-lint,
@@ -822,13 +826,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # setup-python provisions a writable interpreter (PEP 668-safe) so the
-      # setup script's `python3 -m pip install pyyaml` below succeeds.
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
       - name: Set up Helm
         uses: azure/setup-helm@v4
         with:
@@ -839,9 +836,8 @@ jobs:
         with:
           install_only: true
 
-      - name: Install pyyaml (setup-experiment-helm.sh config overlay)
-        run: python3 -m pip install pyyaml
-
+      # The setup script + ci-smoke.sh use only stdlib python3 (json, string)
+      # plus jq — no pip install needed.
       - name: Verify tooling
         run: |
           kind version

@@ -144,21 +144,17 @@ fi
 if [[ -n "$IMAGE_REF" ]]; then
     # Split on the LAST colon so registries with a port
     # (localhost:5000/eden-reference:ci) keep their port in the repository.
-    HELM_VALUE_ARGS+=(--set "image.repository=${IMAGE_REF%:*}")
-    HELM_VALUE_ARGS+=(--set "image.tag=${IMAGE_REF##*:}")
+    # --set-string so numeric/bool-looking tags ("1", "true") aren't
+    # type-coerced by Helm before the string-typed schema validates them.
+    HELM_VALUE_ARGS+=(--set-string "image.repository=${IMAGE_REF%:*}")
+    HELM_VALUE_ARGS+=(--set-string "image.tag=${IMAGE_REF##*:}")
 fi
 
-# Embed the experiment config object under experiment.config via a generated
-# overlay (highest precedence) so the operator's YAML drives the ConfigMap.
-CONFIG_OVERLAY="$(mktemp)"
-trap 'rm -f "$CONFIG_OVERLAY"' EXIT
-python3 - "$CONFIG_PATH" "$EXPERIMENT_ID" > "$CONFIG_OVERLAY" <<'PY'
-import sys, yaml
-config = yaml.safe_load(open(sys.argv[1])) or {}
-overlay = {"experiment": {"id": sys.argv[2], "config": config}}
-yaml.safe_dump(overlay, sys.stdout, default_flow_style=False, sort_keys=False)
-PY
-HELM_VALUE_ARGS+=(-f "$CONFIG_OVERLAY")
+# Drive the experiment identity + config. The operator's config file is passed
+# verbatim as a raw string via --set-file (the chart's ConfigMap uses
+# experiment.configRaw when set), so this script needs no YAML library.
+HELM_VALUE_ARGS+=(--set-string "experiment.id=${EXPERIMENT_ID}")
+HELM_VALUE_ARGS+=(--set-file "experiment.configRaw=${CONFIG_PATH}")
 
 # When no values file was supplied, generate (or read back) dev secrets.
 if [[ -z "$VALUES_FILE" ]]; then
@@ -319,13 +315,13 @@ store_curl() {
     kubectl exec -n "$NAMESPACE" "$TASK_STORE_POD" -- curl "${args[@]}" || true
 }
 
-echo "--- registering experiment ${EXPERIMENT_ID} with the control plane ---" >&2
-rc="$(cp_curl POST /v0/control/experiments \
-    "{\"experiment_id\":\"${EXPERIMENT_ID}\",\"config_uri\":\"${FORGEJO_REMOTE_URL}\"}")"
-case "$rc" in
-    200|201) ;;
-    *) echo "register_experiment failed: http=$rc" >&2; exit 1 ;;
-esac
+# Bootstrap the task-store groups + members BEFORE registering the experiment
+# with the control plane: registration publishes the lease target, and any
+# already-running orchestrator can acquire the lease immediately. If the
+# task-store `orchestrators` group is not seeded first, the orchestrator's
+# baseline-creation runs under a worker not yet in the group, 403s, and the
+# per-experiment runtime is cached (no retry until a pod restart) — so the
+# default baseline would be missing. Seed groups first, register last.
 
 # Reserved groups + initial admin / web-ui workers (mirrors Compose §5.7).
 ADMINS_MEMBER="$(echo "$MERGED_VALUES" \
@@ -365,6 +361,16 @@ while [[ "$i" -lt "$ORCH_REPLICAS" ]]; do
     i=$((i + 1))
 done
 
+# Now that the groups are seeded, register the experiment with the control
+# plane — this publishes the lease target the orchestrators acquire.
+echo "--- registering experiment ${EXPERIMENT_ID} with the control plane ---" >&2
+rc="$(cp_curl POST /v0/control/experiments \
+    "{\"experiment_id\":\"${EXPERIMENT_ID}\",\"config_uri\":\"${FORGEJO_REMOTE_URL}\"}")"
+case "$rc" in
+    200|201) ;;
+    *) echo "register_experiment failed: http=$rc" >&2; exit 1 ;;
+esac
+
 cat <<EOF
 setup-experiment-helm complete.
 
@@ -377,7 +383,7 @@ The orchestrator StatefulSet is running in lease-driven mode and will acquire
 the experiment's lease within one poll interval.
 
   # Web UI (port-forward; offset to 18090 to avoid Compose's 8090):
-  kubectl -n ${NAMESPACE} port-forward svc/${RELEASE}-web-ui 18090:8090
+  kubectl -n ${NAMESPACE} port-forward svc/${FULLNAME}-web-ui 18090:8090
   open http://localhost:18090/
 
 Re-running setup-experiment-helm with the same --experiment-id is safe.

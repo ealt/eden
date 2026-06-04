@@ -48,6 +48,11 @@ image:
 # and get all nine services from one `helm install`.
 experiment:
   id: ""                  # required, e.g. exp-1
+  # Raw experiment-config YAML as a string. When non-empty it takes precedence
+  # over `config` below — used by setup-experiment-helm.sh, which passes the
+  # operator's config file verbatim via `helm --set-file experiment.configRaw`
+  # (so the script needs no YAML library). Leave empty to use `config`.
+  configRaw: ""
   # Inline experiment-config.schema.json YAML, rendered into a ConfigMap and
   # mounted at /etc/eden/experiment-config.yaml. Defaults to the repo fixture.
   config:
