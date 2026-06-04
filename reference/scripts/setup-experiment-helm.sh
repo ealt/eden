@@ -112,9 +112,21 @@ if [[ -z "$EXPERIMENT_ID" ]]; then
     fi
 fi
 
-SECRET_NAME="${RELEASE}-secrets"
-HELPER_CONFIGMAP="${RELEASE}-git-credential-helper"
-FORGEJO_REMOTE_URL="http://${RELEASE}-forgejo:3000/eden/${EXPERIMENT_ID}.git"
+# Mirror the chart's eden.fullname helper: when the release name contains the
+# chart name ("eden") the resources are prefixed by the release name alone,
+# otherwise by "<release>-eden". Resource names below derive from this.
+CHART_NAME="eden"
+if [[ "$RELEASE" == *"$CHART_NAME"* ]]; then
+    FULLNAME="$RELEASE"
+else
+    FULLNAME="${RELEASE}-${CHART_NAME}"
+fi
+
+# Default chart-managed secret name; overridden after phase 1 if the operator's
+# values set secrets.existingSecret.
+SECRET_NAME="${FULLNAME}-secrets"
+HELPER_CONFIGMAP="${FULLNAME}-git-credential-helper"
+FORGEJO_REMOTE_URL="http://${FULLNAME}-forgejo:3000/eden/${EXPERIMENT_ID}.git"
 
 gen_hex() {
     python3 -c 'import secrets,sys; sys.stdout.write(secrets.token_hex(int(sys.argv[1])))' "${1:-32}"
@@ -130,7 +142,9 @@ if [[ -n "$VALUES_FILE" ]]; then
     HELM_VALUE_ARGS+=(-f "$VALUES_FILE")
 fi
 if [[ -n "$IMAGE_REF" ]]; then
-    HELM_VALUE_ARGS+=(--set "image.repository=${IMAGE_REF%%:*}")
+    # Split on the LAST colon so registries with a port
+    # (localhost:5000/eden-reference:ci) keep their port in the repository.
+    HELM_VALUE_ARGS+=(--set "image.repository=${IMAGE_REF%:*}")
     HELM_VALUE_ARGS+=(--set "image.tag=${IMAGE_REF##*:}")
 fi
 
@@ -182,9 +196,18 @@ helm upgrade --install "$RELEASE" "$CHART" \
     --set "experiment.baseCommitSha=" \
     --wait --timeout "$TIMEOUT"
 
-kubectl rollout status "statefulset/${RELEASE}-postgres" -n "$NAMESPACE" --timeout="$TIMEOUT"
-kubectl rollout status "statefulset/${RELEASE}-forgejo" -n "$NAMESPACE" --timeout="$TIMEOUT"
-kubectl rollout status "deployment/${RELEASE}-control-plane" -n "$NAMESPACE" --timeout="$TIMEOUT"
+# Resolve the actual secret name from the merged release values: the operator's
+# secrets.existingSecret wins over the chart-managed "<fullname>-secrets".
+MERGED_VALUES="$(helm get values "$RELEASE" -n "$NAMESPACE" -a -o json)"
+EXISTING_SECRET="$(echo "$MERGED_VALUES" \
+    | python3 -c 'import json,sys; print(json.load(sys.stdin).get("secrets",{}).get("existingSecret") or "")')"
+if [[ -n "$EXISTING_SECRET" ]]; then
+    SECRET_NAME="$EXISTING_SECRET"
+fi
+
+kubectl rollout status "statefulset/${FULLNAME}-postgres" -n "$NAMESPACE" --timeout="$TIMEOUT"
+kubectl rollout status "statefulset/${FULLNAME}-forgejo" -n "$NAMESPACE" --timeout="$TIMEOUT"
+kubectl rollout status "deployment/${FULLNAME}-control-plane" -n "$NAMESPACE" --timeout="$TIMEOUT"
 
 # --- Provision the Forgejo eden user (idempotent) ---
 FORGEJO_PASSWORD="$(kubectl get secret "$SECRET_NAME" -n "$NAMESPACE" \
@@ -204,11 +227,21 @@ fi
 
 # --- Seed the bare repo via a one-shot Job (push auto-creates the repo) ---
 echo "--- seeding bare repo via repo-init Job ---" >&2
-IMAGE_PULL_POLICY="$(helm get values "$RELEASE" -n "$NAMESPACE" -a -o json \
+IMAGE_PULL_POLICY="$(echo "$MERGED_VALUES" \
     | python3 -c 'import json,sys; print(json.load(sys.stdin).get("image",{}).get("pullPolicy","IfNotPresent"))')"
-EDEN_IMAGE="$(helm get values "$RELEASE" -n "$NAMESPACE" -a -o json \
-    | python3 -c 'import json,sys; v=json.load(sys.stdin)["image"]; print(f"{v[\"repository\"]}:{v[\"tag\"]}")')"
-JOB_NAME="${RELEASE}-repo-init-${EXPERIMENT_ID}"
+EDEN_IMAGE="$(echo "$MERGED_VALUES" \
+    | python3 -c 'import json,sys; v=json.load(sys.stdin)["image"]; print(v["repository"] + ":" + v["tag"])')"
+# Render the imagePullSecrets block (or empty) so private-registry pulls work
+# for the out-of-tree bootstrap Job, mirroring the chart workloads.
+IMAGE_PULL_SECRETS="$(echo "$MERGED_VALUES" | python3 -c '
+import json, sys
+secrets = json.load(sys.stdin).get("image", {}).get("pullSecrets") or []
+if secrets:
+    lines = ["      imagePullSecrets:"]
+    lines += ["        - name: " + s["name"] for s in secrets]
+    sys.stdout.write("\n".join(lines))
+')"
+JOB_NAME="${FULLNAME}-repo-init-${EXPERIMENT_ID}"
 
 # Render the out-of-tree Job template (string.Template ${VAR} substitution via
 # python — avoids a gettext/envsubst dependency) and apply it.
@@ -216,12 +249,14 @@ kubectl delete job "$JOB_NAME" -n "$NAMESPACE" --ignore-not-found >/dev/null 2>&
 EDEN_NAMESPACE="$NAMESPACE" EDEN_JOB_NAME="$JOB_NAME" EDEN_IMAGE="$EDEN_IMAGE" \
 EDEN_IMAGE_PULL_POLICY="$IMAGE_PULL_POLICY" EDEN_SECRET_NAME="$SECRET_NAME" \
 EDEN_HELPER_CONFIGMAP="$HELPER_CONFIGMAP" EDEN_FORGEJO_REMOTE_URL="$FORGEJO_REMOTE_URL" \
+EDEN_IMAGE_PULL_SECRETS="$IMAGE_PULL_SECRETS" \
     python3 - "${CHART}/bootstrap/repo-init-job.yaml.tmpl" <<'PY' \
     | kubectl apply -n "$NAMESPACE" -f -
 import os, string, sys
 keys = (
     "EDEN_NAMESPACE", "EDEN_JOB_NAME", "EDEN_IMAGE", "EDEN_IMAGE_PULL_POLICY",
     "EDEN_SECRET_NAME", "EDEN_HELPER_CONFIGMAP", "EDEN_FORGEJO_REMOTE_URL",
+    "EDEN_IMAGE_PULL_SECRETS",
 )
 mapping = {k: os.environ[k] for k in keys}
 sys.stdout.write(string.Template(open(sys.argv[1]).read()).substitute(mapping))
@@ -251,8 +286,8 @@ helm upgrade "$RELEASE" "$CHART" \
     --set "experiment.baseCommitSha=${SEED_SHA}" \
     --wait --timeout "$TIMEOUT"
 
-kubectl rollout status "deployment/${RELEASE}-task-store-server" -n "$NAMESPACE" --timeout="$TIMEOUT"
-kubectl rollout status "statefulset/${RELEASE}-orchestrator" -n "$NAMESPACE" --timeout="$TIMEOUT"
+kubectl rollout status "deployment/${FULLNAME}-task-store-server" -n "$NAMESPACE" --timeout="$TIMEOUT"
+kubectl rollout status "statefulset/${FULLNAME}-orchestrator" -n "$NAMESPACE" --timeout="$TIMEOUT"
 
 # --- Register the experiment + bootstrap groups/workers ---
 ADMIN_TOKEN="$(kubectl get secret "$SECRET_NAME" -n "$NAMESPACE" \
@@ -293,10 +328,12 @@ case "$rc" in
 esac
 
 # Reserved groups + initial admin / web-ui workers (mirrors Compose §5.7).
-ADMINS_MEMBER="$(helm get values "$RELEASE" -n "$NAMESPACE" -a -o json \
+ADMINS_MEMBER="$(echo "$MERGED_VALUES" \
     | python3 -c 'import json,sys; print(json.load(sys.stdin).get("config",{}).get("adminsInitialMember","operator"))')"
-WEB_UI_WID="$(helm get values "$RELEASE" -n "$NAMESPACE" -a -o json \
+WEB_UI_WID="$(echo "$MERGED_VALUES" \
     | python3 -c 'import json,sys; print(json.load(sys.stdin).get("config",{}).get("webUiWorkerId","web-ui-1"))')"
+ORCH_REPLICAS="$(echo "$MERGED_VALUES" \
+    | python3 -c 'import json,sys; print(json.load(sys.stdin).get("replicas",{}).get("orchestrator",2))')"
 EXP_BASE="/v0/experiments/${EXPERIMENT_ID}"
 echo "--- bootstrapping reserved groups + admin/web-ui workers ---" >&2
 for group in orchestrators admins; do
@@ -308,6 +345,24 @@ for wid in "$ADMINS_MEMBER" "$WEB_UI_WID"; do
     case "$rc" in 200) ;; *) echo "register_worker($wid) failed: http=$rc" >&2; exit 1 ;; esac
     rc="$(store_curl POST "${EXP_BASE}/groups/admins/members" "{\"member_id\":\"${wid}\"}")"
     case "$rc" in 200) ;; *) echo "add_to_group(admins, $wid) failed: http=$rc" >&2; exit 1 ;; esac
+done
+
+# Seed the task-store `orchestrators` group with the orchestrator StatefulSet
+# pod worker_ids (<fullname>-orchestrator-<ordinal>, used as --worker-id via
+# POD_NAME). In control-plane lease-driven mode the orchestrator self-joins
+# only the CONTROL-PLANE orchestrators group, not the task-store one, so
+# without this its §3.7-gated task/variant ops would 403 and the experiment
+# would make no progress (a proper in-orchestrator fix is tracked under #254).
+# Mirrors reference/compose/healthcheck/smoke-multi-experiment.sh.
+echo "--- seeding task-store orchestrators group with orchestrator pods ---" >&2
+i=0
+while [[ "$i" -lt "$ORCH_REPLICAS" ]]; do
+    owid="${FULLNAME}-orchestrator-${i}"
+    rc="$(store_curl POST "${EXP_BASE}/workers" "{\"worker_id\":\"${owid}\"}")"
+    case "$rc" in 200) ;; *) echo "register_worker($owid) failed: http=$rc" >&2; exit 1 ;; esac
+    rc="$(store_curl POST "${EXP_BASE}/groups/orchestrators/members" "{\"member_id\":\"${owid}\"}")"
+    case "$rc" in 200) ;; *) echo "add_to_group(orchestrators, $owid) failed: http=$rc" >&2; exit 1 ;; esac
+    i=$((i + 1))
 done
 
 cat <<EOF

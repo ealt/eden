@@ -12,9 +12,11 @@
 # emits `EDEN_REPO_SEEDED sha=<hex>` (or `EDEN_REPO_ALREADY_SEEDED sha=<hex>`)
 # on stdout; the script reads the SHA from the pod log.
 #
-# Substituted variables (envsubst): ${EDEN_NAMESPACE} ${EDEN_JOB_NAME}
-# ${EDEN_IMAGE} ${EDEN_IMAGE_PULL_POLICY} ${EDEN_SECRET_NAME}
-# ${EDEN_HELPER_CONFIGMAP} ${EDEN_FORGEJO_REMOTE_URL}.
+# Substituted variables (written without the dollar-brace syntax here so the
+# template renderer does not expand them inside this comment): EDEN_NAMESPACE,
+# EDEN_JOB_NAME, EDEN_IMAGE, EDEN_IMAGE_PULL_POLICY, EDEN_SECRET_NAME,
+# EDEN_HELPER_CONFIGMAP, EDEN_FORGEJO_REMOTE_URL, and EDEN_IMAGE_PULL_SECRETS
+# (a rendered imagePullSecrets block or empty, so private-registry pulls work).
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -34,6 +36,7 @@ spec:
         app.kubernetes.io/component: repo-init
     spec:
       restartPolicy: Never
+${EDEN_IMAGE_PULL_SECRETS}
       # The image runs as uid/gid 1000 (eden); fsGroup makes the staging
       # emptyDir group-writable so the seed git writes succeed.
       securityContext:

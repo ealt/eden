@@ -160,6 +160,11 @@ config:
 # ---------------------------------------------------------------------------
 postgres:
   image: postgres:16.6-alpine
+  # Pull policy for the upstream Postgres image. Kept separate from
+  # image.pullPolicy: a kind-loaded eden-reference image uses Never, but the
+  # upstream dependency images must still be pulled (IfNotPresent), or the
+  # infra pods ImagePullBackOff on a node that hasn't cached them.
+  pullPolicy: IfNotPresent
   database: eden
   controlPlaneDatabase: eden_control_plane
   user: eden
@@ -170,6 +175,8 @@ postgres:
 # ---------------------------------------------------------------------------
 forgejo:
   image: codeberg.org/forgejo/forgejo:11-rootless
+  # See postgres.pullPolicy — kept separate from image.pullPolicy.
+  pullPolicy: IfNotPresent
   resources: {}
 
 # ---------------------------------------------------------------------------
