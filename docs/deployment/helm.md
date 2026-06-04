@@ -205,6 +205,16 @@ helm upgrade eden reference/helm/eden -n eden-prod --reuse-values \
   pod's lease expires, leaving a sub-`leaseDurationSeconds` window where the
   experiment is un-leased. `replicas.orchestrator=2` keeps a standby available
   to re-acquire during the restart.
+- **Scaling the orchestrator up.** `setup-experiment-helm.sh` seeds the
+  task-store `orchestrators` group with exactly the orchestrator pod ids present
+  at bootstrap (`<release>-orchestrator-0 … -<N-1>`). If you later raise
+  `replicas.orchestrator`, the **new** pods self-join only the *control-plane*
+  `orchestrators` group (so they can acquire the lease) but are not yet in the
+  *task-store* group — their task ops would 403 while holding the lease,
+  stalling the experiment. Until the in-orchestrator self-join lands
+  ([#254](https://github.com/ealt/eden/issues/254)), **re-run
+  `setup-experiment-helm.sh` after scaling the orchestrator up** (it is
+  idempotent and seeds the new pod ids). Scaling down needs no action.
 
 ## 6. Coexistence
 

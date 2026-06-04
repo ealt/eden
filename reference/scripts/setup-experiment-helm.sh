@@ -417,5 +417,8 @@ the experiment's lease within one poll interval.
   kubectl -n ${NAMESPACE} port-forward svc/${FULLNAME}-web-ui 18090:8090
   open http://localhost:18090/
 
-Re-running setup-experiment-helm with the same --experiment-id is safe.
+Re-running setup-experiment-helm with the same --experiment-id is safe. If you
+later raise replicas.orchestrator, re-run it so the new orchestrator pods are
+added to the task-store 'orchestrators' group (see docs/deployment/helm.md;
+tracked for an in-orchestrator fix under #254).
 EOF

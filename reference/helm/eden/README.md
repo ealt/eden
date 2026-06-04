@@ -68,8 +68,13 @@ it is non-empty. `setup-experiment-helm.sh` therefore:
 3. Registers the experiment with the control plane and bootstraps the reserved
    groups + initial admin / web-ui workers.
 
-Operators who pre-seeded Forgejo can skip the script and supply
-`experiment.baseCommitSha` directly to a single `helm install`.
+Supplying `experiment.baseCommitSha` to a plain `helm install` only satisfies
+the app-tier **render gate** — it does **not** register the experiment with the
+control plane or seed the task-store `admins`/`orchestrators` groups, so the
+orchestrator comes up with no lease target and no authorization. Even with a
+pre-seeded Forgejo, use `setup-experiment-helm.sh` (it skips re-seeding an
+already-seeded repo) or perform its registration + group-bootstrap steps
+manually. `setup-experiment-helm.sh` is the canonical, supported bootstrap.
 
 ## Values
 
