@@ -55,15 +55,19 @@ ${EDEN_IMAGE_PULL_SECRETS}
             - python
             - -m
             - eden_service_common.repo_init
+            # Seed into a CHILD of the staging mount: fsGroup leaves the mount
+            # root root-owned (group-writable), so eden mkdir's repo/ as an
+            # eden-owned child — otherwise the later `git push` trips git's
+            # dubious-ownership check. Mirrors the StatefulSet clone pattern.
             - --repo-path
-            - /var/lib/eden/repo
+            - /var/lib/eden/seed/repo
             - --push-to
             - ${EDEN_FORGEJO_REMOTE_URL}
             - --credential-helper
             - /etc/eden/git-credential-helper
           volumeMounts:
             - name: staging
-              mountPath: /var/lib/eden/repo
+              mountPath: /var/lib/eden/seed
             - name: git-credential-helper
               mountPath: /etc/eden/git-credential-helper
               subPath: git-credential-helper

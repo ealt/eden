@@ -47,7 +47,12 @@
         "taskStoreServer": { "type": "integer", "minimum": 0 },
         "controlPlane": { "type": "integer", "minimum": 0 },
         "orchestrator": { "type": "integer", "minimum": 0 },
-        "ideatorHost": { "type": "integer", "minimum": 0 },
+        "ideatorHost": {
+          "description": "Operator-singleton in v0: the ideator Deployment uses a fixed config.ideatorWorkerId, so >1 replica would race on one worker credential. Capped at 1 until unique worker ids are generated.",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1
+        },
         "executorHost": { "type": "integer", "minimum": 0 },
         "evaluatorHost": { "type": "integer", "minimum": 0 },
         "webUi": {
