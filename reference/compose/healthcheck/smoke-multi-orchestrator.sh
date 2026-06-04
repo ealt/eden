@@ -149,15 +149,34 @@ echo "--- bringing up the full stack with multi-orchestrator overlay ---"
 docker compose "${COMPOSE_FILES[@]}" --env-file "$ENV_FILE" \
     up -d --wait --wait-timeout 240
 
-# Both replicas join the `orchestrators` group at startup via the
-# `_ensure_orchestrators_membership` helper. Assert both minted
-# worker_ids are members (the group is addressed by its opaque grp_* id).
-echo "--- asserting both orchestrators joined the orchestrators group ---"
-ORCH_JSON="$(call_wire GET "${EXP_BASE}/groups/${EDEN_ORCHESTRATORS_GROUP_ID}")"
+# Both replicas join the `orchestrators` group via the
+# `_ensure_orchestrators_membership` helper. That join runs during the
+# orchestrator's startup-reconcile (AFTER it clones the repo + reconciles
+# remote orphans), which completes a few seconds AFTER the container
+# reports healthy — so `up --wait` (gated on the healthcheck, not on
+# app-level group membership) does NOT guarantee membership is in place.
+# Poll until both minted worker_ids are members or the deadline elapses.
+# (Since #128 the self-join also does an extra list_groups(name=…) resolve
+# round-trip to map the reserved NAME to its opaque grp_* id, widening the
+# window vs the pre-rename fixed-id add_to_group.) The group is addressed
+# by its opaque grp_* id.
+echo "--- waiting for both orchestrators to join the orchestrators group ---"
+deadline=$((SECONDS + 60))
+ORCH_JSON=""
+while [[ $SECONDS -lt $deadline ]]; do
+    ORCH_JSON="$(call_wire GET "${EXP_BASE}/groups/${EDEN_ORCHESTRATORS_GROUP_ID}" || true)"
+    missing=0
+    for wid in "$EDEN_ORCHESTRATOR_WORKER_ID" "$EDEN_ORCHESTRATOR_2_WORKER_ID"; do
+        echo "$ORCH_JSON" | jq -e --arg w "$wid" '.members | index($w)' \
+            >/dev/null 2>&1 || missing=1
+    done
+    [[ $missing -eq 0 ]] && break
+    sleep 2
+done
 for wid in "$EDEN_ORCHESTRATOR_WORKER_ID" "$EDEN_ORCHESTRATOR_2_WORKER_ID"; do
     echo "$ORCH_JSON" | jq -e --arg w "$wid" '.members | index($w)' >/dev/null \
         || {
-            echo "orchestrators group missing $wid: $ORCH_JSON" >&2
+            echo "orchestrators group missing $wid after 60s: $ORCH_JSON" >&2
             exit 1
         }
 done
