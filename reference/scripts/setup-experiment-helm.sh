@@ -251,6 +251,19 @@ if secrets:
     lines += ["        - name: " + s["name"] for s in secrets]
     sys.stdout.write("\n".join(lines))
 ')"
+# Render nodeSelector/tolerations/affinity from the release values so the seed
+# Job schedules where the chart pods do. JSON is valid YAML (flow style), so we
+# emit json.dumps — keeping the script free of a YAML library.
+POD_SCHEDULING="$(echo "$MERGED_VALUES" | python3 -c '
+import json, sys
+v = json.load(sys.stdin)
+out = []
+for key in ("nodeSelector", "tolerations", "affinity"):
+    val = v.get(key)
+    if val:
+        out.append("      " + key + ": " + json.dumps(val))
+sys.stdout.write("\n".join(out))
+')"
 # Derive a DNS-safe Job name: experiment ids may contain characters valid for
 # EDEN (underscores, uppercase) but invalid in Kubernetes object names. Lower-
 # case + replace invalid chars, truncate, and append a short hash of the
@@ -272,14 +285,14 @@ kubectl delete job "$JOB_NAME" -n "$NAMESPACE" --ignore-not-found >/dev/null 2>&
 EDEN_NAMESPACE="$NAMESPACE" EDEN_JOB_NAME="$JOB_NAME" EDEN_IMAGE="$EDEN_IMAGE" \
 EDEN_IMAGE_PULL_POLICY="$IMAGE_PULL_POLICY" EDEN_SECRET_NAME="$SECRET_NAME" \
 EDEN_HELPER_CONFIGMAP="$HELPER_CONFIGMAP" EDEN_FORGEJO_REMOTE_URL="$FORGEJO_REMOTE_URL" \
-EDEN_IMAGE_PULL_SECRETS="$IMAGE_PULL_SECRETS" \
+EDEN_IMAGE_PULL_SECRETS="$IMAGE_PULL_SECRETS" EDEN_POD_SCHEDULING="$POD_SCHEDULING" \
     python3 - "${CHART}/bootstrap/repo-init-job.yaml.tmpl" <<'PY' \
     | kubectl apply -n "$NAMESPACE" -f -
 import os, string, sys
 keys = (
     "EDEN_NAMESPACE", "EDEN_JOB_NAME", "EDEN_IMAGE", "EDEN_IMAGE_PULL_POLICY",
     "EDEN_SECRET_NAME", "EDEN_HELPER_CONFIGMAP", "EDEN_FORGEJO_REMOTE_URL",
-    "EDEN_IMAGE_PULL_SECRETS",
+    "EDEN_IMAGE_PULL_SECRETS", "EDEN_POD_SCHEDULING",
 )
 mapping = {k: os.environ[k] for k in keys}
 sys.stdout.write(string.Template(open(sys.argv[1]).read()).substitute(mapping))

@@ -15,8 +15,11 @@
 # Substituted variables (written without the dollar-brace syntax here so the
 # template renderer does not expand them inside this comment): EDEN_NAMESPACE,
 # EDEN_JOB_NAME, EDEN_IMAGE, EDEN_IMAGE_PULL_POLICY, EDEN_SECRET_NAME,
-# EDEN_HELPER_CONFIGMAP, EDEN_FORGEJO_REMOTE_URL, and EDEN_IMAGE_PULL_SECRETS
-# (a rendered imagePullSecrets block or empty, so private-registry pulls work).
+# EDEN_HELPER_CONFIGMAP, EDEN_FORGEJO_REMOTE_URL, EDEN_IMAGE_PULL_SECRETS
+# (a rendered imagePullSecrets block or empty, so private-registry pulls work),
+# and EDEN_POD_SCHEDULING (rendered nodeSelector/tolerations/affinity from the
+# release values, so the seed Job schedules on the same constrained/tainted
+# nodes the chart pods target).
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -37,6 +40,7 @@ spec:
     spec:
       restartPolicy: Never
 ${EDEN_IMAGE_PULL_SECRETS}
+${EDEN_POD_SCHEDULING}
       # The image runs as uid/gid 1000 (eden); fsGroup makes the staging
       # emptyDir group-writable so the seed git writes succeed.
       securityContext:
