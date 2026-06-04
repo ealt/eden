@@ -122,12 +122,26 @@ class FileArtifactBackend:
         try:
             with os.fdopen(fd, "wb") as handle:
                 handle.write(data)
+                # Flush the bytes to disk BEFORE linking + recording the
+                # (durable) metadata row, so a crash can't leave a committed
+                # artifacts_uri whose bytes are missing (§5.2 durability).
+                handle.flush()
+                os.fsync(handle.fileno())
             # os.link is atomic and raises FileExistsError when `final`
             # already exists — the §5.4 no-overwrite guarantee.
             os.link(tmp, final)
+            self._fsync_dir()
         finally:
             with contextlib.suppress(FileNotFoundError):
                 os.unlink(tmp)
+
+    def _fsync_dir(self) -> None:
+        """Fsync the root directory so the new link's dir entry is durable."""
+        dir_fd = os.open(self._root, os.O_RDONLY)
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
 
     def load(self, opaque_id: str) -> bytes:
         """Return the bytes under ``root/opaque_id``; ``NotFound`` if absent."""

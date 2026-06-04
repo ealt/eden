@@ -142,5 +142,26 @@ API-robustness findings, both addressed:
 
 ## Round 6
 
-Re-ran `codex review --base main` after the round-5 fixes — no further actionable
+Re-ran `codex review --base main` after the round-5 fixes — three findings:
+
+- **[P2, fixed] Conformance must stay scheme-agnostic.** The Artifact-transfer
+  scenario's URI regex hard-required `eden://artifacts/` — but `artifacts_uri` is
+  opaque + scheme-implementation-defined (02 §1.5, 08 §5.1). Relaxed to assert only a
+  non-empty RFC-3986 URI (scheme prefix + rest); resolvability is proven by the fetch
+  round-trip.
+- **[P2, fixed] fsync blobs before recording durable metadata.** `FileArtifactBackend.store`
+  now `os.fsync`s the blob fd before linking and fsyncs the root directory after, so a
+  crash can't leave a committed `artifacts_uri` whose bytes are unflushed (§5.2).
+- **[P2, declined-with-rationale] Precise per-part streaming cap.** codex wants the
+  *file part* counted as it streams, vs the current raw-body cap at
+  `cap + _MULTIPART_SLACK` + post-parse exact check. Declined: the streamed raw-body
+  cap already bounds peak memory to ~`cap` (the security property §16.1 protects — a
+  grossly-over upload is rejected mid-stream), and a precise per-part count would
+  require replacing Starlette's multipart parser with a streaming parser —
+  disproportionate for the reference impl. A just-over-cap file is buffered to ~`cap`
+  then 413'd, which is within the bound. Documented in `routers/artifacts.py`.
+
+## Round 7
+
+Re-ran `codex review --base main` after the round-6 fixes — no further actionable
 findings (convergence; remaining work is the deferred cutover tracked in #290).
