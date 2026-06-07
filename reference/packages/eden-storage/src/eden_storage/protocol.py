@@ -475,19 +475,21 @@ class Store(Protocol):
 
     def register_worker(
         self,
-        worker_id: str,
+        name: str | None = None,
         *,
         labels: dict[str, str] | None = None,
         registered_by: str | None = None,
     ) -> tuple[Worker, str | None]:
-        """Register ``worker_id``; return ``(worker, registration_token)``.
+        """Mint a worker; return ``(worker, registration_token)`` (issue #128).
 
-        Idempotent on existing record per
-        [`spec/v0/02-data-model.md`](../../../../spec/v0/02-data-model.md)
-        §6.3: re-registration of an existing ``worker_id`` returns the
-        existing Worker and ``registration_token=None`` (no new token).
-        ``StoreClient`` ships this method as a wave-3 stub that raises
-        ``NotImplementedError`` until the wire endpoint lands.
+        Mints an opaque ``worker_id`` (``wkr_<ulid>``) and takes an
+        optional operator-supplied display ``name``. The token is ALWAYS
+        a freshly-minted plaintext credential — there is no id-based
+        idempotency, so every call mints a new row + credential even
+        when ``name`` collides. Raises ``ReservedIdentifier`` for a
+        reserved worker name (``admin`` / ``system`` / ``internal``) and
+        ``InvalidName`` for a name that violates the display-name grammar
+        (`02-data-model.md` §1.7).
         """
         ...
 
@@ -505,8 +507,13 @@ class Store(Protocol):
         """Return the wire-visible Worker shape, or raise ``NotFound``."""
         ...
 
-    def list_workers(self) -> list[Worker]:
-        """Return all registered workers sorted by ``worker_id``."""
+    def list_workers(self, name: str | None = None) -> list[Worker]:
+        """Return registered workers sorted by ``worker_id``.
+
+        When ``name`` is supplied, returns only workers whose display
+        ``name`` matches exactly (case-sensitive) — 0..N matches;
+        ``name=None`` returns all (issue #128).
+        """
         ...
 
     # ------------------------------------------------------------------
@@ -515,12 +522,21 @@ class Store(Protocol):
 
     def register_group(
         self,
-        group_id: str,
+        name: str | None = None,
         *,
         members: Iterable[str] | None = None,
         created_by: str | None = None,
+        allow_reserved: bool = False,
     ) -> Group:
-        """Register a new group; raises ``CycleDetected`` on cycle."""
+        """Mint a group; raises ``CycleDetected`` on cycle (issue #128).
+
+        Mints an opaque ``group_id`` (``grp_<ulid>``) and takes an
+        optional display ``name``. Members MUST be opaque ``wkr_*`` /
+        ``grp_*`` ids. Reserved group names (``admins`` /
+        ``orchestrators``) raise ``ReservedIdentifier`` unless
+        ``allow_reserved=True`` (the privileged setup-experiment seed
+        path). Ill-formed names raise ``InvalidName``.
+        """
         ...
 
     def add_to_group(self, group_id: str, member_id: str) -> Group:
@@ -539,8 +555,13 @@ class Store(Protocol):
         """Return the group, or raise ``NotFound``."""
         ...
 
-    def list_groups(self) -> list[Group]:
-        """Return all groups sorted by ``group_id``."""
+    def list_groups(self, name: str | None = None) -> list[Group]:
+        """Return groups sorted by ``group_id``.
+
+        When ``name`` is supplied, returns only groups whose display
+        ``name`` matches exactly (case-sensitive) — 0..N matches;
+        ``name=None`` returns all (issue #128).
+        """
         ...
 
     def resolve_worker_in_group(self, worker_id: str, group_id: str) -> bool:

@@ -1,18 +1,13 @@
 {% extends "base.html" %}
+{% from "_macros.html" import name_id %}
 {% block title %}EDEN — worker {{ worker.worker_id }} credential{% endblock %}
 {% block main %}
-<h1>worker <code>{{ worker.worker_id }}</code></h1>
+<h1>worker {{ name_id(worker.name, worker.worker_id) }}</h1>
 
-{% if action == "register" and token %}
+{% if action == "register" %}
 <div class="banner banner-ok">
-    worker registered. <strong>The token below is shown only once —
-    save it now.</strong>
-</div>
-{% elif action == "register" and not token %}
-<div class="banner banner-warn">
-    a worker with this id already existed; no new token was issued.
-    Use "reissue credential" on the detail page if you actually need
-    a fresh credential.
+    worker registered — the server minted the worker_id
+    <code>{{ worker.worker_id }}</code>. <strong>The token below is shown only once — save it now.</strong>
 </div>
 {% elif action == "reissue" %}
 <div class="banner banner-ok">
@@ -22,7 +17,8 @@
 {% endif %}
 
 <dl>
-    <dt>worker_id</dt><dd><code>{{ worker.worker_id }}</code></dd>
+    <dt>worker_id (minted)</dt><dd><code>{{ worker.worker_id }}</code></dd>
+    <dt>name</dt><dd>{% if worker.name %}{{ worker.name }}{% else %}—{% endif %}</dd>
     <dt>experiment_id</dt><dd><code>{{ worker.experiment_id }}</code></dd>
     <dt>registered_at</dt><dd>{{ worker.registered_at }}</dd>
     <dt>registered_by</dt><dd>{% if worker.registered_by %}<code>{{ worker.registered_by }}</code>{% else %}—{% endif %}</dd>

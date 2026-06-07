@@ -21,6 +21,8 @@ from eden_storage import InMemoryStore
 from eden_wire import make_app
 from fastapi.testclient import TestClient
 
+EXPERIMENT_ID = "exp_0123456789abcdefghjkmnpqrs"
+
 
 @pytest.fixture
 def bare_repo(tmp_path: Path) -> str:
@@ -33,14 +35,27 @@ def bare_repo(tmp_path: Path) -> str:
     return str(tmp_path)
 
 
+ADMIN_TOKEN = "test-executor-host-admin-token"
+
+
 def _store_via_testclient(
     store: InMemoryStore,
+    *,
+    bearer: str,
 ) -> tuple[object, TestClient]:
-    """Build a Store-compatible client backed by an in-process TestClient."""
+    """Build a Store-compatible client backed by an in-process TestClient.
+
+    Issue #128: worker ids are opaque/system-minted, so the auth-disabled
+    ``collapse-to-anonymous`` posture can no longer satisfy the §3.5
+    registration check (the literal ``"anonymous"`` cannot be registered as
+    an id). The wire therefore runs AUTH-ENABLED here: the executor loop
+    drives claim/submit through a per-worker ``<worker_id>:<token>`` bearer
+    whose minted id IS the claimant the server records.
+    """
     import httpx
     from eden_wire import StoreClient
 
-    app = make_app(store, subscribe_timeout=0.1)
+    app = make_app(store, subscribe_timeout=0.1, admin_token=ADMIN_TOKEN)
     test_client = TestClient(app)
 
     def _handler(request: httpx.Request) -> httpx.Response:
@@ -59,7 +74,10 @@ def _store_via_testclient(
     transport = httpx.MockTransport(_handler)
     http = httpx.Client(transport=transport, base_url="http://unused")
     client = StoreClient(
-        "http://unused", experiment_id=store.experiment_id, client=http
+        "http://unused",
+        experiment_id=store.experiment_id,
+        client=http,
+        bearer=bearer,
     )
     return client, test_client
 
@@ -97,25 +115,28 @@ def test_executor_host_multi_parent_commit(bare_repo: str) -> None:
 
     # Seed a store with one plan→idea(2 parents)→execution_task.
     store = InMemoryStore(
-        experiment_id="exp-mp",
+        experiment_id=EXPERIMENT_ID,
         evaluation_schema=EvaluationSchema({"loss": "real"}),
     )
-    # 12a-1 wave 5: §3.5 step-2 registration check. In auth-disabled
-    # mode (post-#148) the wire collapses every caller onto the
-    # ``anonymous`` sentinel, so register that id alongside the
-    # role-specific ones the test sets up. Tests that need per-worker
-    # identity must enable auth and authenticate per worker.
-    store.register_worker("anonymous")
-    store.register_worker("ideator-1")
-    store.register_worker("executor-1")
-    store.register_worker("executor-mp")
+    # Issue #128: worker_ids are now system-minted/opaque. §3.5 step-2
+    # registration check rejects unregistered claimants. The ideator
+    # claim/submit/accept below run directly against the store (so the
+    # minted ideator_id is the claimant); the executor loop drives its
+    # claim/submit through the AUTH-ENABLED wire, so register the
+    # executor worker WITH its token and pass a per-worker bearer whose
+    # minted id IS the claimant the server records.
+    _w, _ = store.register_worker(name="ideator-1")
+    ideator_id = _w.worker_id
+    _w, executor_token = store.register_worker(name="executor-mp")
+    executor_id = _w.worker_id
+    assert executor_token is not None
     from eden_contracts import Idea
 
     store.create_ideation_task("ideation-1")
-    claim = store.claim("ideation-1", "ideator-1")
+    claim = store.claim("ideation-1", ideator_id)
     idea = Idea(
         idea_id="p-mp",
-        experiment_id="exp-mp",
+        experiment_id=EXPERIMENT_ID,
         slug="merge-feat",
         priority=1.0,
         parent_commits=[sha_a, sha_b],
@@ -133,14 +154,16 @@ def test_executor_host_multi_parent_commit(bare_repo: str) -> None:
     store.accept("ideation-1")
     store.create_execution_task("execution-1", "p-mp")
 
-    client, http = _store_via_testclient(store)
+    client, http = _store_via_testclient(
+        store, bearer=f"{executor_id}:{executor_token}"
+    )
     stop = StopFlag()
 
     thread = threading.Thread(
         target=run_executor_loop,
         kwargs={
             "store": client,
-            "worker_id": "executor-mp",
+            "worker_id": executor_id,
             "repo_path": bare_repo,
             "fail_every": None,
             "poll_interval": 0.02,

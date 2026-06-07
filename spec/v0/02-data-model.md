@@ -10,7 +10,9 @@ Behavioral concerns — when fields may change, which transitions are permitted,
 
 ### 1.1 Identifiers
 
-Entity identifiers (`task_id`, `variant_id`, `idea_id`, `event_id`) are opaque strings. They MUST be unique within the store that issues them. The protocol does not mandate a specific format; implementations MAY use integers rendered as strings, UUIDs, or other opaque values, so long as equality comparison is well-defined.
+Entity identifiers (`task_id`, `variant_id`, `idea_id`, `event_id`) are opaque strings. They MUST be unique within the store that issues them. The protocol does not mandate a specific format for these four; implementations MAY use integers rendered as strings, UUIDs, or other opaque values, so long as equality comparison is well-defined.
+
+The three identity-carrying entities — **experiment**, **worker**, and **group** — carry a stronger contract: their ids are **opaque, system-minted, immutable** and MUST match the typed-prefix grammar in §1.6. Each of these three also carries an OPTIONAL operator-supplied **display name** (§1.7) that is purely a presentation affordance and is never used as a protocol reference. The id is the only thing the wire ever resolves against; names MAY collide and the protocol never resolves a name to a unique entity automatically.
 
 ### 1.2 Timestamps
 
@@ -38,6 +40,41 @@ Artifact locations are URIs. The protocol does not mandate a scheme; file URLs, 
 An `artifacts_uri` is **opaque** from the client's perspective: a client MUST NOT parse it for structure, MUST NOT assume it maps to a filesystem path or any other storage layout, and resolves it only through whatever fetch operation the issuing store exposes. The reference deployment issues `eden://artifacts/<opaque-id>` from a wire-level deposit and resolves it server-side through the chapter-7 artifact endpoints ([`07-wire-protocol.md`](07-wire-protocol.md) §16); this satisfies the "MUST document which schemes it issues" requirement above. (The `eden://` authority is role-disjoint here from the non-resolvable `eden://error/...` type URIs of [`07-wire-protocol.md`](07-wire-protocol.md) §9 — see [`docs/glossary.md`](../../docs/glossary.md).)
 
 The deployment-issued `artifacts_uri` on an idea or variant ([§5.1](#51-fields), [§9.1](#91-fields)) is **deployment-local**: a URI issued by deployment A is not expected to resolve in deployment B. Portable export/import normalizes references to the content-addressed `checkpoint:sha256:<hex>` form defined in [`10-checkpoints.md`](10-checkpoints.md) §7; consumers rewriting URIs across deployments MUST use that scheme rather than carrying deployment-local URIs across the wire.
+
+### 1.6 Opaque entity identifiers
+
+The `experiment_id`, `worker_id`, and `group_id` are **opaque, system-minted, immutable** identifiers. Each is a stable type-prefix, a `_` separator, and a 26-character lowercase Crockford base32 suffix:
+
+```text
+opaque-id           = type-prefix "_" base32-suffix
+type-prefix         = "exp" / "wkr" / "grp"
+base32-suffix       = 26 * CROCKFORD-B32-LOWER
+CROCKFORD-B32-LOWER = "0"-"9" / "a"-"h" / "j"-"k" / "m"-"n" / "p"-"t" / "v"-"z"
+```
+
+Equivalently, as anchored regular expressions: `^exp_[0-9a-hjkmnp-tv-z]{26}$` (experiment), `^wkr_[0-9a-hjkmnp-tv-z]{26}$` (worker), `^grp_[0-9a-hjkmnp-tv-z]{26}$` (group). The Crockford lowercase alphabet excludes `i`, `l`, `o`, and `u` to avoid visual ambiguity. The total length is 30 characters.
+
+An implementation MUST mint these ids itself; it MUST NOT accept an operator-supplied value for any of the three. The suffix is RECOMMENDED to be a ULID (a 48-bit millisecond timestamp followed by 80 bits of randomness) so that lexicographic order approximates creation order, but the protocol constrains only the grammar above, not the bit layout. The prefix excludes `:` so a `worker_id` round-trips safely through the bearer-credential separator in the reference HTTP binding ([`07-wire-protocol.md`](07-wire-protocol.md) §13.2).
+
+This grammar is the **canonical statement** of the worker / group / experiment identifier shape. Chapters [`03-roles.md`](03-roles.md), [`04-task-protocol.md`](04-task-protocol.md), [`07-wire-protocol.md`](07-wire-protocol.md), [`08-storage.md`](08-storage.md), [`09-conformance.md`](09-conformance.md), and [`11-control-plane.md`](11-control-plane.md) refer to it rather than restating a different grammar.
+
+Two composite identifier shapes appear on the wire and are defined here so the same parser is reused everywhere:
+
+- **actor identifier** — the deployment-admin principal or a worker: `^(admin|wkr_[0-9a-hjkmnp-tv-z]{26})$`. Used by attribution fields that credit a *caller* who MAY be the admin principal (`created_by`, `registered_by`, `reassigned_by`, `updated_by`, `terminated_by`). The literal `admin` is the deployment-admin bearer principal ([`07-wire-protocol.md`](07-wire-protocol.md) §13.1); no `worker_id` is minted for it.
+- **member / target identifier** — a worker or a group: `^(wkr|grp)_[0-9a-hjkmnp-tv-z]{26}$`. Used by `Task.target.id`, group `members[]`, and the ideator's `intended_executor` / `intended_evaluator` routing hints, where `target.kind` disambiguates worker from group.
+
+### 1.7 Display names
+
+A **display name** is an OPTIONAL, operator-supplied label on an experiment, worker, or group. It is presentation-only: pickers and dashboards render it, but the protocol never resolves a name to an entity. Names MAY collide within an entity kind.
+
+```text
+display-name    = 1*128 UNICODE-VISIBLE
+UNICODE-VISIBLE = %x21-7E / U+0080-+10FFFF except Cc, Cs, Cn, Co
+```
+
+In prose: 1 to 128 Unicode code points; no control characters (Unicode general category `Cc`); no surrogate, unassigned, or private-use code points (`Cs` / `Cn` / `Co`); no leading or trailing whitespace; not entirely whitespace; NFC-normalized at the wire boundary. A binding MUST reject an ill-formed name; the reference HTTP binding maps the rejection to 422 `eden://error/invalid-name` ([`07-wire-protocol.md`](07-wire-protocol.md) §6.1). Display names are **not** subject to the opaque-id grammar of §1.6 — they are free-form display strings.
+
+When omitted at create-time the entity has no name and display surfaces fall back to the bare opaque id.
 
 ## 2. Experiment config
 
@@ -101,6 +138,16 @@ Finally, the schema defines four optional implementation-tuning scalars, all imp
 
 ### 2.5 Experiment lifecycle state
 
+The experiment runtime object (schema: [`schemas/experiment.schema.json`](schemas/experiment.schema.json)) carries the experiment's identity alongside its lifecycle:
+
+| Field | Required | Type | Description |
+|---|---|---|---|
+| `experiment_id` | yes | string (§1.6, `exp_*`) | Opaque, system-minted, immutable. Allocated when the experiment is created; on import without an override the receiving experiment carries the receiver's own id (a fresh mint for a multi-experiment receiver, or its single configured id) — never the source manifest's id (see [`10-checkpoints.md`](10-checkpoints.md) §10). |
+| `name` | no | string (§1.7) | OPTIONAL operator-supplied display label. Presentation-only; never resolved as a reference. |
+| `state` | yes | string | The lifecycle value defined below. |
+| `created_at` | yes | timestamp | When the experiment runtime object was created. |
+| `imported_from` | no | object | Present only on imported experiments; see below. |
+
 The experiment runtime carries a `state` field independent of the declarative `experiment-config` (§2):
 
 | Value | Meaning |
@@ -125,8 +172,9 @@ The experiment runtime object additionally carries an optional `imported_from` f
 |---|---|---|---|
 | `checkpoint_exported_at` | yes | timestamp | The source checkpoint manifest's `exported_at` value, copied verbatim at import time ([`10-checkpoints.md`](10-checkpoints.md) §5). |
 | `checkpoint_format_version` | yes | string | The source checkpoint manifest's `checkpoint_format_version` value, copied verbatim at import time. |
+| `source_experiment_id` | yes (within `imported_from`) | string (§1.6, `exp_*`) | The export-side `experiment_id` recorded for provenance. REQUIRED whenever `imported_from` is present — the importer always stamps it from the source manifest (the recovery-probe of [`10-checkpoints.md`](10-checkpoints.md) §10 matches on it). The source id is preserved here, NOT reused as the imported experiment's primary key (the receiving experiment carries its own id, §1.6). |
 
-`imported_from` is absent (JSON null on the wire) on natively-created experiments and present on experiments produced by the portable-checkpoint import endpoint ([`07-wire-protocol.md`](07-wire-protocol.md) §14.2). The field is the recovery-probe anchor for [`10-checkpoints.md`](10-checkpoints.md) §10: a client that lost the import response queries `read_experiment` and compares `imported_from.checkpoint_exported_at` against the source manifest's `exported_at` to disambiguate "commit succeeded; response lost" from "commit never happened". The field is written exactly once (at import) and is immutable thereafter.
+`imported_from` is absent (JSON null on the wire) on natively-created experiments and present on experiments produced by the portable-checkpoint import endpoint ([`07-wire-protocol.md`](07-wire-protocol.md) §14.2). The field is the recovery-probe anchor for [`10-checkpoints.md`](10-checkpoints.md) §10: a client that lost the import response queries `read_experiment` and compares `imported_from`'s `(source_experiment_id, checkpoint_exported_at)` against the source manifest's `(experiment_id, exported_at)` to disambiguate "commit succeeded; response lost" from "commit never happened". The field is written exactly once (at import) and is immutable thereafter.
 
 The experiment runtime object additionally carries an optional `base_commit_sha` field (commit SHA, §1.4): the experiment seed — the single commit on `main` at experiment start. It is written at experiment registration / repo-init time (where the seed SHA is known) and is immutable thereafter. It is the authoritative, per-experiment source the orchestrator reads (via `read_experiment`) to create the seed baseline variant (§9.4) in both single- and multi-experiment modes; a single process-level input cannot carry a per-experiment seed. `base_commit_sha` is absent (never JSON null) on experiments registered before this field existed; an orchestrator that finds it absent skips baseline creation rather than failing. It round-trips through portable checkpoint export/import ([`10-checkpoints.md`](10-checkpoints.md) §5).
 
@@ -160,8 +208,8 @@ A task is a work item. It is persisted in the task store and advances through a 
 | `state` | yes | string | See §3.2. |
 | `payload` | yes | object | Kind-specific payload (§3.3). |
 | `target` | no | object | Constrains which workers may claim the task (§3.5). Absent (or absent + null is forbidden) means any registered worker matching `kind` may claim. |
-| `created_by` | no | string | Actor identifier of the caller that created the task (worker_id, the admin sentinel `admin`, or another deployment-defined actor). Preserved across the task's terminal transition. |
-| `submitted_by` | no | string (worker_id) | The claimant whose submission was committed. Written atomically with the `claimed → submitted` transition ([`04-task-protocol.md`](04-task-protocol.md) §4) and preserved across the terminal transitions that clear `claim`. |
+| `created_by` | no | string (§1.6 actor identifier) | The caller that created the task: a worker (`wkr_*`) or the admin sentinel `admin`. Preserved across the task's terminal transition. |
+| `submitted_by` | no | string (§1.6, `wkr_*`) | The claimant whose submission was committed. Written atomically with the `claimed → submitted` transition ([`04-task-protocol.md`](04-task-protocol.md) §4) and preserved across the terminal transitions that clear `claim`. |
 | `claim` | no | object | Present iff the task is currently claimed (§3.4). |
 | `created_at` | yes | timestamp | When the task was created. |
 | `updated_at` | yes | timestamp | Most recent state change. |
@@ -182,7 +230,7 @@ The `payload` object's shape depends on `kind`.
 
 | Field | Required | Type | Description |
 |---|---|---|---|
-| `worker_id` | yes | string (worker_id) | The claiming worker's registered identifier (§6). |
+| `worker_id` | yes | string (§1.6, `wkr_*`) | The claiming worker's registered identifier (§6). |
 | `claimed_at` | yes | timestamp | When the claim was issued. |
 | `expires_at` | no | timestamp | When the task store MAY reclaim. |
 
@@ -194,8 +242,8 @@ A `claim` object MUST NOT carry an opaque per-claim token. The pre-12a-1 `token`
 
 | Field | Required | Type | Description |
 |---|---|---|---|
-| `kind` | yes | string | Either `"worker"` or `"group"`. Tags the namespace `id` is drawn from so that worker- and group-id namespaces remain disambiguated even when they share the §6.1 grammar. |
-| `id` | yes | string (worker_id grammar; §6.1) | Names the specific worker (when `kind == "worker"`) or the group (when `kind == "group"`) the task is reserved for. |
+| `kind` | yes | string | Either `"worker"` or `"group"`. Tags which registry `id` is drawn from; the opaque type-prefix (`wkr_` vs `grp_`) already distinguishes the two, and `kind` records the routing intent. |
+| `id` | yes | string (§1.6 member identifier) | Names the specific worker (`wkr_*`, when `kind == "worker"`) or the group (`grp_*`, when `kind == "group"`) the task is reserved for. |
 
 If `target` is absent on a task, the task is **open**: any registered worker (§6) of the matching `kind` may claim. If `target.kind == "worker"`, only the named worker MAY claim. If `target.kind == "group"`, only workers transitively in that group (§7.2) MAY claim. Claim-time enforcement is specified in [`04-task-protocol.md`](04-task-protocol.md) §3.5.
 
@@ -247,7 +295,7 @@ An idea is the ideator's output.
 | `intended_executor` | no | object | OPTIONAL `Task.target`-shaped routing hint (§3.5). Names a worker or group the ideator suggests should execute this idea. When the orchestrator's `execution_dispatch` decision creates an execution task from this idea, it MUST copy `intended_executor` to `task.target` ([`03-roles.md`](03-roles.md) §6.2 decision-type 2); when omitted, the resulting task has `target` absent (open to any registered executor-class worker). Set at idea-creation time; not mutated thereafter. |
 | `intended_evaluator` | no | object | OPTIONAL `Task.target`-shaped routing hint (§3.5). Symmetric with `intended_executor`: names a worker or group the ideator suggests should evaluate variants produced from this idea. When the orchestrator's `evaluation_dispatch` decision creates an evaluation task from a variant, it MUST copy the originating idea's `intended_evaluator` to `task.target` ([`03-roles.md`](03-roles.md) §6.2 decision-type 3); when omitted, the resulting task has `target` absent (open to any registered evaluator-class worker). Set at idea-creation time; not mutated thereafter. |
 | `created_at` | yes | timestamp | When the idea was created. |
-| `created_by` | no | string (worker_id) | The ideator's `worker_id`. Written at idea-creation time by the ideator's host and preserved across the idea's terminal state. |
+| `created_by` | no | string (§1.6, `wkr_*`) | The ideator's `worker_id`. Written at idea-creation time by the ideator's host and preserved across the idea's terminal state. |
 
 ### 5.2 Parent commits
 
@@ -257,38 +305,37 @@ An idea is the ideator's output.
 
 Schema: [`schemas/worker.schema.json`](schemas/worker.schema.json).
 
-A **worker** is a registered identity that participates in the task protocol. The registry is **per-experiment**: each experiment owns a separate set of workers, and the same `worker_id` string in two experiments names two distinct registry entries. Cross-experiment worker identity is out of scope for v0.
+A **worker** is a registered identity that participates in the task protocol. The registry is **per-experiment**: each experiment owns a separate set of workers, and a worker registered in two experiments has two distinct, independently-minted `worker_id`s. Cross-experiment worker identity is out of scope for v0.
 
-### 6.1 Identifier grammar
+### 6.1 Identifier and name
 
-A `worker_id` MUST match the regular expression `^[a-z0-9][a-z0-9_-]{0,63}$`: at most 64 characters, lowercase alphanumeric plus `-` and `_`, with the first character drawn from `[a-z0-9]` (no leading hyphen, no leading underscore). Group identifiers (§7) follow the same grammar — the namespaces are independent (§3.5) but their string shapes are identical so the same parser can be reused.
+A `worker_id` is an opaque, system-minted, immutable identifier matching the `wkr_*` grammar of §1.6. The registry mints it at registration time; a caller MUST NOT supply it. A worker additionally carries an OPTIONAL operator-supplied `name` (§1.7), the display label an operator types when registering ("Eric (laptop)", "executor host 1"). Names MAY collide within an experiment; the registry never resolves a name to a unique worker.
 
-The grammar deliberately excludes characters that conflict with deployment-binding concerns: `:` is reserved for the bearer-credential separator in the reference HTTP binding ([`07-wire-protocol.md`](07-wire-protocol.md) §13.2); whitespace and URI-unsafe characters are excluded so that `worker_id` round-trips through HTTP request bodies, log fields, and ref names without escaping.
+The following **names** are reserved and MUST be rejected by `register_worker` (they carry deployment-role meaning, not worker identity):
 
-The following identifiers are **reserved** and MUST be rejected by the registry's write operations even though the grammar admits them:
-
-- `admin` — reserved for the admin authentication principal in the reference binding.
+- `admin` — the deployment-admin authentication principal in the reference binding ([`07-wire-protocol.md`](07-wire-protocol.md) §13.1). No `worker_id` is minted for it.
 - `system`, `internal` — reserved for future protocol use.
 
-A leading `_` (underscore) is excluded by the grammar above; the reservation rule is documentational. The reservations apply to both worker and group registrations.
+Reserved-name comparison is case-sensitive against the canonical NFC form of the name.
 
 ### 6.2 Fields
 
 | Field | Required | Type | Description |
 |---|---|---|---|
-| `worker_id` | yes | string (§6.1) | Operator-supplied identifier; unique within the experiment. |
-| `experiment_id` | yes | string | Names the experiment whose registry holds this worker. |
+| `worker_id` | yes | string (§1.6, `wkr_*`) | System-minted opaque identifier; unique within the experiment. |
+| `name` | no | string (§1.7) | OPTIONAL operator-supplied display label. Not a reserved name (§6.1). |
+| `experiment_id` | yes | string (§1.6, `exp_*`) | Names the experiment whose registry holds this worker. |
 | `registered_at` | yes | timestamp | When the worker's record was first created. |
-| `registered_by` | no | string | Actor identifier of the credential that performed the registration (typically the admin sentinel `admin`). |
+| `registered_by` | no | string (§1.6 actor identifier) | The caller that performed the registration (a worker `wkr_*` or the admin sentinel `admin`). |
 | `labels` | no | object | Free-form `string → string` map for deployment-defined metadata (e.g. `{"role": "executor", "model": "claude-opus-4-7"}`). The protocol does not interpret labels. |
 
 The wire-visible Worker shape MUST NOT carry the worker's authentication credential or any hash of it. Implementations that issue per-worker credentials store them in storage-private fields outside the schema; binding-layer specifications (e.g. [`07-wire-protocol.md`](07-wire-protocol.md) §13) define the credential format and exchange.
 
 ### 6.3 Registration discipline
 
-- `register_worker(worker_id, labels?)` is **idempotent on the existing record**: a second registration of an already-registered `worker_id` MUST return the existing record and MUST NOT issue or rotate any credential. This keeps service-restart-after-crash cheap.
-- A separate explicit operation (`reissue_credential` in the reference binding) rotates a worker's credential; conflating it with re-registration leaves credential-recovery flows ambiguous. The exact name and shape of the rotation operation is binding-defined.
-- A registration that violates §6.1 MUST be rejected. The two §6.1 violation modes raise distinct typed errors so a conforming binding can map them to different wire statuses: a grammar violation raises `InvalidPrecondition` ([`07-wire-protocol.md`](07-wire-protocol.md) §6.1 binds this to 400 `eden://error/bad-request`); a use of one of the reserved identifiers (`admin`, `system`, `internal`) raises `ReservedIdentifier` (chapter 07 §7 binds this to 409 `eden://error/reserved-identifier`).
+- `register_worker(name?, labels?)` **mints a fresh `worker_id` on every call** and returns it alongside a freshly-minted credential. Because names MAY collide and the id is system-allocated, there is no "idempotent re-registration by id": a service that must survive restart persists the `worker_id` it received at first registration and recovers its credential through the rotation operation below, rather than re-registering.
+- A separate explicit operation (`reissue_credential(worker_id)` in the reference binding) rotates a worker's credential. It takes the opaque `worker_id` and is the credential-recovery path for a restarting service.
+- A `register_worker` whose `name` is ill-formed (§1.7) raises `InvalidName` ([`07-wire-protocol.md`](07-wire-protocol.md) §6.1 binds this to 422 `eden://error/invalid-name`); a `name` equal to one of the reserved names (`admin`, `system`, `internal`) raises `ReservedIdentifier` (chapter 07 §7 binds this to 409 `eden://error/reserved-identifier`).
 
 ## 7. Groups
 
@@ -300,20 +347,16 @@ A **group** is a named, recursively-resolved set of workers and other groups wit
 
 | Field | Required | Type | Description |
 |---|---|---|---|
-| `group_id` | yes | string (§6.1 grammar) | Operator-supplied identifier; unique within the experiment. |
-| `experiment_id` | yes | string | Names the experiment whose registry holds this group. |
-| `members` | yes | array of string (§6.1 grammar) | Each member is either a registered `worker_id` or another `group_id` in the same experiment. The empty-list case is permitted; it produces a group that no worker satisfies. |
+| `group_id` | yes | string (§1.6, `grp_*`) | System-minted opaque identifier; unique within the experiment. |
+| `name` | no | string (§1.7) | OPTIONAL operator-supplied display label. Reserved names (§7.5) MUST NOT be registered by an ordinary `register_group` call. |
+| `experiment_id` | yes | string (§1.6, `exp_*`) | Names the experiment whose registry holds this group. |
+| `members` | yes | array of string (§1.6 member identifier) | Each member is a `wkr_*` worker id or a `grp_*` group id in the same experiment. The empty-list case is permitted; it produces a group that no worker satisfies. |
 | `created_at` | yes | timestamp | When the group was created. |
-| `created_by` | no | string | Actor identifier of the caller that created the group (typically `admin`). |
+| `created_by` | no | string (§1.6 actor identifier) | The caller that created the group (a worker `wkr_*` or the admin sentinel `admin`). |
 
-A group member named in `members` need not exist at write time; the resolver in §7.2 simply walks names. A reference to a non-existent worker / group resolves to membership=false.
+A group member named in `members` need not exist at write time; the resolver in §7.2 simply walks ids. A reference to a non-existent worker / group resolves to membership=false.
 
-**Worker / group namespaces MUST be disjoint within an experiment.** Because group `members` are untagged strings, the resolver in §7.2 would otherwise have to guess whether a name resolves through the worker registry (terminal leaf) or the group registry (recursive descent). To eliminate that ambiguity, a conforming registry MUST reject:
-
-- a `register_worker(id)` when `id` already names a registered group, and
-- a `register_group(id, …)` when `id` already names a registered worker.
-
-The rejection MUST surface as `eden://error/already-exists` (the existing wire mapping for duplicate-registration at the cross-namespace level). Implementations MAY use any equivalent typed error at the Store layer.
+**Worker and group ids are structurally disjoint.** Because §1.6 mints workers under the `wkr_` prefix and groups under the `grp_` prefix, a `worker_id` can never equal a `group_id`, and the resolver in §7.2 reads the prefix to decide whether a member id resolves through the worker registry (terminal leaf, `wkr_*`) or the group registry (recursive descent, `grp_*`). The prior operator-typed grammar required an explicit cross-namespace collision check at registration; with system-minted prefixed ids that collision is impossible by construction.
 
 ### 7.2 Membership resolution
 
@@ -332,16 +375,16 @@ The set of group definitions in an experiment forms a directed graph whose edges
 
 The protocol does not define any default-membership groups (`humans`, `agents`, etc.). A deployment that wants such groups MUST register them explicitly. This keeps the protocol policy-free.
 
-### 7.5 Reserved group identifiers
+### 7.5 Reserved group names
 
-Some group names carry protocol-defined semantics that pin authority on specific operations ([`07-wire-protocol.md`](07-wire-protocol.md) §13.3, [`03-roles.md`](03-roles.md) §6). A conforming deployment MUST treat the following reserved names as the protocol contract specifies them; the names MUST NOT be repurposed for operator-defined groups with unrelated semantics:
+Some group **names** carry protocol-defined semantics that pin authority on specific operations ([`07-wire-protocol.md`](07-wire-protocol.md) §13.3, [`03-roles.md`](03-roles.md) §6). A conforming deployment MUST treat the following reserved names as the protocol contract specifies them; the names MUST NOT be repurposed for operator-defined groups with unrelated semantics:
 
 | Name | Protocol semantics |
 |---|---|
 | `admins` | Members hold authority over reassignment ([`04-task-protocol.md`](04-task-protocol.md) §6), dispatch-mode updates ([`04-task-protocol.md`](04-task-protocol.md) §7), and operator-driven task creation per [`03-roles.md`](03-roles.md) §6.5. A deployment SHOULD seed at least one worker into this group at experiment creation; an empty `admins` group makes the affected ops uncallable. |
 | `orchestrators` | Members are the auto-orchestrator instances participating in the role contract ([`03-roles.md`](03-roles.md) §6). The auto-orchestrator's own `worker_id` is in this group; a deployment running zero auto-orchestrators MAY leave it empty. |
 
-The protocol reserves the **names**, not the **membership**: a deployment registers each reserved group explicitly via `register_group` (the registry treats reserved names like any other group identifier — `add_to_group` / `remove_from_group` / `delete_group` all apply). The reservation prevents an operator from registering, say, a group named `admins` that means something different, then being surprised when authority enforcement uses the name as documented above. The §3.5 `Task.target` resolver and the §7.2 transitive-membership walk treat reserved-name groups exactly like any other group.
+The protocol reserves the **names**, not the **membership**, and resolves authority by these names — not by any fixed id. Because group ids are system-minted (§1.6), a deployment creates each reserved group with a system-minted `grp_*` id whose `name` equals the reserved literal (`admins` / `orchestrators`); the auto-orchestrator and authority gates look the group up **by reserved name** at startup and use the resolved opaque id thereafter. The reserved-group create is performed at experiment creation (setup) through a privileged path; once a reserved group exists, an ordinary `register_group(name="admins")` MUST be rejected with `ReservedIdentifier` (the name is taken). The §3.5 `Task.target` resolver and the §7.2 transitive-membership walk treat reserved-name groups exactly like any other group; `add_to_group` / `remove_from_group` / `delete_group` all apply by the group's opaque id.
 
 ## 8. Evaluation schema
 
@@ -371,8 +414,8 @@ A variant is one completed attempt.
 
 | Field | Required | Type | Description |
 |---|---|---|---|
-| `variant_id` | yes | string | Unique identifier. |
-| `experiment_id` | yes | string | The experiment this variant belongs to. |
+| `variant_id` | yes | string | Unique identifier (opaque; §1.1). |
+| `experiment_id` | yes | string (§1.6, `exp_*`) | The experiment this variant belongs to. |
 | `kind` | no | string | Variant classifier. Absent (the default) for ordinary executor-produced variants. `"baseline"` marks the experiment seed elevated to a first-class variant (§9.4). |
 | `idea_id` | conditional | string | The idea that produced this variant. REQUIRED for every variant except a `kind == "baseline"` variant, which MAY omit it (the seed has no producing idea; §9.4, §10 invariant 2). |
 | `status` | yes | string | One of `"starting"`, `"success"`, `"error"`, `"evaluation_error"`. |
@@ -386,8 +429,8 @@ A variant is one completed attempt.
 | `evaluation` | no | object | Evaluation payload; shape dictated by the experiment's evaluation schema. |
 | `started_at` | yes | timestamp | When the executor began. |
 | `completed_at` | no | timestamp | Set when the variant reaches a terminal status. Written exactly once by the orchestrator, atomically with the transition from `"starting"` to `"success"`, `"error"`, or `"evaluation_error"` (see [`04-task-protocol.md`](04-task-protocol.md) §4.3 and [`03-roles.md`](03-roles.md) §4.4). |
-| `executed_by` | no | string (worker_id) | The executor's `worker_id`; written at execution-task submit time (atomically with the variant's status transition out of `"starting"`). |
-| `evaluated_by` | no | string (worker_id) | The evaluator's `worker_id` whose evaluation was committed; written at evaluation-task submit time. |
+| `executed_by` | no | string (§1.6, `wkr_*`) | The executor's `worker_id`; written at execution-task submit time (atomically with the variant's status transition out of `"starting"`). |
+| `evaluated_by` | no | string (§1.6, `wkr_*`) | The evaluator's `worker_id` whose evaluation was committed; written at evaluation-task submit time. |
 
 ### 9.2 Evaluation payload
 

@@ -16,11 +16,11 @@ from conftest import (
     EXPERIMENT_ID,
     SESSION_SECRET,
     SHARED_TOKEN,
-    WORKER_ID,
     _config,
     _now,
     _one_experiment_factory,
     get_csrf,
+    web_ui_worker_id,
 )
 from eden_storage import InMemoryStore
 from eden_web_ui import make_app
@@ -45,7 +45,7 @@ class TestCookieAttributes:
             store_factory=_one_experiment_factory(store),
             experiment_id=EXPERIMENT_ID,
             experiment_config=_config(),
-            worker_id=WORKER_ID,
+            worker_id=web_ui_worker_id(store),
             session_secret=SESSION_SECRET,
             claim_ttl_seconds=3600,
             artifacts_dir=artifacts_dir,
@@ -71,7 +71,7 @@ class TestBearerLeak:
             store_factory=_one_experiment_factory(store),
             experiment_id=EXPERIMENT_ID,
             experiment_config=_config(),
-            worker_id=WORKER_ID,
+            worker_id=web_ui_worker_id(store),
             session_secret=SESSION_SECRET,
             claim_ttl_seconds=3600,
             artifacts_dir=artifacts_dir,

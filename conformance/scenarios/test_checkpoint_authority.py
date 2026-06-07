@@ -20,12 +20,12 @@ import subprocess
 import sys
 import threading
 import time
-import uuid
 from collections.abc import Iterator
 from pathlib import Path
 
 import httpx
 import pytest
+from conformance.harness.identity import mint_experiment_id
 
 pytestmark = pytest.mark.conformance
 
@@ -100,7 +100,7 @@ def _read_port_announcement(proc: subprocess.Popen[str]) -> int:
 
 @pytest.fixture
 def auth_server(tmp_path: Path) -> Iterator[dict[str, str]]:
-    experiment_id = f"auth-cp-{uuid.uuid4().hex[:8]}"
+    experiment_id = mint_experiment_id()
     admin_token = secrets.token_hex(24)
     cfg_copy = tmp_path / "experiment-config.yaml"
     shutil.copyfile(_EXPERIMENT_CONFIG, cfg_copy)
@@ -160,12 +160,15 @@ def test_export_worker_bearer_rejected(auth_server: dict[str, str]) -> None:
         reg = c.post(
             f"/v0/experiments/{auth_server['experiment_id']}/workers",
             headers={"X-Eden-Experiment-Id": auth_server["experiment_id"]},
-            json={"worker_id": "no-export-w"},
+            json={"name": "no-export-w"},
         )
         reg.raise_for_status()
+        # The server mints the opaque ``wkr_*`` id (#128); the bearer is
+        # the minted id, not the supplied display name.
+        worker_id = reg.json()["worker_id"]
         worker_token = reg.json()["registration_token"]
 
-    with _client(auth_server, bearer=f"no-export-w:{worker_token}") as c:
+    with _client(auth_server, bearer=f"{worker_id}:{worker_token}") as c:
         resp = c.post(
             f"/v0/experiments/{auth_server['experiment_id']}/checkpoint",
             headers={"X-Eden-Experiment-Id": auth_server["experiment_id"]},
@@ -193,12 +196,15 @@ def test_read_experiment_worker_bearer_accepted(
         reg = c.post(
             f"/v0/experiments/{auth_server['experiment_id']}/workers",
             headers={"X-Eden-Experiment-Id": auth_server["experiment_id"]},
-            json={"worker_id": "read-experiment-w"},
+            json={"name": "read-experiment-w"},
         )
         reg.raise_for_status()
+        # The server mints the opaque ``wkr_*`` id (#128); the bearer is
+        # the minted id, not the supplied display name.
+        worker_id = reg.json()["worker_id"]
         worker_token = reg.json()["registration_token"]
 
-    with _client(auth_server, bearer=f"read-experiment-w:{worker_token}") as c:
+    with _client(auth_server, bearer=f"{worker_id}:{worker_token}") as c:
         resp = c.get(
             f"/v0/experiments/{auth_server['experiment_id']}",
             headers={"X-Eden-Experiment-Id": auth_server["experiment_id"]},

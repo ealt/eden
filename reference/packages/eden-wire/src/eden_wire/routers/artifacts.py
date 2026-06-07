@@ -105,8 +105,13 @@ def _authorize_fetch(deps: RouterDeps, request: Request, created_by: str) -> Non
     assert principal.worker_id is not None
     if principal.worker_id == created_by:
         return
-    if deps.store.resolve_worker_in_group(principal.worker_id, "admins"):
-        return
+    # Since the #128 identity rename, group ids are minted `grp_*`; the
+    # `admins` authority group is identified by its reserved display NAME.
+    # Resolve the name to its minted group_id (mirrors
+    # `_dependencies.enforce_in_any_group`) before the membership check.
+    for group in deps.store.list_groups(name="admins"):
+        if deps.store.resolve_worker_in_group(principal.worker_id, group.group_id):
+            return
     raise Forbidden(
         f"worker {principal.worker_id!r} may not fetch an artifact deposited "
         f"by {created_by!r} (§16.2: depositor or admin-class only)"

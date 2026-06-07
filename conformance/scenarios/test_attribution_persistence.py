@@ -42,7 +42,7 @@ def test_task_submitted_by_persists_across_completed(
     _seed.accept(wire_client, tid)
     task = _seed.read_task(wire_client, tid)
     assert task["state"] == "completed"
-    assert task.get("submitted_by") == wid
+    assert task.get("submitted_by") == wire_client.worker_id_for(wid)
 
 
 def test_task_submitted_by_persists_across_failed(
@@ -57,7 +57,7 @@ def test_task_submitted_by_persists_across_failed(
     _seed.reject(wire_client, tid, reason="validation_error")
     task = _seed.read_task(wire_client, tid)
     assert task["state"] == "failed"
-    assert task.get("submitted_by") == wid
+    assert task.get("submitted_by") == wire_client.worker_id_for(wid)
 
 
 def test_variant_executed_by_written_on_implement_accept(
@@ -89,7 +89,7 @@ def test_variant_executed_by_written_on_implement_accept(
     assert 200 <= r.status_code < 300, r.text
     _seed.accept(wire_client, exec_tid)
     variant = _seed.read_variant(wire_client, variant_id)
-    assert variant.get("executed_by") == executor
+    assert variant.get("executed_by") == wire_client.worker_id_for(executor)
 
 
 def test_variant_evaluated_by_written_on_evaluate_accept(
@@ -111,4 +111,4 @@ def test_variant_evaluated_by_written_on_evaluate_accept(
     _seed.accept(wire_client, eval_tid)
     variant = _seed.read_variant(wire_client, variant_id)
     assert variant.get("status") == "success"
-    assert variant.get("evaluated_by") == evaluator
+    assert variant.get("evaluated_by") == wire_client.worker_id_for(evaluator)

@@ -16,7 +16,8 @@ live in the ``_ops/`` mixin family (issue #114, plan
   ``_event`` / ``_ts`` / ``_maybe_ts`` helpers, the cross-resource
   read-side predicates (``_require_*`` /
   ``_find_starting_variant_for_implement_task`` /
-  ``_validate_registry_id``), and the backend-primitive declarations
+  ``_validate_display_name`` / ``_validate_member_id`` /
+  ``_validate_actor_id``), and the backend-primitive declarations
   every backend overrides. Each mixin in ``_ops/`` inherits this class.
 - ``_StoreBase`` — the composite that flattens the mixin MRO atop
   ``_StoreCore``. It owns no methods of its own; the public surface
@@ -71,10 +72,12 @@ from eden_contracts import (
     Variant,
     Worker,
 )
+from eden_contracts._common import _check_display_name
 
 from .errors import (
     AlreadyExists,
     IllegalTransition,
+    InvalidName,
     InvalidPrecondition,
     NotFound,
     ReservedIdentifier,
@@ -83,12 +86,27 @@ from .submissions import (
     Submission,
 )
 
-# Reserved identifiers that MUST be rejected by `register_worker` /
-# `register_group` even though the id grammar admits them. See
-# [`spec/v0/02-data-model.md`](../../../../spec/v0/02-data-model.md) §6.1.
-RESERVED_IDENTIFIERS: frozenset[str] = frozenset({"admin", "system", "internal"})
+# Reserved *names* (NAME-space, case-sensitive against NFC form) that
+# MUST be rejected by `register_worker` / `register_group` even though
+# the display-name grammar admits them. Reserved values moved from
+# id-space to name-space in the identity rename (issue #128): opaque
+# ids are minted by the store, so they can never collide with a
+# reserved literal — the collision surface is the operator-supplied
+# `name`. See [`spec/v0/02-data-model.md`](../../../../spec/v0/02-data-model.md)
+# §1.7 / §7.
+#
+# The deployment-admin bearer principal stays the literal token
+# ``admin`` and is NOT a registered worker; rejecting ``admin`` as a
+# worker *name* keeps the display label from shadowing that principal.
+RESERVED_WORKER_NAMES: frozenset[str] = frozenset({"admin", "system", "internal"})
+RESERVED_GROUP_NAMES: frozenset[str] = frozenset({"admins", "orchestrators"})
 
-_WORKER_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+# Member-id grammar (a worker OR a group opaque id) used by
+# add-group-member / register_group member validation. The §7.1
+# disjoint-namespaces collision is now structurally impossible (ids
+# are minted disjoint by prefix); this regex only checks shape.
+_MEMBER_ID_RE = re.compile(r"^(wkr|grp)_[0-9a-hjkmnp-tv-z]{26}$")
+_ACTOR_ID_RE = re.compile(r"^(admin|wkr_[0-9a-hjkmnp-tv-z]{26})$")
 
 # Live task states for the 12a-2 §6.4 at-most-one-live invariants.
 # A task in any of these states is "in-flight" and blocks a second
@@ -214,7 +232,8 @@ class _StoreCore:
     Owns ``__init__``, the event-id factory, the ``_event`` /
     ``_ts`` / ``_maybe_ts`` helpers, the cross-resource read-side
     predicates (``_require_*`` / ``_find_starting_variant_for_implement_task``
-    / ``_validate_registry_id``), and the backend-primitive
+    / ``_validate_display_name`` / ``_validate_member_id`` /
+    ``_validate_actor_id``), and the backend-primitive
     declarations every backend overrides (``_get_*`` / ``_iter_*`` /
     ``_atomic_operation`` / ``_apply_commit`` / ``_get_dispatch_mode``
     / ``_get_experiment``). Each per-resource mixin in ``_ops/``
@@ -230,6 +249,7 @@ class _StoreCore:
         self,
         experiment_id: str,
         *,
+        name: str | None = None,
         evaluation_schema: EvaluationSchema | None = None,
         now: Callable[[], datetime] | None = None,
         event_id_factory: Callable[[], str] | None = None,
@@ -237,6 +257,13 @@ class _StoreCore:
         base_commit_sha: str | None = None,
     ) -> None:
         self._experiment_id = experiment_id
+        # Optional operator-supplied display label for the experiment
+        # (issue #128). ``experiment_id`` is supplied externally (minted
+        # at setup in a later wave); the store only persists + reads
+        # back the name on the wire-visible ``Experiment``. Set ONLY on
+        # first creation of the experiment row; ignored on reopen (the
+        # persisted name wins, mirroring evaluation_schema immutability).
+        self._experiment_name = name
         self._evaluation_schema = evaluation_schema
         # Experiment seed commit (`02-data-model.md` §2.5). Recorded at
         # construction for natively-created experiments; the orchestrator
@@ -498,19 +525,60 @@ class _StoreCore:
                 return variant
         return None
 
-    def _validate_registry_id(self, value: str, *, kind: str) -> None:
-        """Reject reserved or grammar-violating ids.
+    def _validate_display_name(self, name: str, *, kind: str) -> None:
+        """Validate an operator-supplied display ``name`` (issue #128).
 
-        ``kind`` differentiates "worker", "group", "member" only for
-        the error message; all three share the §6.1 grammar.
+        ``kind`` is ``"worker"`` or ``"group"`` and selects the reserved-
+        name set. Runs the shared NFC / length / whitespace / category
+        validator from ``eden_contracts._common`` (the canonical
+        display-name grammar in
+        [`spec/v0/02-data-model.md`](../../../../spec/v0/02-data-model.md)
+        §1.7); a grammar violation raises ``InvalidName`` (the wire binds
+        it to 422 ``eden://error/invalid-name``). A well-formed name that
+        matches a reserved literal raises ``ReservedIdentifier`` (409
+        ``eden://error/reserved-identifier``).
+
+        ``None`` is a no-op — name is optional; the store mints the
+        opaque id regardless.
         """
-        if value in RESERVED_IDENTIFIERS:
+        try:
+            _check_display_name(name)
+        except ValueError as exc:
+            raise InvalidName(
+                f"{kind} name {name!r} is not a well-formed display name: {exc}"
+            ) from exc
+        reserved = (
+            RESERVED_WORKER_NAMES if kind == "worker" else RESERVED_GROUP_NAMES
+        )
+        if name in reserved:
             raise ReservedIdentifier(
-                f"{kind} id {value!r} is reserved by the protocol"
+                f"{kind} name {name!r} is reserved by the protocol"
             )
-        if not _WORKER_ID_RE.fullmatch(value):
+
+    def _validate_member_id(self, value: str) -> None:
+        """Reject a member id that is not a well-formed opaque ``wkr_*``/``grp_*``.
+
+        Used by ``register_group`` / ``add_to_group`` to validate the
+        shape of each member reference (the §7.1 disjoint-namespaces
+        collision is now structurally impossible — ids are minted
+        disjoint by prefix — so this is a shape check only). Member
+        *existence* is enforced by the caller's cross-namespace resolve.
+        """
+        if not _MEMBER_ID_RE.fullmatch(value):
             raise InvalidPrecondition(
-                f"{kind} id {value!r} does not match the §6.1 grammar"
+                f"member id {value!r} does not match the wkr_*/grp_* opaque grammar"
+            )
+
+    def _validate_actor_id(self, value: str, *, kind: str) -> None:
+        """Reject an actor id that is not ``admin`` or a well-formed ``wkr_*``.
+
+        Used by the ``terminated_by`` / ``updated_by`` / ``reassigned_by``
+        fields (ActorId = ``admin`` | opaque ``wkr_*``); see the contract
+        §10 actor-id mapping.
+        """
+        if not _ACTOR_ID_RE.fullmatch(value):
+            raise InvalidPrecondition(
+                f"{kind} {value!r} does not match the admin|wkr_* actor grammar"
             )
 
 

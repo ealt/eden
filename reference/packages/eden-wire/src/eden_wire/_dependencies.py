@@ -96,7 +96,7 @@ def enforce_worker(deps: RouterDeps, request: Request) -> None:
 
 
 def enforce_in_any_group(
-    deps: RouterDeps, request: Request, group_ids: tuple[str, ...]
+    deps: RouterDeps, request: Request, group_names: tuple[str, ...]
 ) -> str:
     """Worker-gated route guard plus group-membership check (§3.7).
 
@@ -104,10 +104,17 @@ def enforce_in_any_group(
     rejected — these endpoints exist for operator workflows that the
     deployment surfaces through registered workers in ``admins`` /
     ``orchestrators``; the literal ``admin`` principal is a
-    bootstrap-only identity for registry mgmt per 12a-1 §D.5). Then
-    checks the worker's transitive membership in any of ``group_ids`` via
-    ``Store.resolve_worker_in_group``; membership in ANY listed group
-    passes (OR semantics).
+    bootstrap-only identity for registry mgmt per 12a-1 §D.5).
+
+    Since the identity rename (#128), group ids are opaque, system-minted
+    ``grp_*`` values; the authority groups are identified by their
+    reserved display NAME (``admins`` / ``orchestrators``). This guard
+    resolves each reserved name to its minted ``group_id`` via
+    ``Store.list_groups(name=...)`` and then checks the worker's
+    transitive membership via ``Store.resolve_worker_in_group``;
+    membership in ANY named group passes (OR semantics). A reserved
+    group that has not been created yet resolves to no id and simply
+    contributes no membership.
 
     Returns the authenticated worker_id on success so the caller can
     stamp attribution fields (``reassigned_by`` / ``updated_by``).
@@ -122,10 +129,13 @@ def enforce_in_any_group(
         return "anonymous"
     principal = require_worker(request)
     assert principal.worker_id is not None
-    for gid in group_ids:
-        if deps.store.resolve_worker_in_group(principal.worker_id, gid):
-            return principal.worker_id
-    groups_str = " or ".join(repr(g) for g in group_ids)
+    for group_name in group_names:
+        for group in deps.store.list_groups(name=group_name):
+            if deps.store.resolve_worker_in_group(
+                principal.worker_id, group.group_id
+            ):
+                return principal.worker_id
+    groups_str = " or ".join(repr(g) for g in group_names)
     raise Forbidden(
         f"endpoint requires membership in {groups_str}; worker "
         f"{principal.worker_id!r} is not a transitive member"

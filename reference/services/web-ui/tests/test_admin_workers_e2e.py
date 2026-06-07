@@ -105,7 +105,8 @@ def test_admin_workers_register_and_authenticate(tmp_path: Path) -> None:
     artifacts_dir.mkdir()
     credentials_dir = tmp_path / "credentials"
     credentials_dir.mkdir()
-    experiment_id = "exp-admin-workers-e2e"
+    # Identity rename (#128): the experiment id is opaque.
+    experiment_id = "exp_0123456789abcdefghjkmnpqrs"
     admin_token = "z" * 64
     logs_dir = tmp_path / "logs"
     logs_dir.mkdir()
@@ -134,6 +135,37 @@ def test_admin_workers_register_and_authenticate(tmp_path: Path) -> None:
     server_port = _read_port(server_log, server, _TASK_STORE_RE)
     task_store_url = f"http://127.0.0.1:{server_port}"
 
+    # Identity rename (#128): the web-ui worker id is minted by the
+    # server, not supplied by the operator. setup-experiment normally
+    # mints it; here we mint it via the admin StoreClient, persist its
+    # credential so the web-ui's startup bootstrap finds it, and add it
+    # to the (reserved) admins group so the /admin/* gate admits it.
+    from eden_service_common.auth import credential_path
+    from eden_wire import StoreClient
+
+    admin = StoreClient(
+        base_url=task_store_url,
+        experiment_id=experiment_id,
+        bearer=f"admin:{admin_token}",
+    )
+    try:
+        ui_worker, ui_token = admin.register_worker(
+            "ui-admin-workers", labels={"role": "web-ui"}
+        )
+        ui_worker_id = ui_worker.worker_id
+        assert ui_token is not None
+        # Persist the web-ui worker credential where the host bootstrap
+        # looks for it (``<credentials_dir>/<experiment_id>/<wkr>.token``).
+        exp_cred_dir = credentials_dir / experiment_id
+        exp_cred_dir.mkdir(parents=True, exist_ok=True)
+        credential_path(exp_cred_dir, ui_worker_id).write_text(ui_token)
+        admins = admin.register_group(
+            "admins", members=[ui_worker_id], allow_reserved=True
+        )
+        assert admins.group_id  # minted
+    finally:
+        admin.close()
+
     web_ui_log = logs_dir / "web-ui.log"
     web_ui = _spawn(
         [
@@ -147,7 +179,7 @@ def test_admin_workers_register_and_authenticate(tmp_path: Path) -> None:
             "--session-secret",
             "z" * 32,
             "--worker-id",
-            "ui-admin-workers",
+            ui_worker_id,
             "--admin-token",
             admin_token,
             "--credentials-dir",
@@ -172,27 +204,6 @@ def test_admin_workers_register_and_authenticate(tmp_path: Path) -> None:
     }
 
     try:
-        # Issue #144: /admin/* in the web-ui gates on admins-group
-        # membership. Add the web-ui's worker (registered by
-        # resolve_worker_bearer during startup, completed before the
-        # listening announcement) to `admins`.
-        import contextlib
-
-        from eden_storage.errors import AlreadyExists
-        from eden_wire import StoreClient
-
-        admin = StoreClient(
-            base_url=task_store_url,
-            experiment_id=experiment_id,
-            bearer=f"admin:{admin_token}",
-        )
-        try:
-            with contextlib.suppress(AlreadyExists):
-                admin.register_group("admins")
-            admin.add_to_group("admins", "ui-admin-workers")
-        finally:
-            admin.close()
-
         with httpx.Client(base_url=web_url, timeout=10.0) as ui:
             # Sign in to get a session + CSRF.
             resp = ui.post("/signin", follow_redirects=False)
@@ -204,14 +215,14 @@ def test_admin_workers_register_and_authenticate(tmp_path: Path) -> None:
             assert m is not None
             csrf = m.group(1)
 
-            # Register a fresh worker through the UI.
-            new_worker_id = "e2e-new-worker"
+            # Register a fresh worker through the UI by NAME; the server
+            # mints the opaque worker_id (#128).
             resp = ui.post(
                 "/admin/workers/",
                 content=urlencode(
                     {
                         "csrf_token": csrf,
-                        "worker_id": new_worker_id,
+                        "name": "e2e-new-worker",
                         "labels": "role=ideator",
                     }
                 ),
@@ -223,7 +234,11 @@ def test_admin_workers_register_and_authenticate(tmp_path: Path) -> None:
                     f"register returned {resp.status_code}: {resp.text}\n"
                     + _dump_logs(procs_logs)
                 )
-            # Extract the one-shot token from the response HTML.
+            # Extract the minted worker_id + the one-shot token from the
+            # token page HTML.
+            wid_m = re.search(r"<code>(wkr_[0-9a-hjkmnp-tv-z]{26})</code>", resp.text)
+            assert wid_m is not None, "token page did not render the minted id"
+            new_worker_id = wid_m.group(1)
             tok_m = re.search(
                 r'<code class="token">([^<]+)</code>', resp.text
             )
@@ -241,7 +256,7 @@ def test_admin_workers_register_and_authenticate(tmp_path: Path) -> None:
             bearer=f"{new_worker_id}:{token}",
         )
         try:
-            assert verify.whoami() == new_worker_id
+            assert verify.whoami().worker_id == new_worker_id
         finally:
             verify.close()
 
@@ -290,7 +305,7 @@ def test_admin_workers_register_and_authenticate(tmp_path: Path) -> None:
             bearer=f"{new_worker_id}:{new_token}",
         )
         try:
-            assert new_client.whoami() == new_worker_id
+            assert new_client.whoami().worker_id == new_worker_id
         finally:
             new_client.close()
     finally:

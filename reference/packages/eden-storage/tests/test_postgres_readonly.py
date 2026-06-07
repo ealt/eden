@@ -36,7 +36,7 @@ import pytest
 
 psycopg = pytest.importorskip("psycopg")
 
-from eden_contracts import EvaluationSchema  # noqa: E402
+from eden_contracts import EvaluationSchema, mint_opaque_id  # noqa: E402
 from eden_storage import PostgresStore, ensure_readonly_role  # noqa: E402
 from psycopg import sql  # noqa: E402
 
@@ -86,7 +86,7 @@ def store_dsn(schema_dsn: tuple[str, str]) -> tuple[str, str]:
     """Initialize a PostgresStore against the test schema."""
     schema, scoped_dsn = schema_dsn
     store = PostgresStore(
-        experiment_id="exp-ro-test",
+        experiment_id=mint_opaque_id("exp"),
         dsn=scoped_dsn,
         evaluation_schema=EvaluationSchema({"loss": "real"}),
     )

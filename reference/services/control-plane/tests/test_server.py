@@ -7,6 +7,12 @@ state is isolated. Covers:
 - All 19 chapter-07 §15 endpoints (request shape + happy path).
 - Auth gates (admin-only / worker-only / either / orchestrators-group).
 - Error vocabulary on every chapter-11 §4.5 lease failure mode.
+
+Identity rename (#128): experiments / workers / groups are
+system-minted opaque ids; the caller supplies only an optional display
+``name``. Reserved values (worker ``admin``/``system``/``internal``,
+group ``admins``/``orchestrators``) live in name-space. Lease holders
+are opaque ``wkr_*`` ids.
 """
 
 from __future__ import annotations
@@ -32,6 +38,25 @@ def client_noauth(store: InMemoryControlPlaneStore) -> Iterator[TestClient]:
         yield c
 
 
+def _register_experiment(
+    client: TestClient, config_uri: str = "https://x.test/c.yaml"
+) -> str:
+    """Register an experiment (server mints the id); return the minted exp_*."""
+    r = client.post(
+        "/v0/control/experiments", json={"config_uri": config_uri}
+    )
+    assert r.status_code == 201, r.text
+    return r.json()["experiment_id"]
+
+
+def _register_worker(client: TestClient, name: str | None = None) -> str:
+    """Register a worker (server mints the id); return the minted wkr_*."""
+    body = {"name": name} if name is not None else {}
+    r = client.post("/v0/control/workers", json=body)
+    assert r.status_code == 200, r.text
+    return r.json()["worker_id"]
+
+
 # ---------------------------------------------------------------------
 # Experiment registry
 # ---------------------------------------------------------------------
@@ -51,105 +76,46 @@ def test_healthz_unauthenticated_ok() -> None:
 def test_register_experiment_creates_201(client_noauth: TestClient) -> None:
     r = client_noauth.post(
         "/v0/control/experiments",
-        json={"experiment_id": "exp-1", "config_uri": "https://x.test/c.yaml"},
+        json={"config_uri": "https://x.test/c.yaml", "name": "My Run"},
     )
     assert r.status_code == 201
     body = r.json()
-    assert body["experiment_id"] == "exp-1"
+    # Server mints the opaque exp_* id.
+    assert body["experiment_id"].startswith("exp_")
+    assert body["name"] == "My Run"
     assert body["last_known_state"] == "running"
-    # Codex round 7 MINOR: §4.4 requires `lease` present-and-null.
+    # §4.4 requires `lease` present-and-null.
     assert "lease" in body
     assert body["lease"] is None
 
 
-def test_register_experiment_concurrent_callers_get_one_201(
+def test_register_experiment_mints_distinct_ids(
     client_noauth: TestClient,
 ) -> None:
-    """Codex round 7 MAJOR: atomicity of the 201-vs-200 decision.
-
-    Under two concurrent `POST /v0/control/experiments` calls with
-    the same `(experiment_id, config_uri)`, exactly ONE caller
-    observes `201 created` and the rest observe `200 replay`. The
-    store-side `register_experiment` Protocol returns
-    `(entry, created)` from inside the single lock / SERIALIZABLE
-    transaction so the route's status decision cannot race the
-    insert.
-    """
-    import threading
-
-    payload = {"experiment_id": "exp-cc", "config_uri": "https://x.test/c.yaml"}
-    results: list[int] = []
-    barrier = threading.Barrier(8)
-
-    def worker() -> None:
-        barrier.wait()
-        r = client_noauth.post("/v0/control/experiments", json=payload)
-        results.append(r.status_code)
-
-    threads = [threading.Thread(target=worker) for _ in range(8)]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join()
-    assert sorted(results) == [200] * 7 + [201]
-
-
-def test_register_experiment_idempotent_same_uri(
-    client_noauth: TestClient,
-) -> None:
-    payload = {"experiment_id": "exp-1", "config_uri": "https://x.test/c.yaml"}
-    r1 = client_noauth.post("/v0/control/experiments", json=payload)
-    r2 = client_noauth.post("/v0/control/experiments", json=payload)
-    # Codex round 6 MAJOR: per chapter 07 §15 / chapter 11 §2.2,
-    # first registration → 201; idempotent re-registration → 200.
-    assert r1.status_code == 201
-    assert r2.status_code == 200
-    assert r1.json()["created_at"] == r2.json()["created_at"]
-
-
-def test_register_experiment_409_on_differing_uri(
-    client_noauth: TestClient,
-) -> None:
-    client_noauth.post(
-        "/v0/control/experiments",
-        json={"experiment_id": "exp-1", "config_uri": "https://x.test/a.yaml"},
-    )
-    r = client_noauth.post(
-        "/v0/control/experiments",
-        json={"experiment_id": "exp-1", "config_uri": "https://x.test/b.yaml"},
-    )
-    assert r.status_code == 409
-    assert r.json()["type"] == "eden://error/already-exists"
+    """Each register mints a fresh exp_* — there is no id-based idempotency."""
+    a = _register_experiment(client_noauth)
+    b = _register_experiment(client_noauth)
+    assert a != b
+    assert a.startswith("exp_")
+    assert b.startswith("exp_")
 
 
 def test_unregister_experiment_blocked_while_running(
     client_noauth: TestClient,
 ) -> None:
-    client_noauth.post(
-        "/v0/control/experiments",
-        json={"experiment_id": "exp-1", "config_uri": "https://x.test/c.yaml"},
-    )
-    r = client_noauth.delete("/v0/control/experiments/exp-1")
+    exp_id = _register_experiment(client_noauth)
+    r = client_noauth.delete(f"/v0/control/experiments/{exp_id}")
     assert r.status_code == 409
     assert r.json()["type"] == "eden://error/invalid-precondition"
 
 
 def test_list_experiments_returns_wrapper(client_noauth: TestClient) -> None:
-    client_noauth.post(
-        "/v0/control/experiments",
-        json={"experiment_id": "exp-1", "config_uri": "https://x.test/c.yaml"},
-    )
-    client_noauth.post(
-        "/v0/control/experiments",
-        json={"experiment_id": "exp-2", "config_uri": "https://x.test/d.yaml"},
-    )
+    a = _register_experiment(client_noauth, "https://x.test/c.yaml")
+    b = _register_experiment(client_noauth, "https://x.test/d.yaml")
     r = client_noauth.get("/v0/control/experiments")
     assert r.status_code == 200
     body = r.json()
-    assert sorted(e["experiment_id"] for e in body["experiments"]) == [
-        "exp-1",
-        "exp-2",
-    ]
+    assert {a, b} <= {e["experiment_id"] for e in body["experiments"]}
 
 
 def test_read_experiment_metadata_404(client_noauth: TestClient) -> None:
@@ -163,57 +129,51 @@ def test_read_experiment_metadata_404(client_noauth: TestClient) -> None:
 # ---------------------------------------------------------------------
 
 
-def _register(client: TestClient, experiment_id: str = "exp-1") -> None:
-    r = client.post(
-        "/v0/control/experiments",
-        json={
-            "experiment_id": experiment_id,
-            "config_uri": f"https://x.test/{experiment_id}.yaml",
-        },
-    )
-    assert r.status_code == 201
-
-
-def _acquire_body(holder: str = "auto-orchestrator-1", instance: str = "uuid-1") -> dict[str, str]:
+def _acquire_body(holder: str, instance: str = "uuid-1") -> dict[str, str]:
     return {"holder": holder, "holder_instance": instance}
 
 
 def test_acquire_lease_first_call_returns_201(client_noauth: TestClient) -> None:
-    _register(client_noauth)
+    exp_id = _register_experiment(client_noauth)
+    holder = _register_worker(client_noauth, "orch-1")
     r = client_noauth.post(
-        "/v0/control/experiments/exp-1/leases", json=_acquire_body()
+        f"/v0/control/experiments/{exp_id}/leases", json=_acquire_body(holder)
     )
     assert r.status_code == 201
     body = r.json()
-    assert body["holder"] == "auto-orchestrator-1"
+    assert body["holder"] == holder
     assert body["holder_instance"] == "uuid-1"
 
 
 def test_acquire_lease_409_held_by_other(client_noauth: TestClient) -> None:
-    _register(client_noauth)
+    exp_id = _register_experiment(client_noauth)
+    holder_a = _register_worker(client_noauth, "orch-a")
+    holder_b = _register_worker(client_noauth, "orch-b")
     client_noauth.post(
-        "/v0/control/experiments/exp-1/leases", json=_acquire_body()
+        f"/v0/control/experiments/{exp_id}/leases", json=_acquire_body(holder_a)
     )
     r = client_noauth.post(
-        "/v0/control/experiments/exp-1/leases",
-        json=_acquire_body("auto-orchestrator-2", "uuid-2"),
+        f"/v0/control/experiments/{exp_id}/leases",
+        json=_acquire_body(holder_b, "uuid-2"),
     )
     assert r.status_code == 409
     assert r.json()["type"] == "eden://error/lease-held-by-other"
 
 
 def test_acquire_lease_404_unknown_experiment(client_noauth: TestClient) -> None:
+    holder = _register_worker(client_noauth, "orch-1")
     r = client_noauth.post(
-        "/v0/control/experiments/missing/leases", json=_acquire_body()
+        "/v0/control/experiments/missing/leases", json=_acquire_body(holder)
     )
     assert r.status_code == 404
     assert r.json()["type"] == "eden://error/not-found"
 
 
 def test_renew_lease_extends(client_noauth: TestClient) -> None:
-    _register(client_noauth)
+    exp_id = _register_experiment(client_noauth)
+    holder = _register_worker(client_noauth, "orch-1")
     acq = client_noauth.post(
-        "/v0/control/experiments/exp-1/leases", json=_acquire_body()
+        f"/v0/control/experiments/{exp_id}/leases", json=_acquire_body(holder)
     ).json()
     r = client_noauth.post(
         f"/v0/control/leases/{acq['lease_id']}/renew",
@@ -225,9 +185,10 @@ def test_renew_lease_extends(client_noauth: TestClient) -> None:
 
 
 def test_renew_lease_409_instance_mismatch(client_noauth: TestClient) -> None:
-    _register(client_noauth)
+    exp_id = _register_experiment(client_noauth)
+    holder = _register_worker(client_noauth, "orch-1")
     acq = client_noauth.post(
-        "/v0/control/experiments/exp-1/leases", json=_acquire_body()
+        f"/v0/control/experiments/{exp_id}/leases", json=_acquire_body(holder)
     ).json()
     r = client_noauth.post(
         f"/v0/control/leases/{acq['lease_id']}/renew",
@@ -238,17 +199,19 @@ def test_renew_lease_409_instance_mismatch(client_noauth: TestClient) -> None:
 
 
 def test_renew_lease_410_after_replacement(client_noauth: TestClient) -> None:
-    _register(client_noauth)
+    exp_id = _register_experiment(client_noauth)
+    holder_a = _register_worker(client_noauth, "orch-a")
+    holder_b = _register_worker(client_noauth, "orch-b")
     first = client_noauth.post(
-        "/v0/control/experiments/exp-1/leases", json=_acquire_body()
+        f"/v0/control/experiments/{exp_id}/leases", json=_acquire_body(holder_a)
     ).json()
     client_noauth.post(
         f"/v0/control/leases/{first['lease_id']}/release",
         json={"holder_instance": "uuid-1"},
     )
     client_noauth.post(
-        "/v0/control/experiments/exp-1/leases",
-        json=_acquire_body("auto-orchestrator-2", "uuid-2"),
+        f"/v0/control/experiments/{exp_id}/leases",
+        json=_acquire_body(holder_b, "uuid-2"),
     )
     r = client_noauth.post(
         f"/v0/control/leases/{first['lease_id']}/renew",
@@ -259,9 +222,10 @@ def test_renew_lease_410_after_replacement(client_noauth: TestClient) -> None:
 
 
 def test_release_lease_idempotent(client_noauth: TestClient) -> None:
-    _register(client_noauth)
+    exp_id = _register_experiment(client_noauth)
+    holder = _register_worker(client_noauth, "orch-1")
     acq = client_noauth.post(
-        "/v0/control/experiments/exp-1/leases", json=_acquire_body()
+        f"/v0/control/experiments/{exp_id}/leases", json=_acquire_body(holder)
     ).json()
     r1 = client_noauth.post(
         f"/v0/control/leases/{acq['lease_id']}/release",
@@ -278,23 +242,23 @@ def test_release_lease_idempotent(client_noauth: TestClient) -> None:
 
 
 def test_list_active_leases_filters_by_holder(client_noauth: TestClient) -> None:
-    _register(client_noauth, "exp-1")
-    _register(client_noauth, "exp-2")
+    exp_a = _register_experiment(client_noauth, "https://x.test/exp-a.yaml")
+    exp_b = _register_experiment(client_noauth, "https://x.test/exp-b.yaml")
+    holder_a = _register_worker(client_noauth, "orch-a")
+    holder_b = _register_worker(client_noauth, "orch-b")
     client_noauth.post(
-        "/v0/control/experiments/exp-1/leases",
-        json=_acquire_body("auto-orchestrator-a", "uuid-a"),
+        f"/v0/control/experiments/{exp_a}/leases",
+        json=_acquire_body(holder_a, "uuid-a"),
     )
     client_noauth.post(
-        "/v0/control/experiments/exp-2/leases",
-        json=_acquire_body("auto-orchestrator-b", "uuid-b"),
+        f"/v0/control/experiments/{exp_b}/leases",
+        json=_acquire_body(holder_b, "uuid-b"),
     )
-    r = client_noauth.get(
-        "/v0/control/leases", params={"holder": "auto-orchestrator-a"}
-    )
+    r = client_noauth.get("/v0/control/leases", params={"holder": holder_a})
     assert r.status_code == 200
     body = r.json()
     assert len(body["leases"]) == 1
-    assert body["leases"][0]["holder"] == "auto-orchestrator-a"
+    assert body["leases"][0]["holder"] == holder_a
 
 
 # ---------------------------------------------------------------------
@@ -303,41 +267,29 @@ def test_list_active_leases_filters_by_holder(client_noauth: TestClient) -> None
 
 
 def test_register_worker_returns_token(client_noauth: TestClient) -> None:
-    r = client_noauth.post(
-        "/v0/control/workers", json={"worker_id": "auto-orchestrator-1"}
-    )
-    # Codex round 7 MAJOR: chapter 07 §15.3 verbatim-mirrors §6.1
-    # (200 on first-create + 200 on idempotent replay).
+    r = client_noauth.post("/v0/control/workers", json={"name": "orch-1"})
     assert r.status_code == 200
     body = r.json()
-    assert body["worker_id"] == "auto-orchestrator-1"
+    # Server mints the opaque wkr_* id; the registration token is
+    # always present (every mint creates a fresh credential).
+    assert body["worker_id"].startswith("wkr_")
+    assert body["name"] == "orch-1"
     assert "registration_token" in body
 
 
-def test_register_worker_idempotent_no_new_token(
-    client_noauth: TestClient,
-) -> None:
-    r1 = client_noauth.post(
-        "/v0/control/workers", json={"worker_id": "auto-orchestrator-1"}
-    )
-    r2 = client_noauth.post(
-        "/v0/control/workers", json={"worker_id": "auto-orchestrator-1"}
-    )
-    # §15.3 verbatim-mirror of §6.1: 200 on both calls; the absence
-    # of `registration_token` on the replay is what distinguishes
-    # the two outcomes, not the status code.
-    assert r1.status_code == 200
-    assert r2.status_code == 200
-    assert "registration_token" in r1.json()
-    assert "registration_token" not in r2.json()
+def test_register_worker_mints_distinct_ids(client_noauth: TestClient) -> None:
+    """Each register mints a fresh wkr_* — no id-based idempotency (#128)."""
+    a = _register_worker(client_noauth, "orch-1")
+    b = _register_worker(client_noauth, "orch-1")  # same name, distinct id
+    assert a != b
+    assert a.startswith("wkr_")
+    assert b.startswith("wkr_")
 
 
 def test_reissue_credential_returns_new_token(client_noauth: TestClient) -> None:
-    client_noauth.post(
-        "/v0/control/workers", json={"worker_id": "auto-orchestrator-1"}
-    ).json()
+    worker_id = _register_worker(client_noauth, "orch-1")
     r = client_noauth.post(
-        "/v0/control/workers/auto-orchestrator-1/reissue-credential"
+        f"/v0/control/workers/{worker_id}/reissue-credential"
     )
     assert r.status_code == 200
     assert "registration_token" in r.json()
@@ -353,25 +305,30 @@ def test_whoami_returns_worker_id(client_noauth: TestClient) -> None:
 
 
 def test_register_group_and_membership(client_noauth: TestClient) -> None:
-    client_noauth.post(
-        "/v0/control/workers", json={"worker_id": "auto-orchestrator-1"}
-    )
+    worker_id = _register_worker(client_noauth, "orch-1")
     r = client_noauth.post(
         "/v0/control/groups",
-        json={"group_id": "orchestrators", "members": ["auto-orchestrator-1"]},
+        json={"name": "orchestrators", "members": [worker_id]},
     )
-    # Codex round 7 MAJOR: §15.3 verbatim-mirrors §6.1 — 200 on
-    # first-create.
     assert r.status_code == 200
+    group = r.json()
+    assert group["group_id"].startswith("grp_")
+    assert group["name"] == "orchestrators"
+    # Adding by the minted member_id is idempotent on existing membership.
     add = client_noauth.post(
-        "/v0/control/groups/orchestrators/members",
-        json={"worker_id": "auto-orchestrator-1"},
+        f"/v0/control/groups/{group['group_id']}/members",
+        json={"member_id": worker_id},
     )
     assert add.status_code == 200
 
 
-def test_register_reserved_id_rejected(client_noauth: TestClient) -> None:
-    r = client_noauth.post("/v0/control/workers", json={"worker_id": "admin"})
+def test_register_reserved_worker_name_rejected(
+    client_noauth: TestClient,
+) -> None:
+    # Reserved values now live in name-space; the auth-disabled posture
+    # collapses to an admin principal, so reserved-group names are
+    # allowed, but reserved WORKER names are always rejected.
+    r = client_noauth.post("/v0/control/workers", json={"name": "admin"})
     assert r.status_code == 409
     assert r.json()["type"] == "eden://error/reserved-identifier"
 
@@ -392,16 +349,18 @@ def _setup_authed(
 ) -> tuple[TestClient, str, str, str]:
     """Provision an auth-enabled app + an orchestrators-group worker.
 
-    Returns (client, admin_bearer, worker_id, worker_bearer).
+    Returns (client, admin_bearer, worker_id, worker_bearer). The
+    orchestrators group + worker are minted directly against the store
+    (the same instance the app uses) before auth gating starts; the
+    reserved ``orchestrators`` group name is created via the privileged
+    seed path (``allow_reserved=True``).
     """
     admin_token = "test-admin-token-secret"
-    # The orchestrators group + worker MUST be created BEFORE the
-    # auth-enabled app starts gating, since the only way to create
-    # them is the admin path. We do this directly against the store
-    # (which is the same instance the app will use).
-    worker, token = store.register_worker("auto-orchestrator-1")
+    worker, token = store.register_worker("orch-1")
     assert token is not None
-    store.register_group("orchestrators", members=["auto-orchestrator-1"])
+    store.register_group(
+        "orchestrators", members=[worker.worker_id], allow_reserved=True
+    )
     app = make_app(store, admin_token=admin_token, lease_duration_seconds=30)
     client = TestClient(app)
     admin_bearer = f"admin:{admin_token}"
@@ -421,36 +380,48 @@ def test_authed_admin_can_register_experiment() -> None:
     client, admin_bearer, _, _ = _setup_authed(store)
     r = client.post(
         "/v0/control/experiments",
-        json={"experiment_id": "exp-1", "config_uri": "https://x.test/c.yaml"},
+        json={"config_uri": "https://x.test/c.yaml"},
         headers={"Authorization": f"Bearer {admin_bearer}"},
     )
     assert r.status_code == 201
 
 
-def test_authed_worker_blocked_from_admin_register(
-) -> None:
+def test_authed_worker_blocked_from_admin_register() -> None:
     store = InMemoryControlPlaneStore()
     client, _, _, worker_bearer = _setup_authed(store)
     r = client.post(
         "/v0/control/experiments",
-        json={"experiment_id": "exp-1", "config_uri": "https://x.test/c.yaml"},
+        json={"config_uri": "https://x.test/c.yaml"},
         headers={"Authorization": f"Bearer {worker_bearer}"},
     )
     assert r.status_code == 403
     assert r.json()["type"] == "eden://error/forbidden"
 
 
+def test_authed_whoami_echoes_name() -> None:
+    store = InMemoryControlPlaneStore()
+    client, _, worker_id, worker_bearer = _setup_authed(store)
+    r = client.get(
+        "/v0/control/whoami",
+        headers={"Authorization": f"Bearer {worker_bearer}"},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["worker_id"] == worker_id
+    assert body["name"] == "orch-1"
+
+
 def test_authed_acquire_lease_requires_orchestrators_group() -> None:
     store = InMemoryControlPlaneStore()
-    client, admin_bearer, _, worker_bearer = _setup_authed(store)
-    client.post(
+    client, admin_bearer, worker_id, worker_bearer = _setup_authed(store)
+    exp = client.post(
         "/v0/control/experiments",
-        json={"experiment_id": "exp-1", "config_uri": "https://x.test/c.yaml"},
+        json={"config_uri": "https://x.test/c.yaml"},
         headers={"Authorization": f"Bearer {admin_bearer}"},
-    )
+    ).json()
     r = client.post(
-        "/v0/control/experiments/exp-1/leases",
-        json=_acquire_body("auto-orchestrator-1", "uuid-1"),
+        f"/v0/control/experiments/{exp['experiment_id']}/leases",
+        json=_acquire_body(worker_id, "uuid-1"),
         headers={"Authorization": f"Bearer {worker_bearer}"},
     )
     assert r.status_code == 201
@@ -460,15 +431,15 @@ def test_authed_acquire_lease_rejects_impersonation() -> None:
     store = InMemoryControlPlaneStore()
     client, admin_bearer, _, worker_bearer = _setup_authed(store)
     # Register a SECOND worker (not in orchestrators) to be impersonated.
-    impersonated_worker, _ = store.register_worker("auto-orchestrator-impersonated")
-    client.post(
+    impersonated_worker, _ = store.register_worker("orch-impersonated")
+    exp = client.post(
         "/v0/control/experiments",
-        json={"experiment_id": "exp-1", "config_uri": "https://x.test/c.yaml"},
+        json={"config_uri": "https://x.test/c.yaml"},
         headers={"Authorization": f"Bearer {admin_bearer}"},
-    )
-    # Caller authenticates as auto-orchestrator-1, supplies impersonated_worker as holder
+    ).json()
+    # Caller authenticates as orch-1, supplies impersonated worker as holder.
     r = client.post(
-        "/v0/control/experiments/exp-1/leases",
+        f"/v0/control/experiments/{exp['experiment_id']}/leases",
         json={
             "holder": impersonated_worker.worker_id,
             "holder_instance": "uuid-bogus",
@@ -482,9 +453,10 @@ def test_authed_acquire_lease_rejects_impersonation() -> None:
 def test_authed_list_active_leases_blocks_cross_worker_read() -> None:
     store = InMemoryControlPlaneStore()
     client, _, _, worker_bearer = _setup_authed(store)
+    other = store.register_worker("orch-other")[0].worker_id
     r = client.get(
         "/v0/control/leases",
-        params={"holder": "someone-else"},
+        params={"holder": other},
         headers={"Authorization": f"Bearer {worker_bearer}"},
     )
     assert r.status_code == 403
@@ -493,9 +465,10 @@ def test_authed_list_active_leases_blocks_cross_worker_read() -> None:
 def test_authed_list_active_leases_admin_can_read_any_holder() -> None:
     store = InMemoryControlPlaneStore()
     client, admin_bearer, _, _ = _setup_authed(store)
+    other = store.register_worker("orch-other")[0].worker_id
     r = client.get(
         "/v0/control/leases",
-        params={"holder": "someone-else"},
+        params={"holder": other},
         headers={"Authorization": f"Bearer {admin_bearer}"},
     )
     assert r.status_code == 200

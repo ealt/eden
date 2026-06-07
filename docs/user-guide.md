@@ -64,6 +64,7 @@ Every experiment is driven by a YAML config validated against [`spec/v0/schemas/
 | `baseline.metrics` | map | no | Optional config-supplied evaluation metrics (subset of `evaluation_schema`). When present, the orchestrator stamps these and creates the baseline directly in `success`, skipping the baseline's evaluation dispatch — useful when the evaluator is expensive or a known-good baseline score exists. Supplying `metrics` with `enabled: false` is a config error. |
 | `max_quiescent_iterations` | integer ≥ 2 | no | A polling orchestrator exits after N consecutive no-progress iterations. Default 3; manual-UI sessions want a much higher value (e.g. 3600). |
 | `ideation_task_deadline` / `execution_task_deadline` / `evaluation_task_deadline` | number > 0 | no | Seconds each worker host waits for one `*_command` invocation. Defaults: 120 / 600 / 300. |
+| `auto_checkpoint` | object | no | Opt-in automatic checkpointing ([issue #131](https://github.com/ealt/eden/issues/131)). Absent block ≡ `{enabled: false}`. See [the subsection below](#automatic-checkpointing-auto_checkpoint). |
 | `ideation_command` / `execution_command` / `evaluation_command` | string | no (impl-specific) | Shell commands to invoke for [subprocess mode](#3-worker-host-modes). Travel under additional-properties; the spec defers role-bindings to a future chapter. |
 
 The pre-12a-3 top-level termination fields (`max_variants` / `max_wall_time` / `convergence_window` / `target_condition`) are **removed** from the normative schema — their semantics now round-trip as `termination_policy.kind` values selected declaratively per [`03-roles.md`](../spec/v0/03-roles.md) §6.2 decision-type 0 (see [`docs/operations/experiment-lifecycle.md`](operations/experiment-lifecycle.md) for the operator playbook). Configs that still carry the old top-level fields validate (they round-trip under the schema's permissive additional-properties posture) but the orchestrator ignores them.
@@ -107,6 +108,31 @@ objective:
 
 **Convention** (not required by the schema): put your config at `<your-experiment-dir>/.eden/config.yaml`. `setup-experiment.sh` defaults `--experiment-id` from the directory containing `.eden` and uses that directory as the host-side bind-mount source in subprocess mode.
 
+### Automatic checkpointing (`auto_checkpoint`)
+
+[Issue #131](https://github.com/ealt/eden/issues/131) makes portable checkpoints ([Phase 12b](https://github.com/ealt/eden/issues/152)) happen *automatically* so the "I can accept interruptions / teardown / redeployment" posture is viable without operator action. It is a deployment behavior consumed by the reference orchestrator — not a protocol contract — and is **opt-in** (an absent block means `{enabled: false}`).
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `enabled` | boolean | `false` | Master switch. |
+| `interval_seconds` | number > 0 | `3600` | Cadence between periodic checkpoints, in **seconds** (matching the `*_task_deadline` convention — `3600` is 60 minutes; `1800` is 30 minutes). |
+| `retention_count` | integer ≥ 1 | `6` | Ring-buffer depth for periodic checkpoints; the oldest periodic archives beyond this count are pruned. Does **not** bound the terminal checkpoint. |
+| `on_terminate` | boolean | `true` | Take one terminal checkpoint when the experiment reaches `state == "terminated"`. |
+
+```yaml
+auto_checkpoint:
+  enabled: true
+  interval_seconds: 1800     # every 30 minutes (seconds, not minutes!)
+  retention_count: 6
+  on_terminate: true
+```
+
+Two triggers fire while the orchestrator is running: a **cadence** checkpoint every `interval_seconds` (the first fires one full interval after orchestrator startup), and one **terminal** checkpoint if the orchestrator observes the experiment reach `terminated`. Restoration stays **operator-driven** — there is no auto-restore; use the manual `eden-experiment restore` flow.
+
+**The destination directory is deployment wiring, not a config field.** A host filesystem path is meaningless on a different deployment, so the portable config carries only the *intent* (enabled / cadence / retention / on-terminate); *where* the archives land is the orchestrator's `--auto-checkpoint-dir` flag (env `EDEN_AUTO_CHECKPOINT_DIR`). In the Compose deployment this is pre-wired to `/var/lib/eden/checkpoints`, bind-mounted from `${EDEN_EXPERIMENT_DATA_ROOT}/checkpoints` — so enabling the block in your config is all it takes; the archives appear under the experiment's host data root. When `auto_checkpoint.enabled` is `true` the orchestrator **fails fast at startup** if no admin token is available (the export endpoint is admin-gated per [`07-wire-protocol.md`](../spec/v0/07-wire-protocol.md) §14) or the destination directory is missing/unwritable.
+
+Periodic archives are named `<safe_exp>-<UTC-timestamp>.tar`; the terminal archive is `<safe_exp>-terminated-<UTC-timestamp>.tar` (kept outside the retention ring). See [`docs/observability.md`](observability.md) §"Checkpoint cadence" for the cadence guarantees, the documented orphan gap, and the disk-growth consideration.
+
 ### Specifying the starting git tree
 
 By default, `setup-experiment.sh` seeds the experiment's git repo with an empty commit containing only a `.gitkeep` file. To start from real content (e.g. an existing application repo you want to evolve):
@@ -114,9 +140,16 @@ By default, `setup-experiment.sh` seeds the experiment's git repo with an empty 
 ```bash
 bash reference/scripts/setup-experiment/setup-experiment.sh \
     path/to/your/experiment/.eden/config.yaml \
-    --experiment-id my-experiment \
+    --name my-experiment \
     --seed-from /path/to/your/app/repo
 ```
+
+Since [issue #128](https://github.com/ealt/eden/issues/128), the
+experiment id is **system-minted and opaque** (`exp_<26-char-ULID>`);
+`--name` supplies an optional operator-facing display label, not the id.
+The minted id is written to `.env` as `EDEN_EXPERIMENT_ID`. See [§2's
+"Running setup-experiment"](#running-setup-experiment) for the full
+flag set and what setup mints.
 
 Seed-from semantics (see [`repo_init.py`](../reference/services/_common/src/eden_service_common/repo_init.py) + [`repo.py:seed_bare_repo_from_dir`](../reference/services/_common/src/eden_service_common/repo.py)):
 
@@ -137,8 +170,8 @@ Flags (all optional except the positional config):
 
 | Flag | Default | Effect |
 |---|---|---|
-| `--experiment-id <id>` | derived from config's parent dir | Identifier the stack serves. |
-| `--admin-token <T>` | preserved or generated | Admin bearer used by the operator + setup-time scripts. |
+| `--name <display-name>` | none (config's parent-dir basename, if supplying a label) | Optional operator-facing display label for the experiment. **Not** the id: since [#128](https://github.com/ealt/eden/issues/128) setup mints an opaque `exp_<ULID>` id and writes it to `.env` as `EDEN_EXPERIMENT_ID`. Names MAY collide; the id is the stable handle. |
+| `--admin-token <T>` | preserved or generated | Admin bearer used by the operator + setup-time scripts. The `admin` bearer principal is a literal sentinel — no `worker_id` is minted for it. |
 | `--postgres-password <P>` | preserved or generated | Postgres credential. Percent-encoded into the DSN. |
 | `--env-file <path>` | `reference/compose/.env` | Where to write the generated `.env`. |
 | `--experiment-dir <path>` | `<config>/..` | Host-side bind-mount source for subprocess mode. |
@@ -146,17 +179,17 @@ Flags (all optional except the positional config):
 | `--ideas-per-ideation <N>` | `1` | How many ideas each subprocess-mode ideation task asks for. |
 | `--exec-mode host\|docker` | `host` | `docker` wraps each subprocess-mode `*_command` in a sibling container via DooD (host docker socket). |
 | `--seed-from <host-dir>` | empty seed | See above. |
-| `--no-auto-host-workers` | off (auto-hosts pre-registered) | Skip pre-registering the `ideator-1` / `executor-1` / `evaluator-1` worker IDs in the registry. Use when running a fully-manual experiment where the auto-host services won't come up — avoids phantom workers in `/admin/workers/`. Tradeoff: reassigning a task to one of those worker IDs returns `error=unknown-target` until the corresponding host self-registers (which never happens in fully-manual flows). The manual-UI wrapper (`eden-experiment up` without `--with-workers`) passes this automatically. |
+| `--no-auto-host-workers` | off (auto-hosts pre-registered) | Skip pre-registering the auto-host workers (display names `ideator-host-1` / `executor-host-1` / `evaluator-host-1`; their opaque `wkr_*` ids are minted at setup and written to `.env`). Use when running a fully-manual experiment where the auto-host services won't come up — avoids phantom workers in `/admin/workers/`. Tradeoff: reassigning a task to one of those workers returns `error=unknown-target` until the corresponding host self-registers (which never happens in fully-manual flows). The manual-UI wrapper (`eden-experiment up` without `--with-workers`) passes this automatically. |
 
-Re-running setup is **idempotent**: existing secrets (`EDEN_ADMIN_TOKEN`, `POSTGRES_PASSWORD`, `EDEN_SESSION_SECRET`, `FORGEJO_*`) are read back from `.env` and preserved. Run it again to pick up config edits.
+Re-running setup is **idempotent**: existing secrets (`EDEN_ADMIN_TOKEN`, `POSTGRES_PASSWORD`, `EDEN_SESSION_SECRET`, `FORGEJO_*`) **and the minted opaque ids** (`EDEN_EXPERIMENT_ID` and the `wkr_*` / `grp_*` ids) are read back from `.env` and reused. Post-[#128](https://github.com/ealt/eden/issues/128) idempotency lives in `.env`, not the store: there is no operator-typed id to re-register against, so a fresh mint would create a new entity — setup reuses what `.env` already holds. Run it again to pick up config edits.
 
 Produces:
 
 - `reference/compose/.env` — generated. Gitignored (covered by the `reference/compose/.env.*` rule).
 - `reference/compose/experiment-config.yaml` — copy of the input config, mounted into services.
-- `.forgejo-creds-<experiment-id>/credential-helper.sh` — git credential helper for workers pushing to Forgejo.
-- `${EDEN_EXPERIMENT_DATA_ROOT}/` — host-side substrate tree (postgres / forgejo / artifacts / per-host repo + credentials subdirs). See [`docs/operations/experiment-data-durability.md`](operations/experiment-data-durability.md).
-- A seeded forgejo repo at `eden/<experiment-id>` and per-host bare-clone directories under `${EDEN_EXPERIMENT_DATA_ROOT}/`.
+- `.forgejo-creds-<exp_id>/credential-helper.sh` — git credential helper for workers pushing to Forgejo (the `<exp_id>` path segment is the minted opaque `exp_*` id).
+- `${EDEN_EXPERIMENT_DATA_ROOT}/` — host-side substrate tree (postgres / forgejo / artifacts / per-host repo + credentials subdirs); the data-root path segment is the opaque `exp_*` id. See [`docs/operations/experiment-data-durability.md`](operations/experiment-data-durability.md).
+- A seeded forgejo repo at `eden/<exp_id>` (opaque) and per-host bare-clone directories under `${EDEN_EXPERIMENT_DATA_ROOT}/`. The `wkr_*` worker ids and `grp_*` group ids for `operator` / orchestrator / web-ui / auto-hosts and the reserved `admins` / `orchestrators` groups are minted and written to `.env`.
 - The `EDEN_BASE_COMMIT_SHA` line in `.env` replaced with the real seed SHA.
 
 ### Bringing the stack up
@@ -218,10 +251,13 @@ The field requires `>= 2`; "never exit" is not available. Pick a large enough va
 ```bash
 docker compose --env-file .env ps                          # everything Up + healthy
 ADMIN=$(grep '^EDEN_ADMIN_TOKEN=' .env | cut -d= -f2)
+EXP=$(grep '^EDEN_EXPERIMENT_ID=' .env | cut -d= -f2)       # opaque exp_* id minted by setup
 curl -s -H "Authorization: Bearer admin:$ADMIN" \
-     -H "X-Eden-Experiment-Id: <id>" \
-     "http://localhost:8080/v0/experiments/<id>/tasks" | jq 'length'
+     -H "X-Eden-Experiment-Id: $EXP" \
+     "http://localhost:8080/v0/experiments/$EXP/tasks" | jq 'length'
 ```
+
+The `{experiment_id}` path segment is now the opaque `exp_*` id (the operator-typed mnemonic is gone). To find an experiment by its display name, use the control-plane registry lookup: `GET /v0/control/experiments?name=<name>` returns 0..N matches (see [§12](#12-multi-experiment-deployments)).
 
 You should see (default) 3 ideation tasks pending and nothing else.
 
@@ -296,7 +332,7 @@ When you attach files, the text body is optional — uploads alone are a valid a
 EDEN=reference/scripts/manual-ui/eden-manual
 
 $EDEN list-tasks --kind ideation --state pending
-$EDEN claim <task-id> --worker-id eden-manual    # registers worker on first use
+$EDEN claim <task-id> --worker-name eden-manual  # registers worker on first use; server mints the wkr_* id
 # Author an ideas JSON file (see the skill or just emit a `{"ideas": [...]}`)
 $EDEN ideation-submit <task-id> --ideas-file /path/to/ideas.json --status success
 ```
@@ -317,7 +353,7 @@ Each idea entry in the JSON file may include `content_files` (a list of host-loc
 }
 ```
 
-The CLI auto-registers `eden-manual` in the worker registry on first claim and persists the credential at `/tmp/eden-manual/.credentials.json` (mode 0600). On a fresh `/tmp` it'll re-register via `reissue_credential`.
+On first claim the CLI registers a worker with the display name `eden-manual` (`--worker-name`, default `eden-manual`), reads the server-minted opaque `worker_id` (`wkr_*`) back from the wire response, and persists `{worker_id, name, token}` at `/tmp/eden-manual/.credentials.json` (mode 0600). Since [#128](https://github.com/ealt/eden/issues/128) there is no operator-typed id to re-register against, so the cached `worker_id` is the recovery handle: on a fresh `/tmp` with the same cached id still in the registry, the CLI re-mints the credential via `reissue_credential(worker_id)` rather than re-registering by name. Names MAY collide — to find a worker by name, `GET .../workers?name=eden-manual` returns 0..N matches.
 
 ### Ideation via Claude
 
@@ -342,7 +378,7 @@ Each row has a **context links** expander (there is no inline content preview): 
 ```bash
 $EDEN list-tasks --kind execution --state pending
 $EDEN show <task-id>                                       # see idea + rationale
-$EDEN claim <task-id> --worker-id eden-manual              # mints stable variant_id
+$EDEN claim <task-id> --worker-name eden-manual            # registers (mints wkr_* id) on first use; mints stable variant_id
 $EDEN checkout <task-id>                                   # clones forgejo at parent into /tmp/eden-manual/<task-id>
 
 # Edit /tmp/eden-manual/<task-id> in your editor. Commit intermediate
@@ -364,9 +400,9 @@ $EDEN execution-submit <task-id> --sha <sha> --description "..."
 
 ### Execution via mixed UI + local editor
 
-If you've already claimed in the UI, the claim is held by `web-ui-1`. Post-12a-1, claim ownership is identity-keyed, so the CLI (acting as `eden-manual`) can't submit against that claim — `wrong-claimant`. Two paths:
+If you've already claimed in the UI, the claim is held by the web-ui's own worker (display name `web-ui-1`, opaque `wkr_*` id). Post-12a-1, claim ownership is identity-keyed, so the CLI (acting as the `eden-manual` worker, a different `wkr_*` id) can't submit against that claim — `wrong-claimant`. Two paths:
 
-- **Easiest:** clone forgejo locally yourself (via `git clone http://eden:<pass>@localhost:3001/eden/<experiment-id>.git`), edit, commit, push, paste the SHA into the UI's executor submit form.
+- **Easiest:** clone forgejo locally yourself (read the opaque repo path from `.env`: `EXP=$(grep '^EDEN_EXPERIMENT_ID=' reference/compose/.env | cut -d= -f2)`, then `git clone http://eden:<pass>@localhost:3001/eden/$EXP.git`), edit, commit, push, paste the SHA into the UI's executor submit form.
 - **Switch to CLI:** open `http://localhost:8090/admin/tasks/<task-id>/`, click reclaim. The web-ui's claim is wiped. Then claim again via the CLI and continue end-to-end.
 
 ### Execution via Claude
@@ -385,7 +421,7 @@ The evaluator page lists pending evaluation tasks in the same high-signal table 
 
 ```bash
 $EDEN list-tasks --kind evaluation --state pending
-$EDEN claim <task-id> --worker-id eden-manual
+$EDEN claim <task-id> --worker-name eden-manual            # registers (mints wkr_* id) on first use
 
 # Clone the variant's commit locally to inspect:
 $EDEN checkout <task-id>                                   # clones at variant.commit_sha
@@ -410,8 +446,9 @@ Boilerplate for the wire-API examples below:
 
 ```bash
 ADMIN=$(grep '^EDEN_ADMIN_TOKEN=' reference/compose/.env | cut -d= -f2)
-H=(-H "Authorization: Bearer admin:$ADMIN" -H "X-Eden-Experiment-Id: <id>")
-BASE="http://localhost:8080/v0/experiments/<id>"
+EXP=$(grep '^EDEN_EXPERIMENT_ID=' reference/compose/.env | cut -d= -f2)   # opaque exp_* id
+H=(-H "Authorization: Bearer admin:$ADMIN" -H "X-Eden-Experiment-Id: $EXP")
+BASE="http://localhost:8080/v0/experiments/$EXP"
 ```
 
 ### Reclaiming a stuck task
@@ -423,11 +460,23 @@ If a worker died holding a claim and the claim has no `expires_at`, the task is 
 
 ### Worker registry
 
+Since [#128](https://github.com/ealt/eden/issues/128), `worker_id` is **system-minted and opaque** (`wkr_<26-char-ULID>`). You register a worker by posting an optional display `name` — the server mints and returns the id:
+
 ```bash
-curl -s "${H[@]}" -X POST "$BASE/workers/<worker-id>/reissue-credential"  # rotate
+# Register: server mints the wkr_* id; capture it + the one-time token.
+RESP=$(curl -s "${H[@]}" -H "Content-Type: application/json" \
+    -d '{"name":"my-worker"}' -X POST "$BASE/workers")
+WORKER_ID=$(echo "$RESP" | jq -r '.worker_id')
+echo "$RESP" | jq -r '.registration_token'
+
+# Rotate a worker's credential (path-param is the opaque id):
+curl -s "${H[@]}" -X POST "$BASE/workers/$WORKER_ID/reissue-credential"
+
+# Find a worker by display name (names MAY collide — 0..N matches):
+curl -s "${H[@]}" "$BASE/workers?name=my-worker" | jq
 ```
 
-Worker IDs match `^[a-z0-9][a-z0-9_-]{0,63}$`. `admin`, `system`, `internal` are reserved. To list / read the registry, see [`observability.md` §2.4](observability.md#24-wire-api-raw).
+Reserved values now live in **name-space**, not id-space: the worker names `admin`, `system`, `internal` are reserved (`register_worker(name=…)` with one of those returns 409 `eden://error/reserved-identifier`); the group names `admins`, `orchestrators` are reserved (auto-created at setup with minted `grp_*` ids). Display names are free-form Unicode (1–128 code points, NFC-normalized; an ill-formed name returns 422 `eden://error/invalid-name`). The deployment-admin **bearer principal** stays the literal `admin` — no `worker_id` is minted for it. To list / read the registry, see [`observability.md` §2.4](observability.md#24-wire-api-raw).
 
 ### Work-ref garbage collection
 
@@ -439,7 +488,7 @@ Moved to [`docs/observability.md`](observability.md). That doc enumerates every 
 
 ## 10. Auth principal matrix
 
-Per [`spec/v0/07-wire-protocol.md`](../spec/v0/07-wire-protocol.md) §13 (12a-1). Bearer format is `<principal>:<secret>`; principals are `admin` or a `<worker_id>`.
+Per [`spec/v0/07-wire-protocol.md`](../spec/v0/07-wire-protocol.md) §13 (12a-1). Bearer format is `<principal>:<secret>`; the principal is either the literal `admin` or an opaque `wkr_*` worker id. Post-[#128](https://github.com/ealt/eden/issues/128) the principal grammar is `^(admin|wkr_[0-9a-hjkmnp-tv-z]{26})$` — operator-typed kebab ids are gone. The `admin` principal is a deployment-scoped sentinel (no worker row); every other principal is a minted `wkr_*`.
 
 | Endpoint class | Admin can | Worker can | Web-UI session can |
 |---|---|---|---|
@@ -453,7 +502,7 @@ Per [`spec/v0/07-wire-protocol.md`](../spec/v0/07-wire-protocol.md) §13 (12a-1)
 | `POST /groups/*` | ✅ | ❌ | ❌ |
 | `GET /whoami` | ✅ | ✅ | ✅ |
 
-The Web UI is itself a worker (`worker_id=web-ui-1`) — its session-authenticated user actions are bearer-signed as that worker. This is why admin can read everything but can't act as a worker.
+The Web UI is itself a worker (display name `web-ui-1`, opaque `wkr_*` id minted at setup) — its session-authenticated user actions are bearer-signed as that worker. This is why admin can read everything but can't act as a worker.
 
 ## 11. Gotchas + resets
 
@@ -467,7 +516,7 @@ If you start the full stack (with `compose up -d --wait` and no service list), t
 
 ### Credential file lost
 
-If `/tmp/eden-manual/.credentials.json` is deleted but `eden-manual` is still in the server-side worker registry, the next CLI claim will hit the idempotent re-register path (no `registration_token` returned), then fall through to `reissue_credential` and re-persist. This is fine; the old credential is invalidated.
+If `/tmp/eden-manual/.credentials.json` is deleted, the cached opaque `worker_id` is lost too. The next CLI claim re-registers a **new** worker (display name `eden-manual` again, a fresh `wkr_*` id) and persists it — post-[#128](https://github.com/ealt/eden/issues/128) there is no operator-typed id to re-register against, so registration always mints a new worker (names MAY collide). The prior `eden-manual`-named worker remains in the registry as an orphan but is harmless. To recover the *same* worker identity instead, you'd need its persisted `wkr_*` id + `reissue_credential(worker_id)` (the recovery handle lives in the credentials file, not in the name).
 
 ### Substrate cleanup between full resets
 
@@ -493,7 +542,9 @@ A single task-store-server URL serves many experiments — the wire path is `/v0
 
 ### 12.1 The experiment switcher
 
-Register experiments on the cross-experiment dashboard at `/admin/experiments/`, then pick the active one from the **top-nav switcher dropdown** (present on every page when a control plane is configured). The switcher shows `Active: <id>` (or `Default: <id>` before you've selected one). Selecting an experiment is load-bearing: every per-experiment page — ideator, executor, evaluator, `/admin/tasks`, `/admin/variants`, `/admin/workers`, `/admin/groups`, `/admin/work-refs`, … — now reads that experiment's data, not just a relabelled header.
+Register experiments on the cross-experiment dashboard at `/admin/experiments/` (the register form takes an optional display `name`; the control plane mints the opaque `exp_*` id), then pick the active one from the **top-nav switcher dropdown** (present on every page when a control plane is configured). The switcher renders each experiment as `<name> (<exp_*>)` when a name exists, the bare opaque id otherwise; it shows the active selection (or the default before you've selected one). Selecting an experiment is load-bearing: every per-experiment page — ideator, executor, evaluator, `/admin/tasks`, `/admin/variants`, `/admin/workers`, `/admin/groups`, `/admin/work-refs`, … — now reads that experiment's data, not just a relabelled header.
+
+Because the experiment-id path segment is opaque (the operator-typed mnemonic is gone), the way to find an experiment by its display name is the control-plane registry lookup `GET /v0/control/experiments?name=<name>` (0..N matches; names MAY collide). The switcher's name rendering mitigates the loss of mnemonic URLs.
 
 Notes:
 

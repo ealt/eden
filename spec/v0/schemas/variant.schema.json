@@ -17,7 +17,8 @@
     },
     "experiment_id": {
       "type": "string",
-      "minLength": 1
+      "pattern": "^exp_[0-9a-hjkmnp-tv-z]{26}$",
+      "description": "Opaque, system-minted experiment identifier (spec/v0/02-data-model.md §1.6)."
     },
     "kind": {
       "type": "string",
@@ -84,17 +85,13 @@
     },
     "executed_by": {
       "type": "string",
-      "minLength": 1,
-      "maxLength": 64,
-      "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
-      "description": "worker_id of the executor that produced this variant; written at execution-task submit time."
+      "pattern": "^wkr_[0-9a-hjkmnp-tv-z]{26}$",
+      "description": "worker_id of the executor that produced this variant; written at execution-task submit time (spec/v0/02-data-model.md §1.6)."
     },
     "evaluated_by": {
       "type": "string",
-      "minLength": 1,
-      "maxLength": 64,
-      "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
-      "description": "worker_id of the evaluator whose evaluation was committed; written at evaluation-task submit time."
+      "pattern": "^wkr_[0-9a-hjkmnp-tv-z]{26}$",
+      "description": "worker_id of the evaluator whose evaluation was committed; written at evaluation-task submit time (spec/v0/02-data-model.md §1.6)."
     }
   },
   "allOf": [

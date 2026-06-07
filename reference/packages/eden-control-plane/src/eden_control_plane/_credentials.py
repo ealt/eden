@@ -16,32 +16,113 @@ import secrets
 
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
+from eden_contracts import mint_opaque_id
+from eden_contracts._common import MEMBER_ID_PATTERN, _check_display_name
 from eden_storage.errors import (
+    InvalidName,
     InvalidPrecondition,
     ReservedIdentifier,
 )
 
-RESERVED_IDENTIFIERS: frozenset[str] = frozenset({"admin", "system", "internal"})
-"""Reserved identifiers from chapter 02 §6.1; rejected for worker/group ids."""
+_MEMBER_ID_RE = re.compile(MEMBER_ID_PATTERN)
+"""Group-member grammar: an opaque `wkr_*` OR `grp_*` (data-model §1.6)."""
 
-_WORKER_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
-"""Worker/group id grammar from chapter 02 §6.1."""
+__all__ = [
+    "DEPLOYMENT_SCOPE_SENTINEL",
+    "RESERVED_GROUP_NAMES",
+    "RESERVED_WORKER_NAMES",
+    "check_credential_hash",
+    "constant_time_dummy_verify",
+    "generate_credential_token",
+    "hash_credential",
+    "mint_opaque_id",
+    "validate_display_name",
+    "validate_group_name",
+    "validate_member_id",
+    "validate_worker_name",
+]
+
+DEPLOYMENT_SCOPE_SENTINEL: str = "exp_" + "0" * 26
+"""Stable sentinel `exp_*` standing in for the deployment scope.
+
+Deployment-scoped workers/groups (chapter 11 §6) are not bound to any
+experiment, but the wire-visible `Worker` / `Group` shapes require an
+`experiment_id` matching the §1.6 `exp_*` grammar. The reference impl
+uses this fixed all-zeros opaque id (a valid `exp_*` value that is
+never minted for a real experiment) to make the deployment scope
+visible while satisfying the schema. Replaces the pre-rename
+free-text `"<deployment>"` sentinel.
+"""
+
+RESERVED_WORKER_NAMES: frozenset[str] = frozenset({"admin", "system", "internal"})
+"""Reserved worker NAMES from chapter 02 §2 (post-rename name-space).
+
+The deployment-admin bearer principal stays the literal token ``admin``
+but no ``worker_id`` is ever minted for it; these names are rejected
+when supplied as an operator-chosen worker display name.
+"""
+
+RESERVED_GROUP_NAMES: frozenset[str] = frozenset({"admins", "orchestrators"})
+"""Reserved group NAMES from chapter 02 §2 (post-rename name-space).
+
+setup-experiment seeds the ``admins`` / ``orchestrators`` groups via the
+privileged ``allow_reserved`` path; a later operator register with one of
+these names collides and is rejected.
+"""
 
 
-def validate_registry_id(value: str, *, kind: str) -> None:
-    """Reject reserved or grammar-violating ids.
+def validate_display_name(value: str) -> str:
+    """Validate an operator-supplied display name (NFC, 1..128, no control).
 
-    `kind` differentiates "worker" / "group" / "member" only for the
-    error message; all three share the §6.1 grammar.
+    Reuses the canonical `eden_contracts._common._check_display_name`
+    so the control plane and the per-experiment registry share one
+    grammar. A grammar violation raises `eden_storage.errors.InvalidName`,
+    which the server layer maps to the wire 422
+    ``eden://error/invalid-name``.
     """
-    if value in RESERVED_IDENTIFIERS:
+    try:
+        return _check_display_name(value)
+    except ValueError as exc:
+        raise InvalidName(f"invalid display name: {exc}") from exc
+
+
+def validate_worker_name(name: str) -> str:
+    """Validate a worker name and reject reserved worker names."""
+    validated = validate_display_name(name)
+    if validated in RESERVED_WORKER_NAMES:
         raise ReservedIdentifier(
-            f"{kind} id {value!r} is reserved by the protocol"
+            f"worker name {validated!r} is reserved by the protocol"
         )
-    if not _WORKER_ID_RE.fullmatch(value):
+    return validated
+
+
+def validate_member_id(member_id: str) -> None:
+    """Reject a group member that is not a real `wkr_*` / `grp_*` id.
+
+    The cross-namespace check from chapter 02 §7.1: a member MUST
+    resolve to an opaque worker or group id. A member id is not a
+    display name, so a malformed one is an `InvalidPrecondition`,
+    not an `InvalidName`.
+    """
+    if not _MEMBER_ID_RE.fullmatch(member_id):
         raise InvalidPrecondition(
-            f"{kind} id {value!r} does not match the chapter 02 §6.1 grammar"
+            f"member id {member_id!r} does not match the member grammar "
+            f"(expected wkr_* or grp_*)"
         )
+
+
+def validate_group_name(name: str, *, allow_reserved: bool = False) -> str:
+    """Validate a group name; reject reserved group names unless allowed.
+
+    `allow_reserved=True` is the privileged setup-experiment seam that
+    mints the reserved `admins` / `orchestrators` groups.
+    """
+    validated = validate_display_name(name)
+    if not allow_reserved and validated in RESERVED_GROUP_NAMES:
+        raise ReservedIdentifier(
+            f"group name {validated!r} is reserved by the protocol"
+        )
+    return validated
 
 
 def generate_credential_token() -> str:

@@ -7,13 +7,14 @@ enforcement, and the exact evaluate-resubmit equivalence rule from
 `04-task-protocol.md` §4.2 (which deliberately excludes
 `artifacts_uri`).
 """
+# pyright: reportAttributeAccessIssue=false
 
 from __future__ import annotations
 
 from collections.abc import Callable
 
 import pytest
-from eden_contracts import EvaluationSchema, Idea, Variant
+from eden_contracts import EvaluationSchema, Idea, Variant, mint_opaque_id
 from eden_dispatch import run_orchestrator_iteration
 from eden_storage import (
     ConflictingResubmission,
@@ -117,7 +118,7 @@ class TestReadIsolation:
         store = make_store()
         _ready_idea(store, "p1")
         store.create_execution_task("t-exec", "p1")
-        claim = store.claim("t-exec", "executor-w")
+        claim = store.claim("t-exec", store.seeded_workers["executor-w"])
         _starting_variant(store, "variant-1", "p1")
         store.submit(
             "t-exec",
@@ -126,7 +127,7 @@ class TestReadIsolation:
         )
         store.accept("t-exec")
         store.create_evaluation_task("t-eval", "variant-1")
-        ec = store.claim("t-eval", "evaluator-w")
+        ec = store.claim("t-eval", store.seeded_workers["evaluator-w"])
         original_evaluation = {"score": 0.9}
         sub = EvaluationSubmission(
             status="success", variant_id="variant-1", evaluation=original_evaluation
@@ -153,7 +154,7 @@ class TestSubmissionBinding:
         store = make_store()
         _ready_idea(store, "p1")
         store.create_execution_task("t-exec", "p1")
-        claim = store.claim("t-exec", "executor-w")
+        claim = store.claim("t-exec", store.seeded_workers["executor-w"])
         _starting_variant(store, "variant-1", "p1")
         store.submit(
             "t-exec",
@@ -162,7 +163,7 @@ class TestSubmissionBinding:
         )
         store.accept("t-exec")
         store.create_evaluation_task("t-eval", "variant-1")
-        eclaim = store.claim("t-eval", "evaluator-w")
+        eclaim = store.claim("t-eval", store.seeded_workers["evaluator-w"])
         with pytest.raises(IllegalTransition):
             store.submit(
                 "t-eval",
@@ -181,7 +182,7 @@ class TestSubmissionBinding:
         _ready_idea(store, "p2")
         store.create_execution_task("t-a", "p1")
         store.create_execution_task("t-b", "p2")
-        ca = store.claim("t-a", "executor-w")
+        ca = store.claim("t-a", store.seeded_workers["executor-w"])
         _starting_variant(store, "variant-a", "p1")
         _starting_variant(store, "variant-b", "p2")
         with pytest.raises(IllegalTransition):
@@ -196,7 +197,7 @@ class TestSubmissionBinding:
     ) -> None:
         store = make_store()
         store.create_ideation_task("t-ideation")
-        claim = store.claim("t-ideation", "ideator-w")
+        claim = store.claim("t-ideation", store.seeded_workers["ideator-w"])
         with pytest.raises(IllegalTransition):
             store.submit(
                 "t-ideation",
@@ -222,7 +223,7 @@ class TestSubmissionBinding:
             )
         )
         store.create_ideation_task("t-ideation")
-        claim = store.claim("t-ideation", "ideator-w")
+        claim = store.claim("t-ideation", store.seeded_workers["ideator-w"])
         with pytest.raises(IllegalTransition):
             store.submit(
                 "t-ideation",
@@ -241,7 +242,7 @@ class TestValidationErrorRouting:
         store = make_store()
         _ready_idea(store, "p1")
         store.create_execution_task("t-exec", "p1")
-        claim = store.claim("t-exec", "executor-w")
+        claim = store.claim("t-exec", store.seeded_workers["executor-w"])
         _starting_variant(store, "variant-1", "p1")
         store.submit(
             "t-exec",
@@ -258,7 +259,7 @@ class TestValidationErrorRouting:
         store = make_store()
         _ready_idea(store, "p1")
         store.create_execution_task("t-exec", "p1")
-        claim = store.claim("t-exec", "executor-w")
+        claim = store.claim("t-exec", store.seeded_workers["executor-w"])
         _starting_variant(store, "variant-1", "p1")
         store.submit(
             "t-exec",
@@ -267,7 +268,7 @@ class TestValidationErrorRouting:
         )
         store.accept("t-exec")
         store.create_evaluation_task("t-eval", "variant-1")
-        ec = store.claim("t-eval", "evaluator-w")
+        ec = store.claim("t-eval", store.seeded_workers["evaluator-w"])
         store.submit(
             "t-eval",
             ec.worker_id,
@@ -281,10 +282,10 @@ class TestValidationErrorRouting:
         self, make_store: Callable[..., Store]
     ) -> None:
         """A malformed success submission lands as task.failed(validation_error)."""
-        store = make_store("exp-vr")
+        store = make_store(mint_opaque_id("exp"))
         _ready_idea(store, "idea-1")
         store.create_execution_task("t-exec", "idea-1")
-        claim = store.claim("t-exec", "executor-w")
+        claim = store.claim("t-exec", store.seeded_workers["executor-w"])
         _starting_variant(store, "variant-1", "idea-1")
         # Claims success but omits commit_sha — must be routed to validation_error.
         store.submit(
@@ -314,12 +315,12 @@ class TestEvaluationSchemaEnforcement:
         self, make_store: Callable[..., Store]
     ) -> None:
         store = make_store(
-            "exp-m",
+            mint_opaque_id("exp"),
             evaluation_schema=EvaluationSchema({"score": "real"}),
         )
         _ready_idea(store, "p1")
         store.create_execution_task("t-exec", "p1")
-        claim = store.claim("t-exec", "executor-w")
+        claim = store.claim("t-exec", store.seeded_workers["executor-w"])
         _starting_variant(store, "variant-1", "p1")
         store.submit(
             "t-exec",
@@ -328,7 +329,7 @@ class TestEvaluationSchemaEnforcement:
         )
         store.accept("t-exec")
         store.create_evaluation_task("t-eval", "variant-1")
-        ec = store.claim("t-eval", "evaluator-w")
+        ec = store.claim("t-eval", store.seeded_workers["evaluator-w"])
         store.submit(
             "t-eval",
             ec.worker_id,
@@ -346,12 +347,12 @@ class TestEvaluationSchemaEnforcement:
         self, make_store: Callable[..., Store]
     ) -> None:
         store = make_store(
-            "exp-m",
+            mint_opaque_id("exp"),
             evaluation_schema=EvaluationSchema({"score": "integer"}),
         )
         _ready_idea(store, "p1")
         store.create_execution_task("t-exec", "p1")
-        claim = store.claim("t-exec", "executor-w")
+        claim = store.claim("t-exec", store.seeded_workers["executor-w"])
         _starting_variant(store, "variant-1", "p1")
         store.submit(
             "t-exec",
@@ -360,7 +361,7 @@ class TestEvaluationSchemaEnforcement:
         )
         store.accept("t-exec")
         store.create_evaluation_task("t-eval", "variant-1")
-        ec = store.claim("t-eval", "evaluator-w")
+        ec = store.claim("t-eval", store.seeded_workers["evaluator-w"])
         store.submit(
             "t-eval",
             ec.worker_id,
@@ -379,12 +380,12 @@ class TestEvaluationSchemaEnforcement:
     ) -> None:
         """Spec §1.3 treats integer/real/text as distinct; bool is not a number."""
         store = make_store(
-            "exp-m",
+            mint_opaque_id("exp"),
             evaluation_schema=EvaluationSchema({"score": "integer"}),
         )
         _ready_idea(store, "p1")
         store.create_execution_task("t-exec", "p1")
-        claim = store.claim("t-exec", "executor-w")
+        claim = store.claim("t-exec", store.seeded_workers["executor-w"])
         _starting_variant(store, "variant-1", "p1")
         store.submit(
             "t-exec",
@@ -393,7 +394,7 @@ class TestEvaluationSchemaEnforcement:
         )
         store.accept("t-exec")
         store.create_evaluation_task("t-eval", "variant-1")
-        ec = store.claim("t-eval", "evaluator-w")
+        ec = store.claim("t-eval", store.seeded_workers["evaluator-w"])
         store.submit(
             "t-eval",
             ec.worker_id,
@@ -421,7 +422,7 @@ class TestFieldValidationOnUpdate:
         store = make_store()
         _ready_idea(store, "p1")
         store.create_execution_task("t-exec", "p1")
-        claim = store.claim("t-exec", "executor-w")
+        claim = store.claim("t-exec", store.seeded_workers["executor-w"])
         _starting_variant(store, "variant-1", "p1")
         store.submit(
             "t-exec",
@@ -447,12 +448,12 @@ class TestFieldValidationOnUpdate:
         self, make_store: Callable[..., Store]
     ) -> None:
         store = make_store(
-            "exp-m",
+            mint_opaque_id("exp"),
             evaluation_schema=EvaluationSchema({"score": "real"}),
         )
         _ready_idea(store, "p1")
         store.create_execution_task("t-exec", "p1")
-        claim = store.claim("t-exec", "executor-w")
+        claim = store.claim("t-exec", store.seeded_workers["executor-w"])
         _starting_variant(store, "variant-1", "p1")
         store.submit(
             "t-exec",
@@ -461,7 +462,7 @@ class TestFieldValidationOnUpdate:
         )
         store.accept("t-exec")
         store.create_evaluation_task("t-eval", "variant-1")
-        ec = store.claim("t-eval", "evaluator-w")
+        ec = store.claim("t-eval", store.seeded_workers["evaluator-w"])
         store.submit(
             "t-eval",
             ec.worker_id,
@@ -501,7 +502,7 @@ class TestEvaluateResubmitEquivalence:
     ) -> str:
         _ready_idea(store, "p1")
         store.create_execution_task("t-exec", "p1")
-        claim = store.claim("t-exec", "executor-w")
+        claim = store.claim("t-exec", store.seeded_workers["executor-w"])
         _starting_variant(store, "variant-1", "p1")
         store.submit(
             "t-exec",
@@ -510,7 +511,7 @@ class TestEvaluateResubmitEquivalence:
         )
         store.accept("t-exec")
         store.create_evaluation_task("t-eval", "variant-1")
-        ec = store.claim("t-eval", "evaluator-w")
+        ec = store.claim("t-eval", store.seeded_workers["evaluator-w"])
         store.submit(
             "t-eval",
             ec.worker_id,
@@ -571,7 +572,7 @@ class TestAcceptRejectSymmetry:
         store = make_store()
         _ready_idea(store, "p1")
         store.create_execution_task("t-exec", "p1")
-        claim = store.claim("t-exec", "executor-w")
+        claim = store.claim("t-exec", store.seeded_workers["executor-w"])
         _starting_variant(store, "variant-1", "p1")
         store.submit(
             "t-exec",
@@ -594,12 +595,12 @@ class TestEvaluationSchemaValidationIndependentOfSuccess:
         variant-side transition itself is mandatory because the worker
         declared variant failure."""
         store = make_store(
-            "exp-m",
+            mint_opaque_id("exp"),
             evaluation_schema=EvaluationSchema({"score": "integer"}),
         )
         _ready_idea(store, "p1")
         store.create_execution_task("t-exec", "p1")
-        claim = store.claim("t-exec", "executor-w")
+        claim = store.claim("t-exec", store.seeded_workers["executor-w"])
         _starting_variant(store, "variant-1", "p1")
         store.submit(
             "t-exec",
@@ -608,7 +609,7 @@ class TestEvaluationSchemaValidationIndependentOfSuccess:
         )
         store.accept("t-exec")
         store.create_evaluation_task("t-eval", "variant-1")
-        ec = store.claim("t-eval", "evaluator-w")
+        ec = store.claim("t-eval", store.seeded_workers["evaluator-w"])
         store.submit(
             "t-eval",
             ec.worker_id,
@@ -645,7 +646,7 @@ class TestPublicValidateEvaluation:
         self, make_store: Callable[..., Store]
     ) -> None:
         store = make_store(
-            "exp-vm",
+            mint_opaque_id("exp"),
             evaluation_schema=EvaluationSchema({"score": "integer", "latency": "real"}),
         )
         store.validate_evaluation({"score": 42, "latency": 1.5})
@@ -654,7 +655,7 @@ class TestPublicValidateEvaluation:
         self, make_store: Callable[..., Store]
     ) -> None:
         store = make_store(
-            "exp-vm",
+            mint_opaque_id("exp"),
             evaluation_schema=EvaluationSchema({"score": "integer"}),
         )
         with pytest.raises(InvalidPrecondition):
@@ -664,7 +665,7 @@ class TestPublicValidateEvaluation:
         self, make_store: Callable[..., Store]
     ) -> None:
         store = make_store(
-            "exp-vm",
+            mint_opaque_id("exp"),
             evaluation_schema=EvaluationSchema({"score": "integer"}),
         )
         with pytest.raises(InvalidPrecondition):
@@ -673,5 +674,5 @@ class TestPublicValidateEvaluation:
     def test_no_op_without_schema(
         self, make_store: Callable[..., Store]
     ) -> None:
-        store = make_store("exp-vm")  # no evaluation_schema
+        store = make_store(mint_opaque_id("exp"))  # no evaluation_schema
         store.validate_evaluation({"anything": "goes", "nested": {"ok": True}})

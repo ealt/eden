@@ -45,8 +45,8 @@ Sign in with principal `admin`, secret from `EDEN_ADMIN_TOKEN` in `.env`.
 | `/admin/variants/` | All variants, filterable by `status`; orphaned-starting badge |
 | `/admin/variants/<id>/` | Per-variant detail: lineage + related-events filter |
 | `/admin/events/` | Event log with limit + reverse + filter; stable indexing across filter operations |
-| `/admin/workers/` | Worker registry; register + reissue-credential forms |
-| `/admin/groups/` | Group registry; add / remove / delete; reserved-id rejection |
+| `/admin/workers/` | Worker registry; register (by display name; server mints the `wkr_*` id) + reissue-credential forms; filter-by-name search box |
+| `/admin/groups/` | Group registry; add / remove / delete; reserved-**name** rejection (`admins` / `orchestrators`) |
 | `/admin/work-refs/` | `refs/heads/work/*` branches classified by status; CAS-guarded deletion (requires web-ui started with `--repo-path`) |
 | `/admin/experiment/` | Experiment state (`running` / `terminated`); terminate form (12a-3) |
 | `/admin/dispatch-mode/` | Per-decision-type dispatch mode toggle: auto vs manual (12a-2) |
@@ -54,6 +54,7 @@ Sign in with principal `admin`, secret from `EDEN_ADMIN_TOKEN` in `.env`.
 
 Notes:
 
+- **Name-vs-id display conventions (issue [#128](https://github.com/ealt/eden/issues/128)).** Experiments, workers, and groups carry an opaque, system-minted id (`exp_*` / `wkr_*` / `grp_*`) plus an optional operator-supplied display `name`. The admin UI and pickers render `<name> (<id>)` when a name exists, the bare opaque id otherwise; a picker submits the opaque id, not the name. **Structured logs and events use the opaque id only** (see [§2.5](#25-container-logs)) — the name is purely a UI affordance, so when you correlate a log line's `worker_id` / `experiment_id` against the UI, match on the id in parentheses. Since names MAY collide, the id is always the stable handle; find an entity by name via the `?name=` query (`GET .../workers?name=`, `GET .../groups?name=`, `GET /v0/control/experiments?name=`), which returns 0..N matches.
 - These are read views over the wire API. Filter changes do not mutate state.
 - Reclaim / reassign / terminate / dispatch-mode toggles do mutate, behind CSRF + the same authorization model as the wire API.
 - **Auth.** Every `/admin/*` page load requires the signed-in session's worker to be a transitive member of the `admins` group; non-admin sessions get a 403 forbidden page from the route-layer middleware (issue #144). The `setup-experiment.sh` script seeds the `admins` group with the web-ui's worker so the default Compose deployment already meets this requirement. Sign-ups created after a deployment is up are not added to `admins` by default and will hit the 403 page until an existing admin adds them via `/admin/groups/admins/`.
@@ -107,15 +108,16 @@ The task-store-server speaks JSON over HTTP. Every state-mutating operation in E
 
 ```bash
 ADMIN=$(grep '^EDEN_ADMIN_TOKEN=' reference/compose/.env | cut -d= -f2)
-EXPERIMENT_ID=demo-phase12
+EXPERIMENT_ID=$(grep '^EDEN_EXPERIMENT_ID=' reference/compose/.env | cut -d= -f2)  # opaque exp_* id (issue #128)
 H=(-H "Authorization: Bearer admin:$ADMIN" -H "X-Eden-Experiment-Id: $EXPERIMENT_ID")
 BASE="http://localhost:8080/v0/experiments/$EXPERIMENT_ID"
 
-curl -s "${H[@]}" "$BASE/tasks"           | jq
-curl -s "${H[@]}" "$BASE/ideas"           | jq
-curl -s "${H[@]}" "$BASE/variants"        | jq
-curl -s "${H[@]}" "$BASE/events?cursor=0" | jq '.events[].type' | tail -30
-curl -s "${H[@]}" "$BASE/workers"         | jq
+curl -s "${H[@]}" "$BASE/tasks"             | jq
+curl -s "${H[@]}" "$BASE/ideas"             | jq
+curl -s "${H[@]}" "$BASE/variants"          | jq
+curl -s "${H[@]}" "$BASE/events?cursor=0"   | jq '.events[].type' | tail -30
+curl -s "${H[@]}" "$BASE/workers"           | jq '.workers[] | {worker_id, name}'  # opaque id + optional display name
+curl -s "${H[@]}" "$BASE/workers?name=operator" | jq '.workers[].worker_id'        # name lookup → 0..N ids
 ```
 
 FastAPI's `/docs`, `/openapi.json`, and `/redoc` are mounted on the task-store-server but auth-gated. For a browsable spec, see [§3.2](#32-swagger-ui-for-the-wire-api).
@@ -270,6 +272,26 @@ docker compose -f compose.yaml -f compose.logging.yaml -f compose.logging-infra.
 Infra stdout streams carry only a `service` label (`postgres` / `forgejo`) — they have no `experiment_id` or `level` (those are EDEN-JSON fields). The **EDEN explore** dashboard still surfaces them: its template variables default to an all-value that doesn't require those labels (`experiment_id`/`level` use `.*`, which matches streams missing the label; `service` uses `.+` as the load-bearing non-empty matcher Loki requires). Filtering by a specific `level` or `experiment_id`, naturally, narrows to the EDEN-service streams that carry those labels.
 
 **Implicit contract with `logging.py`.** Alloy's JSON-parse stage keys on the field names emitted by [`eden_service_common/logging.py`](../reference/services/_common/src/eden_service_common/logging.py) (`ts`, `level`, `service`, `experiment_id`). A future logging-schema rename degrades labels *silently* (ingestion keeps working; search by the renamed label quietly stops). The `compose-smoke-logging` CI job asserts `{service="orchestrator"}` returns lines, so a `service`-label regression fails the smoke. Validate locally with `bash reference/compose/healthcheck/smoke-logging.sh`.
+
+### 2.9 Checkpoint cadence (automatic checkpointing)
+
+When the experiment-config opts in with an [`auto_checkpoint`](user-guide.md#automatic-checkpointing-auto_checkpoint) block ([issue #131](https://github.com/ealt/eden/issues/131)), the orchestrator drops portable-checkpoint `.tar` archives into its `--auto-checkpoint-dir` (Compose: `${EDEN_EXPERIMENT_DATA_ROOT}/checkpoints/`). This turns "checkpoints exist" into "checkpoints are happening regularly" with no operator action.
+
+**Trigger model.** Two triggers fire while the orchestrator is *running*:
+
+- **Cadence** — every `interval_seconds` (default 3600). The first fires one full interval after orchestrator startup (startup state is just the seed). The timer advances from the completion of the last attempt, so a slow export or a delayed tick never produces back-to-back catch-up checkpoints.
+- **On-terminate** — one checkpoint when the orchestrator *observes* the experiment reach `state == "terminated"` (whether the transition came from its own termination policy or an admin). A healthy quiescent-but-running exit emits **no** terminal archive.
+
+**Filename scheme + retention ring.** Periodic archives are `<safe_exp>-<YYYYMMDDTHHMMSS_ffffffZ>.tar` (microsecond-granular so two checkpoints in the same wall second never collide); the terminal archive is `<safe_exp>-terminated-<YYYYMMDDTHHMMSS_ffffffZ>.tar`. `<safe_exp>` is the sanitized experiment id plus an 8-hex hash suffix (collision-resistant across experiments sharing a destination). Only the **periodic** archives are bounded by `retention_count` (default 6, oldest pruned first); the terminal archive is kept outside the ring. Pruning is surgical — it touches only this experiment's periodic files, never terminal archives or operator-dropped files.
+
+**Best-effort, never a storm.** A checkpoint failure never crashes the loop and never perturbs the quiescence counter; on both success and failure the periodic timer advances one interval, so a persistently-failing export retries at the next cadence boundary, not every poll tick.
+
+**Documented gaps (operator framing):**
+
+- **Restoration stays manual.** There is no auto-restore on stack-up (too magical) — use the operator-driven `eden-experiment restore` flow.
+- **Orphan window (no terminal after orchestrator exit).** The orchestrator is not unconditionally long-running — it exits cleanly on quiescence, and the Compose deployment does not restart a clean exit. So if an admin terminates an experiment *after* the orchestrator has already exited, no terminal checkpoint fires; the most recent periodic archive is the safety net. Closing this needs a server-side on-terminate hook (deferred — see the CHANGELOG entry for the tracking issue). Keeping the orchestrator alive longer (a high `max_quiescent_iterations`) widens the window the cadence covers.
+- **Empty git bundle under Compose.** The Compose `task-store-server` carries no `--repo-path`, so the git bundle inside *every* checkpoint archive — manual and auto alike — is empty: task-store wire state round-trips, git history does not yet. This is an inherited Phase 12b completeness gap (deferred — see the CHANGELOG entry); auto-checkpoint protects the task-store state but is not yet a full git-history rollback under Compose.
+- **Disk growth + admin-token lifetime.** Budget `retention_count × checkpoint_size` per experiment for the periodic ring (plus one terminal archive). And note that with `auto_checkpoint.enabled: true` the orchestrator holds the deployment admin token in memory for its whole run (the export endpoint is admin-gated per [`07-wire-protocol.md`](../spec/v0/07-wire-protocol.md) §14) — a modest, opt-in privilege-lifetime expansion over the startup-only use it otherwise makes of the token.
 
 ## 3. Bring-your-own admin UIs
 

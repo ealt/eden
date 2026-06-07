@@ -1,0 +1,367 @@
+--- docs/plans/review/issue-131-auto-checkpointing/20260604T095805/0.md	2026-06-04 09:58:05
++++ docs/plans/issue-131-auto-checkpointing.md	2026-06-04 10:05:21
+@@ -24,6 +24,28 @@
+ Restoration stays operator-driven (no auto-restore — too magical, per
+ the issue).
+ 
++**Lifecycle premise (load-bearing — read before §2).** The
++single-experiment orchestrator is **not unconditionally long-running**:
++it exits cleanly when the experiment goes quiescent
++([`loop.py`](../../reference/services/orchestrator/src/eden_orchestrator/loop.py)
++§146, after `max_quiescent_iterations` no-progress iterations), and the
++Compose deployment intentionally does **not** restart a clean exit
++([`compose.yaml`](../../reference/compose/compose.yaml) `restart:
++on-failure`). Therefore the precise behavior this chunk delivers is:
++**cadence checkpoints happen while the orchestrator is active, and a
++terminal checkpoint happens if the orchestrator observes the experiment
++terminate before it exits.** This is the right fit for the AWS-MVP
++posture — the window we care about is the *active* experiment (workers
++producing, the operator at risk of a terminate-by-mistake). A
++quiescent-but-not-terminated experiment whose orchestrator has already
++exited is not being checkpointed; for that the operator either keeps the
++orchestrator alive (a high `max_quiescent_iterations`, which the
++manual-UI playbook already recommends) or uses the manual
++`eden-experiment checkpoint`. Continuous checkpointing of an idle
++experiment with no live orchestrator is what the deferred sibling-container
++checkpointer (§4.2) would add; it is explicitly not v0. This premise is
++stated plainly here so the cadence guarantee is never over-read.
++
+ ---
+ 
+ ## 1. Naming map
+@@ -60,11 +82,16 @@
+ The issue floats orchestrator vs. a dedicated `auto-checkpointer` sibling
+ container. **Chosen: the orchestrator's single-experiment loop**
+ ([`run_orchestrator_loop`](../../reference/services/orchestrator/src/eden_orchestrator/loop.py)).
+-It is already a long-running per-experiment process with a polling loop,
+-already holds a `StoreClient`, and adding an "is it time to checkpoint?"
+-check after each iteration is cheap. A sibling container is more
+-infrastructure for no v0 benefit and would need its own credentials +
+-config plumbing. **Multi-experiment / control-plane mode
++It runs per-experiment with a polling loop, already holds a `StoreClient`,
++and adding an "is it time to checkpoint?" check after each iteration is
++cheap. The deliberate trade-off (per the Lifecycle premise above): this
++covers the experiment only while the orchestrator is *active* — it does
++**not** checkpoint a quiescent experiment whose orchestrator has exited.
++The cleaner match for "keep checkpointing until explicitly terminated" is
++a sibling checkpointer, but that is more infrastructure (its own
++credentials + repo-bundle + config plumbing) for a window the AWS-MVP
++posture doesn't prioritize; deferred to §4.2. **Multi-experiment /
++control-plane mode
+ ([`multi_loop.py`](../../reference/services/orchestrator/src/eden_orchestrator/multi_loop.py))
+ is explicitly out of scope** — it resolves per-experiment config
+ differently (deferred to [#214](https://github.com/ealt/eden/issues/214))
+@@ -120,37 +147,61 @@
+ clear message ("auto_checkpoint requires --admin-token / $EDEN_ADMIN_TOKEN
+ so the orchestrator can call the admin-gated export endpoint"). In the
+ compose deployment `EDEN_ADMIN_TOKEN` is already wired to the
+-orchestrator, so this is satisfied with no new operator action.
++orchestrator, so this is satisfied with no new operator action. The
++admin bearer is held only by the scheduler's dedicated export client; see
++§8 risk 7 on the privilege-lifetime implication.
+ 
+-**Net: this chunk touches NO normative spec prose and NO wire authority
+-table.** Consistent with the issue ("auto-checkpoint is a deployment
+-behavior, not a protocol contract"). The only `spec/`-tree file touched
+-is `experiment-config.schema.json` (an implementation-defined config
+-block, like `max_quiescent_iterations`), updated in lockstep with the
+-Pydantic model per the schema-parity discipline.
++**Net: this chunk needs NO normative spec prose change and NO wire
++authority-table change.** Consistent with the issue ("auto-checkpoint is
++a deployment behavior, not a protocol contract"). The one `spec/`-tree
++file edited is `experiment-config.schema.json` (an implementation-defined
++config block, like `max_quiescent_iterations`), updated in lockstep with
++the Pydantic model per the schema-parity discipline — a schema addition,
++not a protocol-prose or authority change.
+ 
+-### D5 — Best-effort: a checkpoint failure never crashes the loop
++### D5 — Best-effort: a checkpoint failure never crashes the loop, and never storms
+ 
+ The whole point is a safety net; it must never *cause* an outage. Every
+-export/prune is wrapped: on any exception the scheduler logs a
+-structured warning and the loop continues. A failed periodic does not
+-advance the "last checkpoint" timer past its retry window (the next
+-iteration retries once the interval re-elapses) and does not count
+-against quiescence.
++export/prune **and the per-iteration experiment-state read** are wrapped:
++on any exception the scheduler/loop logs a structured warning and the
++loop continues. Checkpoint activity never perturbs the `quiescent`
++counter.
+ 
+-### D6 — On-terminate is observed in-loop; orphan case is documented, not solved here
++**No retry storm.** A naive "leave the last-checkpoint timer unchanged on
++failure" would retry the export on *every* poll tick (sub-second) once
++the interval has elapsed — a retry storm against a persistently-failing
++export. So on *both* success and failure the periodic timer advances by
++one `interval_seconds`: a failed periodic is retried at the next cadence
++boundary, not every tick. The cost is that a transient failure waits one
++interval before the next attempt — acceptable for a safety net, and the
++on-terminate trigger is the backstop for the experiment's final state.
+ 
+-The terminal checkpoint fires when the loop **observes** the experiment
+-transition to `terminated` (the loop already drains post-terminate, so
+-it has iterations to observe it — whether the transition came from its
+-own `termination_policy` or an admin). A final terminal-check also runs
+-once on the loop's exit paths. **Known gap:** if the orchestrator has
+-already exited (quiescence) before an admin later terminates, no
+-terminal checkpoint fires — the most recent periodic checkpoint is the
+-safety net. A server-side on-terminate hook would close this but needs
+-the task-store-server to own a destination + repo bundle + admin
+-context; deferred to a follow-up (§4.2).
++### D6 — On-terminate is gated on an *observed* `terminated` state
+ 
++The terminal checkpoint fires **only** when the loop observes
++`read_experiment_state() == "terminated"` (the loop drains
++post-terminate, so it has iterations to observe it — whether the
++transition came from its own `termination_policy` or an admin). It is
++**never** fired on a plain quiescent-but-running exit; otherwise a normal
++healthy quiescence would drop a misleading `-terminated-` archive. A
++final terminal re-check runs once on the loop's exit paths, also gated on
++an observed `terminated` state (covers terminate-then-immediate-quiescence).
++The state read is best-effort (D5): if it raises, the iteration skips the
++terminal check rather than crashing.
++
++**Terminal is once-per-deployment, restart-deduped.** The once-only flag
++is in-memory, so an orchestrator restart against an
++already-`terminated` experiment would re-fire. Before writing a terminal
++archive the scheduler checks whether a `<experiment_id>-terminated-*.tar`
++already exists in the destination and skips if so — so a restart does not
++produce a second terminal checkpoint.
++
++**Known gap:** if the orchestrator has already exited (quiescence) before
++an admin later terminates, no terminal checkpoint fires — the most recent
++periodic checkpoint is the safety net. A server-side on-terminate hook
++would close this but needs the task-store-server to own a destination +
++repo bundle + admin context; deferred to a follow-up (§4.2).
++
+ ### D7 — `auto_checkpoint` lives in the spec config schema (precedent), kept green by parity
+ 
+ `experiment-config.schema.json` is under `spec/v0/schemas/`, but it
+@@ -197,6 +248,14 @@
+ match how the existing knobs leave defaults to the impl). `ExperimentConfig`
+ gains `auto_checkpoint: Annotated[AutoCheckpointConfig | None, NotNone] = None`.
+ 
++Per the AGENTS.md schema-parity discipline, the **inner** optional fields
++of `AutoCheckpointConfig` must each be `NotNone`-wrapped too (e.g.
++`enabled: Annotated[bool | None, NotNone] = None`), not just the
++top-level `auto_checkpoint` field — otherwise `interval_seconds: null`
++would be accepted by the model but rejected by the schema's `type`, and
++schema-parity would fail. Reject fixtures cover explicit-null on each
++inner field.
++
+ Corpus fixtures in
+ [`eden-contracts/tests/cases.py`](../../reference/packages/eden-contracts/tests/cases.py):
+ at least one accept (full block) and reject fixtures per constraint
+@@ -205,28 +264,47 @@
+ ### 3.2 `CheckpointScheduler` (Wave 2 — pure logic)
+ 
+ New module `eden_orchestrator/checkpoint_scheduler.py`. Constructed from
+-the resolved `AutoCheckpointConfig` + destination `Path` + an admin-authed
+-export callable + an injectable `now_fn` (monotonic, for deterministic
+-tests). Responsibilities — all pure enough to unit-test without the loop:
++the resolved `AutoCheckpointConfig` + destination `Path` + an
++**admin-authed export callable** (`export_fn(stream) -> None`, closing
++over the scheduler's own admin client — D4) + an injectable monotonic
++`now_fn` (for deterministic tests). The scheduler does **not** take a
++`Store` parameter on its export methods — if it exported via the loop's
++worker-bearer `store` it would 403 (D4). All export I/O goes through the
++admin-authed `export_fn`. Responsibilities — pure enough to unit-test
++without the loop:
+ 
+-- `maybe_checkpoint_periodic(store, *, wall_now)` — if
+-  `monotonic_now - last_at >= interval_seconds`, export to
+-  `<dir>/<exp>-<wall_ts>.tar`, update `last_at`, then prune. Best-effort
+-  (D5): catch + log, leave `last_at` unchanged on failure so the next
+-  iteration retries.
+-- `maybe_checkpoint_terminal(store)` — if `on_terminate` and not already
+-  done, export to `<dir>/<exp>-terminated-<wall_ts>.tar`, set the
+-  done-flag. Idempotent.
+-- `_prune()` — list destination entries matching the **periodic** pattern
+-  for *this* `experiment_id` only (never the `-terminated-` files, never
+-  operator-added files), sort by embedded timestamp, unlink oldest beyond
+-  `retention_count`. Robust to unexpected files.
++- `maybe_checkpoint_periodic(*, wall_now)` — if
++  `now_fn() - next_at >= 0`, export to `<dir>/<safe_exp>-<wall_ts>.tar`,
++  advance `next_at += interval_seconds`, then prune. **First checkpoint
++  is one full interval after construction** (`next_at` initialized to
++  `start + interval_seconds`) — startup state is just the seed, low value,
++  and this avoids a t=0 churn checkpoint. Best-effort (D5): on any
++  exception, log and **still advance `next_at` by one interval** (no
++  retry storm); a partial temp file is cleaned up.
++- `maybe_checkpoint_terminal()` — if `on_terminate`, not already done
++  this process, **and no `<safe_exp>-terminated-*.tar` already exists in
++  the destination** (restart dedup, D6), export to
++  `<dir>/<safe_exp>-terminated-<wall_ts>.tar` and set the done-flag.
++- `_prune()` — list destination entries matching the **periodic** pattern
++  for *this* experiment only (never the `-terminated-` files, never
++  operator-added files), sort by embedded timestamp, unlink oldest beyond
++  `retention_count`. Robust to unexpected files (a too-broad glob is a
++  data-loss vector — §8 risk 3).
+ 
+-The export callable is `store.export_checkpoint(open(tmp, "wb"))` against
+-an **admin-authed** `StoreClient` (D4), written to a temp file then
+-`os.replace`-d into place so a partially-written `.tar` is never visible
+-to the operator (mirrors the credentials-file atomic-write discipline in
++**Filename safety.** `experiment_id` is an arbitrary ≤64-char string per
++[`02-data-model.md`](../../spec/v0/02-data-model.md) §1.3 (not guaranteed
++filesystem-safe). The scheduler derives `safe_exp` by replacing any
++character outside `[A-Za-z0-9._-]` with `_` before composing filenames,
++so a `/`-bearing id cannot escape the destination dir or collide oddly.
++
++**Atomic write.** Export goes to a temp file **created inside the
++destination directory** (`tempfile.NamedTemporaryFile(dir=dest, ...)`) so
++the subsequent `os.replace` is a same-filesystem atomic rename — a
++partially-written `.tar` is never visible to the operator and the rename
++can't cross a device boundary (mirrors the credentials-file atomic-write
++discipline in
+ [`checkpoints.py`](../../reference/packages/eden-wire/src/eden_wire/routers/checkpoints.py)).
++The temp file is unlinked on export failure.
+ 
+ Disabled config (`enabled=false` or block absent) ⇒ a no-op scheduler
+ (both methods return immediately); the loop always holds one so there is
+@@ -238,23 +316,31 @@
+ gains a `scheduler: CheckpointScheduler` parameter. Per iteration, after
+ `run_orchestrator_iteration` returns:
+ 
+-1. `scheduler.maybe_checkpoint_periodic(store, wall_now=datetime.now(UTC))`.
+-2. Read experiment state (one cheap `store.read_experiment_state()`, same
+-   posture as the per-iteration `read_dispatch_mode`); if `terminated`,
+-   `scheduler.maybe_checkpoint_terminal(store)`.
++1. `scheduler.maybe_checkpoint_periodic(wall_now=datetime.now(UTC))`
++   (export goes through the scheduler's own admin client, not `store`).
++2. Read experiment state best-effort — one cheap
++   `store.read_experiment_state()` (either-auth, so the worker bearer
++   suffices) wrapped like the per-iteration `read_dispatch_mode`; on a
++   read exception, log and skip the terminal check this iteration (D5).
++   If the state is `terminated`, `scheduler.maybe_checkpoint_terminal()`.
+ 
+-Both `return` paths (quiescence + `stop`) funnel through a single exit
+-that runs a final `maybe_checkpoint_terminal` re-check (covers
+-terminate-then-immediate-quiescence, D6). Neither call perturbs the
+-`quiescent` counter.
++The current loop has direct `return`s on quiescence (§146) and `stop`
++(§149). Both are refactored to funnel through a single exit that runs a
++final best-effort state read + `maybe_checkpoint_terminal()` — gated on
++an observed `terminated` state, so a healthy quiescent-but-running exit
++never emits a `-terminated-` archive (D6). No checkpoint call perturbs
++the `quiescent` counter.
+ 
+ [`cli.py`](../../reference/services/orchestrator/src/eden_orchestrator/cli.py):
+ new `--auto-checkpoint-dir` (env `EDEN_AUTO_CHECKPOINT_DIR`). At startup
+ (single-experiment path only): parse `config.auto_checkpoint`; if
+-`enabled`, assert an admin token is resolvable (else fail fast, D4),
+-build the admin-authed export client, construct the `CheckpointScheduler`,
+-and pass it to `run_orchestrator_loop`. When disabled, pass the no-op
+-scheduler. The multi-experiment entrypoint passes the no-op scheduler
++`enabled`, **fail fast** (clear startup error) when either the admin
++token is not resolvable (D4) **or** no destination dir is resolved — both
++are required for auto-checkpoint to function and a silent no-op would
++violate the operator's durability expectation. Then build the
++admin-authed export client, construct the `CheckpointScheduler`, and pass
++it to `run_orchestrator_loop`. When disabled, pass the no-op scheduler.
++The multi-experiment entrypoint passes the no-op scheduler
+ unconditionally (§4.2 deferral).
+ 
+ ### 3.4 Compose + setup wiring (Wave 4)
+@@ -271,10 +357,15 @@
+ - `smoke-auto-checkpoint.sh`: mirrors `smoke-checkpoint.sh` phases 1–3
+   but with a fixture config that sets `auto_checkpoint.enabled: true` and
+   a short `interval_seconds`. Asserts: ≥1 periodic `.tar` appears in the
+-  host checkpoints dir while the experiment runs; after the orchestrator
+-  exits (quiescence/terminate), a `-terminated-` `.tar` exists; each `.tar`
+-  parses and carries `manifest.json`; the periodic count never exceeds
+-  `retention_count`. Bash-3.2 clean (no `mapfile`/`declare -A`) per AGENTS.md.
++  host checkpoints dir while the experiment runs; each `.tar` parses and
++  carries `manifest.json`; the periodic count never exceeds
++  `retention_count`. To make the terminal assertion **deterministic**,
++  the smoke **explicitly terminates** the experiment (drive a
++  `termination=auto` policy to fire, or `POST .../terminate` with the
++  admin bearer) and only then asserts a `<exp>-terminated-*.tar` exists —
++  it does NOT infer termination from orchestrator exit (a quiescent-but-
++  running exit must produce no terminal archive). Bash-3.2 clean (no
++  `mapfile`/`declare -A`) per AGENTS.md.
+ - `.github/workflows/ci.yml`: `compose-smoke-auto-checkpoint` job mirroring
+   the existing `compose-smoke-checkpoint` job (no `setup-python` needed —
+   pure docker/jq/curl). Includes the volume-cleanup-between-runs guard.
+@@ -291,9 +382,11 @@
+   the operator-driven `eden-experiment restore` flow (restoration stays
+   manual — no auto-restore).
+ - [`CHANGELOG.md`](../../CHANGELOG.md) `[Unreleased]` entry + roadmap
+-  one-liner (durability cluster, planless-shape pointer to the merged PR
+-  per AGENTS.md "Recording chunk completions"). Each deferral phrase in
+-  the entry carries its issue link.
++  one-liner. This chunk **has a plan** (this file), so the roadmap
++  pointer uses the **plan-pointer** shape, not the planless PR shape:
++  `- [issue-131](plans/issue-131-auto-checkpointing.md) — Automatic
++  checkpointing — **shipped <date>** (see [CHANGELOG](../CHANGELOG.md))`.
++  Each deferral phrase in the CHANGELOG entry carries its issue link.
+ - Glossary: confirm "checkpoint" coverage already suffices; add the
+   `auto_checkpoint` block only if a reader would otherwise miss it.
+ 
+@@ -381,16 +474,24 @@
+ 
+ - ruff / pyright clean.
+ - `uv run pytest -q reference/services/orchestrator/tests/test_checkpoint_scheduler.py`
+-  — interval fires at the boundary; retention prunes oldest only; terminal
+-  is once-only; failure is swallowed and `last_at` unchanged; disabled is
+-  no-op; periodic pruning ignores `-terminated-` and foreign files.
++  covering: first periodic fires one interval after construction (not at
++  t=0); interval fires at the boundary; retention prunes oldest only and
++  ignores `-terminated-` + foreign files; terminal is once-only and skips
++  when a `-terminated-` file already exists (restart dedup); export
++  failure is swallowed AND the timer still advances one interval (no
++  storm) AND the temp file is cleaned up; an `experiment_id` containing
++  `/` produces a safe in-dir filename; disabled config is a no-op.
+ 
+ **Wave 3 (loop + CLI):**
+ 
+ - ruff / pyright clean.
+-- `uv run pytest -q reference/services/orchestrator` — loop fires the
+-  periodic and terminal checkpoints; enabled-without-admin-token fails
+-  fast; multi-loop unaffected.
++- `uv run pytest -q reference/services/orchestrator` covering: loop fires
++  the periodic checkpoint; **no** terminal archive on a quiescent-but-
++  running exit; terminal archive after an observed policy/admin
++  termination; a raising `read_experiment_state()` does not crash the loop
++  (D5); enabled-without-admin-token and enabled-without-dest-dir both fail
++  fast at startup; the scheduler exports via its admin client (a
++  worker-bearer export would 403); multi-loop unaffected.
+ - `uv run pytest -q` (full suite) — nothing else regressed.
+ 
+ **Wave 4 (compose + smoke):**
+@@ -469,7 +570,31 @@
+    cherry-pick-contamination pitfall).
+ 5. **Disk growth.** `retention_count × checkpoint_size` per experiment;
+    documented as an operator concern in observability docs.
+-6. **No spec drift.** Because this chunk is spec-free by design (D4/D7),
+-   the risk is *accidentally* introducing a spec claim. Keep
+-   `check-rename-discipline.py` + `spec-xref-check.py` in the gate and
+-   confirm the only `spec/` edit is the config schema.
++6. **No spec drift.** Because this chunk needs no normative-prose or
++   authority change by design (D4/D7), the risk is *accidentally*
++   introducing a spec claim. Keep `check-rename-discipline.py` +
++   `spec-xref-check.py` in the gate and confirm the only `spec/` edit is
++   the config schema.
++7. **Admin-bearer lifetime (privilege expansion).** Today the
++   orchestrator resolves the admin token at startup and uses it only for
++   the bootstrap group-join. Auto-checkpoint extends its in-memory
++   lifetime to the whole run (the scheduler's export client needs it per
++   cadence). This is a real, if modest, privilege-surface expansion. It's
++   acceptable because the token is already in the orchestrator's process
++   memory at startup, the bearer is confined to the scheduler's dedicated
++   export client (not shared with the worker-bearer `StoreClient`), and
++   the feature is opt-in (`enabled=false` keeps the token startup-only).
++   Documented in observability docs so operators running with
++   `auto_checkpoint.enabled: true` understand the orchestrator is now a
++   long-lived admin-token holder.
++8. **Incomplete archives if the task-store-server substrate is unwired.**
++   The export composes the experiment-config text + repo bundle
++   server-side ([`checkpoints.py`](../../reference/packages/eden-wire/src/eden_wire/routers/checkpoints.py));
++   when the task-store-server has no `checkpoint_repo_root` configured the
++   bundle is empty (structurally valid, resume-incomplete). Auto-checkpoint
++   inherits this dependency from the manual export — in the compose
++   deployment the server is wired (the manual `smoke-checkpoint.sh`
++   round-trips), so the auto smoke runs against the same wired stack. No
++   new work; flagged so it isn't a surprise.
++9. **Terminal duplication on restart** is handled by the existing-file
++   check (D6); a defense-in-depth note, not an open risk.

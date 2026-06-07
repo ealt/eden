@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_macros.html" import name_id %}
 {% block title %}EDEN — reassign task {{ task.task_id }}{% endblock %}
 {% block main %}
 <h1>reassign task <code>{{ task.task_id }}</code></h1>
@@ -15,7 +16,7 @@
     <dt>current target</dt>
     <dd>
         {% if current_target %}
-            <code>{{ current_target.kind }}:{{ current_target.id }}</code>
+            <code>{{ current_target.kind }}:</code>{{ name_id(member_names.get(current_target.id), current_target.id) }}
         {% else %}
             <em>(none — any registered worker)</em>
         {% endif %}

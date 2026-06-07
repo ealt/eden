@@ -32,8 +32,13 @@ def test_two_experiments_independent_lease_state(
     lease for E2. Acquiring E1's lease does NOT block E2's acquire
     by a different (or even the same) replica.
     """
-    control_plane_client.register_experiment("exp-1", "file:///etc/1.yaml")
-    control_plane_client.register_experiment("exp-2", "file:///etc/2.yaml")
+    e1 = control_plane_client.register_experiment(
+        "exp-1", "file:///etc/1.yaml"
+    ).json()["experiment_id"]
+    e2 = control_plane_client.register_experiment(
+        "exp-2", "file:///etc/2.yaml"
+    ).json()["experiment_id"]
+    control_plane_client.register_worker("auto-orchestrator-x")
     # Same replica can hold both — that's the steady-state for a
     # single-replica deployment.
     r1 = control_plane_client.acquire_lease(
@@ -45,8 +50,8 @@ def test_two_experiments_independent_lease_state(
     assert r1.status_code == 201
     assert r2.status_code == 201
     body1, body2 = r1.json(), r2.json()
-    assert body1["experiment_id"] == "exp-1"
-    assert body2["experiment_id"] == "exp-2"
+    assert body1["experiment_id"] == e1
+    assert body2["experiment_id"] == e2
     assert body1["lease_id"] != body2["lease_id"]
 
 
@@ -61,6 +66,10 @@ def test_per_experiment_isolation_under_contention(
     """
     control_plane_client.register_experiment("exp-1", "file:///etc/1.yaml")
     control_plane_client.register_experiment("exp-2", "file:///etc/2.yaml")
+    control_plane_client.register_worker("auto-orchestrator-a")
+    holder_b = control_plane_client.register_worker(
+        "auto-orchestrator-b"
+    ).json()["worker_id"]
     control_plane_client.acquire_lease(
         "exp-1", "auto-orchestrator-a", "uuid-a"
     )
@@ -73,10 +82,11 @@ def test_per_experiment_isolation_under_contention(
     assert r_cross.status_code == 409
     assert r_cross.json()["type"] == "eden://error/lease-held-by-other"
     # Replica B's exp-2 lease unaffected — observable via the
-    # `lease.holder` field on read_experiment_metadata.
+    # `lease.holder` field (its minted `wkr_*` id, rename #128) on
+    # read_experiment_metadata.
     entry_2 = control_plane_client.read_experiment_metadata("exp-2").json()
     assert entry_2["lease"] is not None
-    assert entry_2["lease"]["holder"] == "auto-orchestrator-b"
+    assert entry_2["lease"]["holder"] == holder_b
 
 
 @pytest.mark.skip(

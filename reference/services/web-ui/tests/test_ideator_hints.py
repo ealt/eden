@@ -9,6 +9,7 @@ The ideator landing AND draft pages must surface:
 Both rendered as click-to-copy chips so the operator has something
 to paste into the ``parent_commits`` field.
 """
+# pyright: reportAttributeAccessIssue=false
 
 from __future__ import annotations
 
@@ -47,7 +48,7 @@ def _seed_integrated_variant(
     eval_task_id, _, _ = seed_evaluate_task(
         store, slug=slug, variant_id=variant_id
     )
-    eval_claim = store.claim(eval_task_id, "evaluator-w")
+    eval_claim = store.claim(eval_task_id, store._test_worker_ids["evaluator-w"])
     store.submit(
         eval_task_id,
         eval_claim.worker_id,

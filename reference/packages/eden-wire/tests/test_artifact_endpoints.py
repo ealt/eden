@@ -19,7 +19,7 @@ from eden_wire import StoreClient, make_app
 from eden_wire.errors import Forbidden
 from fastapi.testclient import TestClient
 
-EXPERIMENT_ID = "exp-166"
+EXPERIMENT_ID = "exp_xmwwr2gf0qzp1gc38pg58a0ks3"
 ADMIN_TOKEN = "test-admin-token-166"
 _URI_RE = re.compile(r"^eden://artifacts/[0-9a-f]{32}$")
 
@@ -195,23 +195,27 @@ class TestDepositFetchNoAuth:
 # ----------------------------------------------------------------------
 
 
-def _register_worker(client: TestClient, worker_id: str) -> str:
+def _register_worker(client: TestClient, name: str) -> str:
+    """Register a worker by display name (#128); return its `wkr_*:token` bearer."""
     resp = client.post(
         f"/v0/experiments/{EXPERIMENT_ID}/workers",
         headers=_hdr({"Authorization": f"Bearer admin:{ADMIN_TOKEN}"}),
-        json={"worker_id": worker_id},
+        json={"name": name},
     )
-    assert resp.status_code == 200
-    return resp.json()["registration_token"]
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    return f"{body['worker_id']}:{body['registration_token']}"
 
 
-def _register_group(client: TestClient, group_id: str, members: list[str]) -> None:
+def _register_group(client: TestClient, name: str, member_bearers: list[str]) -> None:
+    """Create a group by display name (#128) with the given members (by minted id)."""
+    members = [b.split(":", 1)[0] for b in member_bearers]
     resp = client.post(
         f"/v0/experiments/{EXPERIMENT_ID}/groups",
         headers=_hdr({"Authorization": f"Bearer admin:{ADMIN_TOKEN}"}),
-        json={"group_id": group_id, "members": members},
+        json={"name": name, "members": members},
     )
-    assert resp.status_code == 200
+    assert resp.status_code == 200, resp.text
 
 
 def _fetch_by_uri(client: TestClient, uri: str, bearer: str | None = None):
@@ -233,10 +237,8 @@ class TestFetchACL:
         self, store: InMemoryStore
     ) -> None:
         client = TestClient(make_app(store, admin_token=ADMIN_TOKEN))
-        alice_token = _register_worker(client, "alice")
-        bob_token = _register_worker(client, "bob")
-        alice = f"Bearer alice:{alice_token}"
-        bob = f"Bearer bob:{bob_token}"
+        alice = f"Bearer {_register_worker(client, 'alice')}"
+        bob = f"Bearer {_register_worker(client, 'bob')}"
         admin = f"Bearer admin:{ADMIN_TOKEN}"
 
         uri = self._deposit_as(client, alice)
@@ -252,20 +254,20 @@ class TestFetchACL:
 
     def test_admins_group_member_can_fetch(self, store: InMemoryStore) -> None:
         client = TestClient(make_app(store, admin_token=ADMIN_TOKEN))
-        alice_token = _register_worker(client, "alice")
-        carol_token = _register_worker(client, "carol")
-        _register_group(client, "admins", ["carol"])
+        alice = _register_worker(client, "alice")
+        carol = _register_worker(client, "carol")
+        _register_group(client, "admins", [carol])
 
-        uri = self._deposit_as(client, f"Bearer alice:{alice_token}")
-        resp = _fetch_by_uri(client, uri, f"Bearer carol:{carol_token}")
+        uri = self._deposit_as(client, f"Bearer {alice}")
+        resp = _fetch_by_uri(client, uri, f"Bearer {carol}")
         assert resp.status_code == 200
 
     def test_admin_deposit_attributed_to_admin(self, store: InMemoryStore) -> None:
         client = TestClient(make_app(store, admin_token=ADMIN_TOKEN))
         uri = self._deposit_as(client, f"Bearer admin:{ADMIN_TOKEN}")
         # created_by == "admin"; a worker who is not admin-class is refused.
-        worker_token = _register_worker(client, "dave")
-        resp = _fetch_by_uri(client, uri, f"Bearer dave:{worker_token}")
+        dave = _register_worker(client, "dave")
+        resp = _fetch_by_uri(client, uri, f"Bearer {dave}")
         assert resp.status_code == 403
 
     def test_unauthenticated_request_rejected(self, store: InMemoryStore) -> None:
@@ -325,13 +327,13 @@ class TestStoreClientRoundtrip:
         # back to Forbidden client-side.
         app = make_app(store, admin_token=ADMIN_TOKEN)
         client = TestClient(app, base_url="http://wire.test")
-        alice = _register_worker(client, "alice")
-        bob = _register_worker(client, "bob")
+        alice_bearer = _register_worker(client, "alice")  # "wkr_…:token"
+        bob_bearer = _register_worker(client, "bob")
         alice_sc = StoreClient(
-            "http://wire.test", EXPERIMENT_ID, client=client, bearer=f"alice:{alice}"
+            "http://wire.test", EXPERIMENT_ID, client=client, bearer=alice_bearer
         )
         bob_sc = StoreClient(
-            "http://wire.test", EXPERIMENT_ID, client=client, bearer=f"bob:{bob}"
+            "http://wire.test", EXPERIMENT_ID, client=client, bearer=bob_bearer
         )
         uri = alice_sc.deposit_artifact(b"x").artifacts_uri
         with pytest.raises(Forbidden):

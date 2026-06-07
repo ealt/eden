@@ -35,7 +35,7 @@ def _canonical_manifest_dict() -> dict[str, Any]:
     return {
         "checkpoint_format_version": CHECKPOINT_FORMAT_VERSION,
         "spec_version": CHECKPOINT_SPEC_VERSION,
-        "experiment_id": "exp-abc",
+        "experiment_id": "exp_0123456789abcdefghjkmnpqrs",
         "exported_at": "2026-05-06T15:00:00Z",
         "exporter": {
             "implementation": "eden-reference/0.x",
@@ -69,7 +69,7 @@ def _canonical_manifest_dict() -> dict[str, Any]:
 
 def test_canonical_manifest_validates() -> None:
     manifest = CheckpointManifest.model_validate(_canonical_manifest_dict())
-    assert manifest.experiment_id == "exp-abc"
+    assert manifest.experiment_id == "exp_0123456789abcdefghjkmnpqrs"
     assert manifest.counts.tasks == 42
     assert manifest.files.repo_bundle == "repo.bundle"
 

@@ -28,6 +28,8 @@ from eden_storage.errors import AlreadyExists, NotFound
 
 _SEED = "a" * 40
 _DT = "2026-05-01T00:00:00.000Z"
+# Valid opaque experiment id (issue #128 grammar: ^exp_[Crockford]{26}$).
+_EXP = "exp_0123456789abcdefghjkmnpqrs"
 
 
 def _config(baseline: BaselineConfig | None = None) -> ExperimentConfig:
@@ -44,7 +46,7 @@ def _config(baseline: BaselineConfig | None = None) -> ExperimentConfig:
 
 def _store(*, base_commit_sha: str | None = _SEED) -> InMemoryStore:
     store = InMemoryStore(
-        experiment_id="exp-baseline",
+        experiment_id=_EXP,
         evaluation_schema=EvaluationSchema({"score": "real"}),
         base_commit_sha=base_commit_sha,
     )
@@ -55,7 +57,7 @@ def _store(*, base_commit_sha: str | None = _SEED) -> InMemoryStore:
 
 def test_ensure_baseline_default_path_creates_starting() -> None:
     store = _store()
-    ensure_baseline_variant(store=store, config=_config(), experiment_id="exp-baseline")
+    ensure_baseline_variant(store=store, config=_config(), experiment_id=_EXP)
     variant = store.read_variant(BASELINE_VARIANT_ID)
     assert variant.kind == "baseline"
     assert variant.status == "starting"
@@ -68,7 +70,7 @@ def test_ensure_baseline_override_path_creates_success() -> None:
     ensure_baseline_variant(
         store=store,
         config=_config(BaselineConfig(metrics={"score": 0.5})),
-        experiment_id="exp-baseline",
+        experiment_id=_EXP,
     )
     variant = store.read_variant(BASELINE_VARIANT_ID)
     assert variant.status == "success"
@@ -80,7 +82,7 @@ def test_ensure_baseline_disabled_creates_nothing() -> None:
     ensure_baseline_variant(
         store=store,
         config=_config(BaselineConfig(enabled=False)),
-        experiment_id="exp-baseline",
+        experiment_id=_EXP,
     )
     assert store.list_variants() == []
 
@@ -88,16 +90,16 @@ def test_ensure_baseline_disabled_creates_nothing() -> None:
 def test_ensure_baseline_no_base_commit_sha_skips() -> None:
     store = _store(base_commit_sha=None)
     # No crash, no baseline (legacy experiment with no recorded seed).
-    ensure_baseline_variant(store=store, config=_config(), experiment_id="exp-baseline")
+    ensure_baseline_variant(store=store, config=_config(), experiment_id=_EXP)
     assert store.list_variants() == []
 
 
 def test_ensure_baseline_idempotent() -> None:
     store = _store()
-    ensure_baseline_variant(store=store, config=_config(), experiment_id="exp-baseline")
+    ensure_baseline_variant(store=store, config=_config(), experiment_id=_EXP)
     events_after_first = len(store.events())
     # Second call is a verified-read-back no-op: no new variant, no new event.
-    ensure_baseline_variant(store=store, config=_config(), experiment_id="exp-baseline")
+    ensure_baseline_variant(store=store, config=_config(), experiment_id=_EXP)
     assert len(store.list_variants()) == 1
     assert len(store.events()) == events_after_first
 
@@ -108,7 +110,7 @@ def test_ensure_baseline_drift_raises() -> None:
     store.create_variant(
         Variant(
             variant_id=BASELINE_VARIANT_ID,
-            experiment_id="exp-baseline",
+            experiment_id=_EXP,
             idea_id="idea-1",
             status="starting",
             parent_commits=[_SEED],
@@ -117,7 +119,7 @@ def test_ensure_baseline_drift_raises() -> None:
     )
     with pytest.raises(RuntimeError, match="drift"):
         ensure_baseline_variant(
-            store=store, config=_config(), experiment_id="exp-baseline"
+            store=store, config=_config(), experiment_id=_EXP
         )
 
 
@@ -136,7 +138,7 @@ class _RacingStore:
 
     def read_experiment(self) -> Experiment:
         return Experiment(
-            experiment_id="exp-baseline",
+            experiment_id=_EXP,
             state="running",
             created_at=_DT,
             base_commit_sha=_SEED,
@@ -156,7 +158,7 @@ def test_already_exists_race_accepts_valid_baseline_winner() -> None:
     """The post-AlreadyExists read-back accepts a valid baseline winner."""
     winner = Variant(
         variant_id=BASELINE_VARIANT_ID,
-        experiment_id="exp-baseline",
+        experiment_id=_EXP,
         kind="baseline",
         status="starting",
         parent_commits=[_SEED],
@@ -168,7 +170,7 @@ def test_already_exists_race_accepts_valid_baseline_winner() -> None:
     ensure_baseline_variant(
         store=store,  # type: ignore[arg-type]
         config=_config(),
-        experiment_id="exp-baseline",
+        experiment_id=_EXP,
     )
 
 
@@ -176,7 +178,7 @@ def test_already_exists_race_rejects_squatting_winner() -> None:
     """The post-AlreadyExists read-back fails loudly on a non-baseline winner."""
     squatter = Variant(
         variant_id=BASELINE_VARIANT_ID,
-        experiment_id="exp-baseline",
+        experiment_id=_EXP,
         idea_id="idea-1",
         status="starting",
         parent_commits=[_SEED],
@@ -188,7 +190,7 @@ def test_already_exists_race_rejects_squatting_winner() -> None:
         ensure_baseline_variant(
             store=store,  # type: ignore[arg-type]
             config=_config(),
-            experiment_id="exp-baseline",
+            experiment_id=_EXP,
         )
 
 
@@ -200,9 +202,9 @@ def test_successful_baseline_does_not_block_drain() -> None:
     ensure_baseline_variant(
         store=store,
         config=_config(BaselineConfig(metrics={"score": 0.5})),
-        experiment_id="exp-baseline",
+        experiment_id=_EXP,
     )
-    store.terminate_experiment(reason="done", terminated_by="orchestrator")
+    store.terminate_experiment(reason="done", terminated_by="admin")
     # The baseline is `success` without a variant_commit_sha, but the drain
     # check excludes it — the experiment is drained-terminated. Without the
     # §D.5 carve this would return False forever (the deadlock §8.1 warns of).

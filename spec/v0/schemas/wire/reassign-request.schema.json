@@ -15,7 +15,7 @@
           "additionalProperties": false,
           "properties": {
             "kind": {"type": "string", "enum": ["worker", "group"]},
-            "id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"}
+            "id": {"type": "string", "pattern": "^(wkr|grp)_[0-9a-hjkmnp-tv-z]{26}$"}
           }
         }
       ],

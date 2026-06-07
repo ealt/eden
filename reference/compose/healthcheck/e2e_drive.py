@@ -11,6 +11,10 @@ Run from ``e2e.sh``; expects these env vars:
   ``http://localhost:8090``)
 - ``EDEN_BASE_COMMIT_SHA`` — 40-hex SHA to use as ``parent_commits``
   on the ideator submit (read from setup-experiment's ``.env``)
+- ``EDEN_E2E_REASSIGN_TARGET_WORKER_ID`` — the opaque ``wkr_*``
+  worker_id of the headless ideator-host, used as the reassign-drill
+  target (#128: was the literal ``ideator-1``; read from
+  setup-experiment's ``.env`` as ``EDEN_IDEATOR_HOST_WORKER_ID``)
 
 The flow is documented in
 ``docs/archive/eden-phase-10e-compose-e2e.md`` §C / §D.
@@ -272,7 +276,7 @@ def _dispatch_mode_toggle_drill(ui: httpx.Client) -> None:
         _fail("dispatch-mode flip-back POST did not 303", response=resp)
 
 
-def _reassign_drill(ui: httpx.Client, task_id: str) -> None:
+def _reassign_drill(ui: httpx.Client, task_id: str, target_worker_id: str) -> None:
     """Reassign a pending ideation task and verify the target update.
 
     Pending reassign emits a single ``task.reassigned`` event. The
@@ -280,12 +284,12 @@ def _reassign_drill(ui: httpx.Client, task_id: str) -> None:
     success banner, and re-reads the task-detail page to verify the
     target was updated.
 
-    The target is the worker ``ideator-1`` (the headless ideator-host
-    container's registered worker_id) so the task can STILL be
-    claimed and completed by the headless ideator in stage 2. The
-    eligibility ladder will reject claims by any other worker; the
-    task being completed at all proves the targeted-claim path
-    works end-to-end.
+    The target is ``target_worker_id`` — the headless ideator-host
+    container's opaque ``wkr_*`` worker_id (#128: was the literal
+    ``ideator-1``) — so the task can STILL be claimed and completed by
+    the headless ideator in stage 2. The eligibility ladder will reject
+    claims by any other worker; the task being completed at all proves
+    the targeted-claim path works end-to-end.
     """
     # GET the reassign form to scrape CSRF.
     resp = ui.get(f"/admin/tasks/{task_id}/reassign")
@@ -299,7 +303,7 @@ def _reassign_drill(ui: httpx.Client, task_id: str) -> None:
     fields = [
         ("csrf_token", csrf),
         ("target_kind", "worker"),
-        ("target_id_worker", "ideator-1"),
+        ("target_id_worker", target_worker_id),
         ("reason", "e2e drill route"),
     ]
     resp = _form_post(
@@ -320,29 +324,35 @@ def _reassign_drill(ui: httpx.Client, task_id: str) -> None:
     # The redirect banner says "ok" but the actual state could still
     # be wrong (form wiring regression, store-side ignored the patch,
     # template caching). Re-read the task-detail page and assert the
-    # rendered "current target" field specifically renders
-    # `worker:ideator-1`. The reassign form template (chunk-9e:
-    # admin_task_reassign.html) renders:
+    # rendered "current target" field carries the target worker's
+    # opaque id. The reassign form template (admin_task_reassign.html)
+    # renders the current target through the #128 `name_id` macro:
     #
     #     <dt>current target</dt>
-    #     <dd><code>{{ current_target.kind }}:{{ current_target.id }}</code></dd>
+    #     <dd><code>{{ current_target.kind }}:</code>
+    #         {{ name_id(member_names.get(current_target.id), current_target.id) }}</dd>
     #
-    # so a successful reassign produces a literal
-    # `<code>worker:ideator-1</code>` substring. The dropdown's
-    # `<option value="ideator-1">` is NOT enough — that string is
-    # always present regardless of whether the target actually
-    # changed.
+    # where `name_id` emits `<name> (<code><id></code>)` when a name is
+    # present (the ideator-host worker has a display name) and a bare
+    # `<code><id></code>` otherwise. Either shape contains the literal
+    # `<code><target_worker_id></code>` substring, so assert on that —
+    # it only appears once the target actually changed (the dropdown's
+    # `<option value="...">` uses the bare id with no surrounding
+    # `<code>`, so it cannot produce a false positive). Also confirm
+    # the `worker:` kind label rendered.
     resp = ui.get(f"/admin/tasks/{task_id}/reassign")
     if resp.status_code != 200:
         _fail(
             f"post-reassign GET /admin/tasks/{task_id}/reassign failed",
             response=resp,
         )
-    if "<code>worker:ideator-1</code>" not in resp.text:
+    if "<code>worker:</code>" not in resp.text or (
+        f"<code>{target_worker_id}</code>" not in resp.text
+    ):
         _fail(
             f"task-{task_id} current-target row did not render "
-            "'worker:ideator-1' after reassign — form may not have "
-            "wired through",
+            f"'worker:' + <code>{target_worker_id}</code> after reassign "
+            "— form may not have wired through",
             response=resp,
         )
 
@@ -351,15 +361,19 @@ def main() -> int:
     """Drive the ideator + admin-reclaim + dispatch-mode + reassign drills end-to-end."""
     web_url = os.environ.get("EDEN_E2E_WEB_UI_URL")
     base_sha = os.environ.get("EDEN_BASE_COMMIT_SHA")
+    reassign_target = os.environ.get("EDEN_E2E_REASSIGN_TARGET_WORKER_ID")
     if not web_url:
         _fail("EDEN_E2E_WEB_UI_URL not set in environment")
     if not base_sha:
         _fail("EDEN_BASE_COMMIT_SHA not set in environment")
+    if not reassign_target:
+        _fail("EDEN_E2E_REASSIGN_TARGET_WORKER_ID not set in environment")
     # _fail exits non-zero, but the type checker doesn't know that;
-    # narrow with two separate asserts (ruff PT018 — one assertion per
+    # narrow with separate asserts (ruff PT018 — one assertion per
     # condition).
     assert web_url is not None  # noqa: S101 — type narrowing only
     assert base_sha is not None  # noqa: S101 — type narrowing only
+    assert reassign_target is not None  # noqa: S101 — type narrowing only
 
     print(f"e2e_drive: connecting to {web_url}", flush=True)
     try:
@@ -402,16 +416,16 @@ def main() -> int:
             )
 
             # 12a-2 wave 7: reassign drill — reassign one pending
-            # ideation task to `worker:ideator-1` (the headless
-            # ideator-host's registered worker_id) via the admin UI.
-            # The target stays viable so the headless ideator-host
-            # in stage 2 can still claim and complete the task,
-            # keeping the end-state variant count unaffected. The
-            # drill asserts both the rendered "current target"
-            # change (GET-after-POST in `_reassign_drill`) and the
-            # wire-level `task.reassigned` event shape (in `e2e.sh`,
-            # filtered by `new_target` + `reassigned_by`).
-            _reassign_drill(ui, reassign_id)
+            # ideation task to the headless ideator-host's opaque
+            # `wkr_*` worker_id (#128: was `worker:ideator-1`) via the
+            # admin UI. The target stays viable so the headless
+            # ideator-host in stage 2 can still claim and complete the
+            # task, keeping the end-state variant count unaffected. The
+            # drill asserts both the rendered "current target" change
+            # (GET-after-POST in `_reassign_drill`) and the wire-level
+            # `task.reassigned` event shape (in `e2e.sh`, filtered by
+            # `new_target` + `reassigned_by`).
+            _reassign_drill(ui, reassign_id, reassign_target)
             print(
                 f"e2e_drive: reassign drill OK ({reassign_id} reassigned)",
                 flush=True,

@@ -11,13 +11,20 @@ Covers both enforcement layers in `_StoreBase._validate_non_no_op_variant`:
 Also asserts the rule does NOT fire on ``status=error`` submissions
 or on ideas with empty ``parent_commits``.
 """
+# pyright: reportAttributeAccessIssue=false
 
 from __future__ import annotations
 
 from collections.abc import Callable
 
 import pytest
-from eden_contracts import ExecutionPayload, ExecutionTask, Idea, Variant
+from eden_contracts import (
+    ExecutionPayload,
+    ExecutionTask,
+    Idea,
+    Variant,
+    mint_opaque_id,
+)
 from eden_storage import (
     InMemoryStore,
     NoOpVariant,
@@ -79,7 +86,7 @@ class TestShaEqualityFastPath:
         store = make_store()
         parent = "a" * 40
         _seed_idea_task_variant(store, parent=parent)
-        claim = store.claim("exec-1", "impl-worker")
+        claim = store.claim("exec-1", store.seeded_workers["impl-worker"])
         with pytest.raises(NoOpVariant):
             store.submit(
                 "exec-1",
@@ -99,7 +106,7 @@ class TestShaEqualityFastPath:
         store = make_store()
         parent = "a" * 40
         _seed_idea_task_variant(store, parent=parent)
-        claim = store.claim("exec-1", "impl-worker")
+        claim = store.claim("exec-1", store.seeded_workers["impl-worker"])
         # Different SHA — must pass.
         store.submit(
             "exec-1",
@@ -120,7 +127,7 @@ class TestShaEqualityFastPath:
         store = make_store()
         parent = "a" * 40
         _seed_idea_task_variant(store, parent=parent)
-        claim = store.claim("exec-1", "impl-worker")
+        claim = store.claim("exec-1", store.seeded_workers["impl-worker"])
         # status=error with a commit_sha that would otherwise trip the
         # rule. error submissions carry no commit_sha in the success-
         # contract sense; the rule MUST NOT fire.
@@ -145,11 +152,11 @@ class TestTreeResolver:
             return mapping.get(sha)
 
         store = InMemoryStore(
-            experiment_id="exp-test",
+            experiment_id=mint_opaque_id("exp"),
             tree_resolver=_resolve,
         )
-        for wid in ("impl-worker",):
-            store.register_worker(wid)
+        worker, _ = store.register_worker(name="impl-worker")
+        store.seeded_workers = {"impl-worker": worker.worker_id}  # type: ignore[attr-defined]
         return store
 
     def test_empty_commit_on_parent_rejected(self) -> None:
@@ -161,7 +168,7 @@ class TestTreeResolver:
             {parent_sha: "T1", empty_commit_sha: "T1"}
         )
         _seed_idea_task_variant(store, parent=parent_sha)
-        claim = store.claim("exec-1", "impl-worker")
+        claim = store.claim("exec-1", store.seeded_workers["impl-worker"])
         with pytest.raises(NoOpVariant):
             store.submit(
                 "exec-1",
@@ -181,7 +188,7 @@ class TestTreeResolver:
             {parent_sha: "T1", real_change_sha: "T2"}
         )
         _seed_idea_task_variant(store, parent=parent_sha)
-        claim = store.claim("exec-1", "impl-worker")
+        claim = store.claim("exec-1", store.seeded_workers["impl-worker"])
         store.submit(
             "exec-1",
             claim.worker_id,
@@ -200,7 +207,7 @@ class TestTreeResolver:
         # Resolver doesn't know the variant SHA — returns None.
         store = self._make_store_with_resolver({parent_sha: "T1"})
         _seed_idea_task_variant(store, parent=parent_sha)
-        claim = store.claim("exec-1", "impl-worker")
+        claim = store.claim("exec-1", store.seeded_workers["impl-worker"])
         # Different SHA — must pass; the resolver can't conclude
         # the trees match, and SHA-equality doesn't trip.
         store.submit(
@@ -222,12 +229,13 @@ class TestTreeResolver:
             raise RuntimeError("boom")
 
         store = InMemoryStore(
-            experiment_id="exp-test",
+            experiment_id=mint_opaque_id("exp"),
             tree_resolver=_bad,
         )
-        store.register_worker("impl-worker")
+        worker, _ = store.register_worker(name="impl-worker")
+        store.seeded_workers = {"impl-worker": worker.worker_id}  # type: ignore[attr-defined]
         _seed_idea_task_variant(store, parent=parent_sha)
-        claim = store.claim("exec-1", "impl-worker")
+        claim = store.claim("exec-1", store.seeded_workers["impl-worker"])
         # Resolver throws; SHA-equality fast path still rejects the
         # literal no-op case.
         with pytest.raises(NoOpVariant):
@@ -282,7 +290,7 @@ class TestTreeResolver:
                 started_at="2026-04-23T00:00:00.000Z",
             )
         )
-        claim = store.claim("exec-multi", "impl-worker")
+        claim = store.claim("exec-multi", store.seeded_workers["impl-worker"])
         with pytest.raises(NoOpVariant):
             store.submit(
                 "exec-multi",
@@ -313,10 +321,13 @@ class TestTreeResolver:
         def _resolve(sha: str) -> str | None:
             return mapping.get(sha)
 
-        store = InMemoryStore(experiment_id="exp-test", tree_resolver=_resolve)
-        store.register_worker("impl-worker")
+        store = InMemoryStore(
+            experiment_id=mint_opaque_id("exp"), tree_resolver=_resolve
+        )
+        worker, _ = store.register_worker(name="impl-worker")
+        store.seeded_workers = {"impl-worker": worker.worker_id}  # type: ignore[attr-defined]
         _seed_idea_task_variant(store, parent=parent_sha)
-        claim = store.claim("exec-1", "impl-worker")
+        claim = store.claim("exec-1", store.seeded_workers["impl-worker"])
         sub = VariantSubmission(
             status="success", variant_id="variant-1", commit_sha=empty_commit_sha
         )
@@ -340,10 +351,11 @@ class TestTreeResolverMultiParent:
             return mapping.get(sha)
 
         store = InMemoryStore(
-            experiment_id="exp-test",
+            experiment_id=mint_opaque_id("exp"),
             tree_resolver=_resolve,
         )
-        store.register_worker("impl-worker")
+        worker, _ = store.register_worker(name="impl-worker")
+        store.seeded_workers = {"impl-worker": worker.worker_id}  # type: ignore[attr-defined]
         return store
 
     def test_multi_parent_one_tree_differs_accepted(self) -> None:
@@ -388,7 +400,7 @@ class TestTreeResolverMultiParent:
                 started_at="2026-04-23T00:00:00.000Z",
             )
         )
-        claim = store.claim("exec-multi", "impl-worker")
+        claim = store.claim("exec-multi", store.seeded_workers["impl-worker"])
         # Variant tree matches parent_a but differs from parent_b —
         # the variant contributes real change relative to parent_b,
         # so the rule MUST NOT fire.

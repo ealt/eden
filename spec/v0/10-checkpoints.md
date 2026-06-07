@@ -72,7 +72,7 @@ The `manifest.json` file MUST be a JSON object validating against [`schemas/chec
 {
   "checkpoint_format_version": "1",
   "spec_version": "v0",
-  "experiment_id": "exp-abc",
+  "experiment_id": "exp_01hqs3m4n5p6q7r8s9t0v1w2x3",
   "exported_at": "2026-05-06T15:00:00Z",
   "exporter": {
     "implementation": "eden-reference/0.x",
@@ -108,7 +108,7 @@ Field semantics:
 
 - `checkpoint_format_version` — string. The format version of this chapter's specification. v0 of the EDEN spec ships format version `"1"`. An importer MUST reject an unrecognized version with `eden://error/unsupported-checkpoint-version`.
 - `spec_version` — string. The EDEN spec version the contained data conforms to (currently `"v0"`). An importer MUST reject a mismatched value with `eden://error/spec-version-mismatch`. The two version fields are independent; a future format `"2"` could carry data conforming to spec `"v0"` or `"v1"`.
-- `experiment_id` — string. The source experiment's id. On import, the receiving deployment uses this value verbatim unless overridden via the `as_experiment_id` parameter ([`07-wire-protocol.md`](07-wire-protocol.md) §14.2).
+- `experiment_id` — string. The source experiment's opaque, system-minted `exp_*` id ([`02-data-model.md`](02-data-model.md) §1.6). On import the receiving deployment does NOT reuse this value as its primary key: absent an `as_experiment_id` override the receiver imports under **its own** experiment id (a freshly-minted `exp_*` for a multi-experiment receiver, or its single configured `experiment_id` for a single-experiment receiver) and records the source value in `imported_from.source_experiment_id` for provenance (§10; [`07-wire-protocol.md`](07-wire-protocol.md) §14.2). Pre-rename manifests carrying a non-`exp_*` id fail manifest validation and are not importable (clean break; [plan](../../docs/plans/identity-id-name-disambiguation.md) §6).
 - `exported_at` — RFC 3339 UTC timestamp ([`02-data-model.md`](02-data-model.md) §1.2) at which the source snapshot was taken. This value is normative: it is the recovery-probe anchor in §10 below.
 - `exporter` — informative object describing the producing implementation. Consumers MUST NOT key behavior on its contents; it exists for operator debugging.
 - `requires_credential_reissue` — boolean. When `true`, the importer MUST mint fresh credentials for every imported worker before the experiment can resume. v0 producers MUST set this to `true` (no v0 conformant flow carries credential hashes; see §6).
@@ -178,7 +178,8 @@ A conforming implementation MUST preserve every protocol-defined field of every 
 (a) `artifacts_uri` rewrites on every idea, variant, and submission;
 (b) event-id reassignment if the importer's event-id factory differs from the exporter's (event ids are opaque per [`02-data-model.md`](02-data-model.md) §4.1);
 (c) claim-state normalization (claimed → pending; the `claim` object is cleared);
-(d) credential reissue for every imported worker when `requires_credential_reissue` is true.
+(d) credential reissue for every imported worker when `requires_credential_reissue` is true;
+(e) `experiment_id` rewrite — every object's `experiment_id` is rewritten from the source `exp_*` to the receiver's minted (or `as_experiment_id`-supplied) `exp_*` (§11). Worker `worker_id`s and group `group_id`s are already opaque and round-trip **verbatim** (they are not rewritten); only the `experiment_id` scoping field changes.
 
 The contract per object kind:
 
@@ -186,7 +187,7 @@ The contract per object kind:
 
 **Ideas, variants, submissions.** Round-trip identical to their schema-validated forms, except `artifacts_uri` per (a). Variant `evaluation`, `commit_sha`, `variant_commit_sha`, `branch`, `parent_commits`, `description`, `executed_by`, `evaluated_by`, `completed_at`, `status` all round-trip verbatim.
 
-**Events.** Replay in the same order with the same per-event `type` / `occurred_at` / `experiment_id` / `data` payload. The `event_id` MAY differ per (b).
+**Events.** Replay in the same order with the same per-event `type` / `occurred_at` / `data` payload. The envelope `experiment_id` is rewritten to the receiver's `exp_*` per (e). The `event_id` MAY differ per (b). Attribution ids inside `data` (worker `worker_id`, actor `reassigned_by` / `updated_by` / `terminated_by`, member ids) are opaque and round-trip verbatim.
 
 **Git repo.** The bundle contains every object reachable from any ref in the source repo. The importer's repo, after `git fetch <bundle>`, has the same SHAs reachable from the same refs.
 
@@ -196,25 +197,24 @@ The contract per object kind:
 
 ## 10. Recovery on lost import response
 
-The `POST /v0/checkpoints/import` wire endpoint commits state-mutating writes; it is not idempotent in the strict HTTP sense (re-sending the same archive against the same source `experiment_id` returns 409 `eden://error/experiment-id-conflict` on the second call by §11 below). To make safe retry possible after a transport-indeterminate failure, a conforming receiving Store MUST record provenance on the imported experiment:
+The `POST /v0/checkpoints/import` wire endpoint commits state-mutating writes; it is not idempotent in the strict HTTP sense. Because the receiver imports an unkeyed checkpoint under **its own** experiment id — a freshly-minted `exp_*` for a multi-experiment receiver, or its single configured `experiment_id` for a single-experiment receiver (§5; [`07-wire-protocol.md`](07-wire-protocol.md) §14.2) — rather than the source manifest's id, a naive retry could create a duplicate experiment (multi-experiment receiver) or re-import the same source (single-experiment receiver). To make safe retry possible after a transport-indeterminate failure, a conforming receiving Store MUST record provenance on the imported experiment that lets a client probe whether a given source archive has already been imported:
 
-- The imported Experiment row MUST carry an `imported_from` field of shape `{checkpoint_exported_at: timestamp, checkpoint_format_version: string}` ([`02-data-model.md`](02-data-model.md) §2.5).
-- The `checkpoint_exported_at` value MUST be taken from the manifest's `exported_at` field verbatim.
+- The imported Experiment row MUST carry an `imported_from` field of shape `{checkpoint_exported_at: timestamp, checkpoint_format_version: string, source_experiment_id: opaque-id}` ([`02-data-model.md`](02-data-model.md) §2.5).
+- The `checkpoint_exported_at` value MUST be taken from the manifest's `exported_at` field verbatim; `source_experiment_id` MUST be the manifest's `experiment_id` (the source `exp_*`) verbatim.
 - Natively-created experiments (never imported) MUST have `imported_from` absent (`null` on the wire).
 
-A client whose import call lost its `201 Created` response queries `read_experiment` ([`08-storage.md`](08-storage.md) §1.9, [`07-wire-protocol.md`](07-wire-protocol.md) §14.3) against the target experiment id:
+A client whose import call lost its `201 Created` response probes the receiver's `imported_from` provenance and matches on the pair `(source_experiment_id, checkpoint_exported_at)`. A multi-experiment client enumerates `list_experiments` ([`07-wire-protocol.md`](07-wire-protocol.md) §15.1); a **single-experiment** client reads back its one configured experiment (`read_experiment`, [`07-wire-protocol.md`](07-wire-protocol.md) §14.3) directly — it already knows the receiving id:
 
-- If the experiment exists with `imported_from.checkpoint_exported_at` matching the local manifest's `exported_at`, the import has already committed; the missing 201 was a transport blip and recovery is complete.
-- If the experiment exists but `imported_from` is absent or `checkpoint_exported_at` differs, the prior import did not commit (or a different experiment shares the id); the client retries with `as_experiment_id=<new>` ([`07-wire-protocol.md`](07-wire-protocol.md) §14.2).
-- If the experiment does not exist, the prior call did not commit; the client retries normally.
+- If the probed experiment's `imported_from.source_experiment_id` equals the local manifest's `experiment_id` AND its `checkpoint_exported_at` equals the local manifest's `exported_at`, the import has already committed; the missing 201 was a transport blip and recovery is complete. The client reads back that experiment's `experiment_id` (the receiver's id) from the probe.
+- If no such experiment exists (or the single configured experiment carries no matching provenance), the prior call did not commit; the client retries the import normally (which imports under the receiver's own id again).
 
-This is "bounded idempotency": full content-addressed-by-bytes idempotency would require hashing the upload before any commit, which defeats streaming. The `exported_at` probe gives operators a recovery path without that cost.
+This is "bounded idempotency": full content-addressed-by-bytes idempotency would require hashing the upload before any commit, which defeats streaming. The `(source_experiment_id, exported_at)` probe gives operators a recovery path without that cost.
 
-## 11. Experiment-id collision and override
+## 11. Experiment-id minting and override
 
-When the manifest's `experiment_id` collides with an existing experiment on the receiving deployment, the default behavior is rejection with `409 eden://error/experiment-id-conflict`. The operator MAY pass `as_experiment_id=<new_id>` ([`07-wire-protocol.md`](07-wire-protocol.md) §14.2) to import under a different id; the imported experiment carries the new id verbatim everywhere the source's id appeared (in `tasks.jsonl`'s `experiment_id` fields, `ideas.jsonl`, etc.).
+The default import path lands the imported experiment under **the receiver's own** opaque `exp_*` id — a freshly-minted id for a multi-experiment receiver, or the single configured `experiment_id` for a single-experiment receiver ([`07-wire-protocol.md`](07-wire-protocol.md) §14.2); because the receiving id is the receiver's own, never the source's, the default path never returns `409 eden://error/experiment-id-conflict` on identity. The receiver rewrites the source id to its own receiving id everywhere it appeared in the archive (in `tasks.jsonl`'s `experiment_id` fields, `ideas.jsonl`, etc.) and records the source id in `imported_from.source_experiment_id` (§10).
 
-Auto-rename (the implementation silently choosing a non-colliding id) is non-conforming: a v0 importer MUST reject id collisions explicitly or accept the operator's override.
+The operator MAY pass `as_experiment_id=<exp_*>` ([`07-wire-protocol.md`](07-wire-protocol.md) §14.2) to pin the imported experiment to a specific opaque id (matching the [`02-data-model.md`](02-data-model.md) §1.6 grammar) instead of letting the receiver mint one; the imported experiment then carries that id verbatim everywhere the source's id appeared. When the supplied override collides with an existing experiment the importer MUST reject with `409 eden://error/experiment-id-conflict` — silently choosing a different non-colliding id under an explicit override is non-conforming.
 
 ## 12. Cross-reference validation
 

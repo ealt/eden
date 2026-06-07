@@ -15,6 +15,7 @@ from io import BytesIO
 
 import pytest
 from conformance.harness import _seed
+from conformance.harness.identity import mint_experiment_id
 from conformance.harness.wire_client import WireClient
 
 pytestmark = pytest.mark.conformance
@@ -146,11 +147,15 @@ def test_header_mismatch_returns_400(
     ``eden://error/experiment-id-mismatch``.
     """
     archive = _hand_craft_archive(experiment_id=wire_client.experiment_id)
+    # A grammar-valid opaque ``exp_*`` (02-data-model.md §1.6) that does
+    # NOT match the post-rewrite experiment_id — exercises the header
+    # carve-out mismatch, not an ill-formed-id rejection.
+    wrong_id = mint_experiment_id()
     resp = _seed.import_checkpoint(
         wire_client,
         archive,
         omit_experiment_header=False,
-        extra_headers={"X-Eden-Experiment-Id": "exp-wrong-id"},
+        extra_headers={"X-Eden-Experiment-Id": wrong_id},
     )
     assert resp.status_code == 400
     assert resp.json()["type"] == "eden://error/experiment-id-mismatch"

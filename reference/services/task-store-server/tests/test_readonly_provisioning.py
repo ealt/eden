@@ -34,7 +34,7 @@ FIXTURE_CONFIG = (
 def _make_memory_store():
     config = load_experiment_config(FIXTURE_CONFIG)
     return build_store(
-        store_url=":memory:", experiment_id="exp-1", config=config
+        store_url=":memory:", experiment_id="exp_0123456789abcdefghjkmnpqrs", config=config
     )
 
 
@@ -42,7 +42,7 @@ def _make_sqlite_store(tmp_path: Path):
     config = load_experiment_config(FIXTURE_CONFIG)
     return build_store(
         store_url=f"sqlite:///{tmp_path / 'eden.sqlite'}",
-        experiment_id="exp-1",
+        experiment_id="exp_0123456789abcdefghjkmnpqrs",
         config=config,
     )
 
@@ -81,7 +81,7 @@ def test_cli_parses_readonly_password() -> None:
             "--store-url",
             ":memory:",
             "--experiment-id",
-            "exp-1",
+            "exp_0123456789abcdefghjkmnpqrs",
             "--experiment-config",
             str(FIXTURE_CONFIG),
             "--readonly-password",
@@ -97,7 +97,7 @@ def test_cli_readonly_password_default_is_none() -> None:
             "--store-url",
             ":memory:",
             "--experiment-id",
-            "exp-1",
+            "exp_0123456789abcdefghjkmnpqrs",
             "--experiment-config",
             str(FIXTURE_CONFIG),
         ]

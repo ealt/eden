@@ -104,6 +104,7 @@ class SqliteStore(_StoreBase):
         experiment_id: str,
         path: str | Path,
         *,
+        name: str | None = None,
         evaluation_schema: EvaluationSchema | None = None,
         now: Callable[[], datetime] | None = None,
         event_id_factory: Callable[[], str] | None = None,
@@ -112,6 +113,7 @@ class SqliteStore(_StoreBase):
     ) -> None:
         super().__init__(
             experiment_id,
+            name=name,
             evaluation_schema=evaluation_schema,
             now=now,
             event_id_factory=event_id_factory,
@@ -166,7 +168,7 @@ class SqliteStore(_StoreBase):
         experiment's lifetime.
         """
         row = self._conn.execute(
-            "SELECT experiment_id, evaluation_schema FROM experiment"
+            "SELECT experiment_id, evaluation_schema, name FROM experiment"
         ).fetchone()
         # Canonicalize via sort_keys so a reopen with the same logical
         # metric map in a different insertion order is NOT treated as
@@ -189,18 +191,24 @@ class SqliteStore(_StoreBase):
             created_at = self._ts()
             self._conn.execute(
                 "INSERT INTO experiment(experiment_id, evaluation_schema, "
-                "state, created_at, base_commit_sha) VALUES (?, ?, ?, ?, ?)",
+                "state, created_at, base_commit_sha, name) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
                 (
                     experiment_id,
                     schema_json,
                     _DEFAULT_EXPERIMENT_STATE,
                     created_at,
                     self._base_commit_sha,
+                    self._experiment_name,
                 ),
             )
             self._conn.commit()
             return
-        stored_id, stored_schema = row
+        stored_id, stored_schema, stored_name = row
+        # On reopen the persisted name is authoritative — mirror the
+        # evaluation_schema immutability posture (§4.2). A `name=` arg on
+        # reopen is ignored; the stored value wins.
+        self._experiment_name = stored_name
         if stored_id != experiment_id:
             raise InvalidPrecondition(
                 f"database at {self._path!r} belongs to experiment "
@@ -430,7 +438,8 @@ class SqliteStore(_StoreBase):
 
     def _get_experiment(self) -> Experiment:
         row = self._conn.execute(
-            "SELECT state, created_at, imported_from, base_commit_sha FROM experiment "
+            "SELECT state, created_at, imported_from, base_commit_sha, name "
+            "FROM experiment "
             "WHERE experiment_id = ?",
             (self._experiment_id,),
         ).fetchone()
@@ -444,15 +453,20 @@ class SqliteStore(_StoreBase):
         imported_from: ImportProvenance | None = None
         if row[2] is not None:
             imported_from = ImportProvenance.model_validate_json(row[2])
-        # base_commit_sha carries NotNone — omit when absent (passing an
-        # explicit None trips the reject-null validator).
-        return Experiment(
-            experiment_id=self._experiment_id,
-            state=row[0],
-            created_at=row[1],
-            imported_from=imported_from,
-            **({"base_commit_sha": row[3]} if row[3] is not None else {}),
-        )
+        # Omit optional fields when NULL — the `NotNone` validators on
+        # Experiment.base_commit_sha (#122) / .name (#128) reject explicit
+        # null for these optional fields.
+        data: dict[str, object] = {
+            "experiment_id": self._experiment_id,
+            "state": row[0],
+            "created_at": row[1],
+            "imported_from": imported_from,
+        }
+        if row[3] is not None:
+            data["base_commit_sha"] = row[3]
+        if row[4] is not None:
+            data["name"] = row[4]
+        return Experiment.model_validate(data)
 
     # ------------------------------------------------------------------
     # Commit
@@ -512,10 +526,16 @@ class SqliteStore(_StoreBase):
             )
         if tx.imported_from_update is not None:
             (new_imported_from,) = tx.imported_from_update
+            # exclude_none so the optional `source_experiment_id`
+            # (issue #128) is OMITTED rather than serialized as explicit
+            # null — the `NotNone` validator rejects explicit null on
+            # read-back.
             serialized = (
                 None
                 if new_imported_from is None
-                else json.dumps(new_imported_from.model_dump(mode="json"))
+                else json.dumps(
+                    new_imported_from.model_dump(mode="json", exclude_none=True)
+                )
             )
             self._conn.execute(
                 "UPDATE experiment SET imported_from = ? WHERE experiment_id = ?",
@@ -615,15 +635,19 @@ class SqliteStore(_StoreBase):
                 (worker_id,),
             ).fetchone()
             credential_hash = existing[0] if existing is not None else ""
+        # `name` is denormalized into its own indexed column for fast
+        # `list_workers(name=...)` filtering; the JSON `data` blob
+        # remains the source of truth (issue #128).
         self._conn.execute(
             """
-            INSERT INTO worker(worker_id, data, credential_hash)
-            VALUES(?, ?, ?)
+            INSERT INTO worker(worker_id, data, credential_hash, name)
+            VALUES(?, ?, ?, ?)
             ON CONFLICT(worker_id) DO UPDATE SET
                 data = excluded.data,
-                credential_hash = excluded.credential_hash
+                credential_hash = excluded.credential_hash,
+                name = excluded.name
             """,
-            (worker_id, _serialize_model(worker), credential_hash),
+            (worker_id, _serialize_model(worker), credential_hash, worker.name),
         )
 
     def _update_worker_credential(
@@ -638,12 +662,17 @@ class SqliteStore(_StoreBase):
         )
 
     def _upsert_group(self, group_id: str, group: Group) -> None:
+        # `name` is denormalized into its own indexed column for fast
+        # `list_groups(name=...)` filtering; the JSON `data` blob
+        # remains the source of truth (issue #128).
         self._conn.execute(
             """
-            INSERT INTO worker_group(group_id, data) VALUES(?, ?)
-            ON CONFLICT(group_id) DO UPDATE SET data = excluded.data
+            INSERT INTO worker_group(group_id, data, name) VALUES(?, ?, ?)
+            ON CONFLICT(group_id) DO UPDATE SET
+                data = excluded.data,
+                name = excluded.name
             """,
-            (group_id, _serialize_model(group)),
+            (group_id, _serialize_model(group), group.name),
         )
         # Refresh the denormalized membership index so future filtered
         # queries (e.g. "which groups contain member X") can run from

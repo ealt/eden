@@ -78,26 +78,42 @@ class NotClaimed(StorageError):
     """
 
 
-class ReservedIdentifier(StorageError):
-    """``register_worker`` / ``register_group`` rejected a reserved id.
+class InvalidName(StorageError):
+    """``register_worker`` / ``register_group`` rejected an ill-formed display name.
 
-    The §6.1 grammar in [`spec/v0/02-data-model.md`](../../../../spec/v0/02-data-model.md)
-    excludes ``admin``, ``system``, and ``internal`` from the worker /
-    group registries, plus any leading-underscore id (already excluded
-    by the grammar).
+    Raised when the operator-supplied ``name`` violates the display-name
+    grammar in [`spec/v0/02-data-model.md`](../../../../spec/v0/02-data-model.md)
+    §1.7 (NFC-normalized, 1..128 code points, no leading/trailing or
+    all-whitespace, no control/surrogate/unassigned/private-use chars).
+    The wire binds this to 422 ``eden://error/invalid-name``. Distinct
+    from ``ReservedIdentifier`` (a well-formed but reserved name) and
+    from ``InvalidPrecondition`` (a state/precondition failure).
+    """
+
+
+class ReservedIdentifier(StorageError):
+    """``register_worker`` / ``register_group`` rejected a reserved name.
+
+    Reserved values moved from id-space to name-space in the identity
+    rename (issue #128): opaque ids are minted by the store, so the
+    collision surface is the operator-supplied ``name``. The reserved
+    worker names are ``admin`` / ``system`` / ``internal``; the reserved
+    group names are ``admins`` / ``orchestrators`` (the latter rejected
+    unless the privileged seed path passes ``allow_reserved=True``). See
+    [`spec/v0/02-data-model.md`](../../../../spec/v0/02-data-model.md)
+    §1.7 / §7. The wire binds this to 409
+    ``eden://error/reserved-identifier``.
     """
 
 
 class WorkerAlreadyRegistered(StorageError):
     """``register_worker`` collided with an existing record under different intent.
 
-    Note: re-registration of an existing ``worker_id`` is **idempotent**
-    on the existing record per §6.3 of
-    [`spec/v0/02-data-model.md`](../../../../spec/v0/02-data-model.md)
-    and does NOT raise. This error covers cases where the registry
-    integrity is otherwise violated (reserved for future use; the
-    in-memory / SQLite / Postgres backends never emit it as of 12a-1
-    wave 2).
+    Note: since the identity rename (issue #128) every ``register_worker``
+    MINTS a fresh opaque ``worker_id`` (there is no id-based idempotency),
+    so a collision under this error is structurally unreachable on the
+    reference backends. Retained as a reserved type for third-party
+    backends that may impose additional registry-integrity constraints.
     """
 
 

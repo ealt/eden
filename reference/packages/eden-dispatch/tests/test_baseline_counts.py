@@ -16,11 +16,13 @@ from eden_storage import InMemoryStore
 
 _SEED = "a" * 40
 _DT = "2026-05-01T00:00:00.000Z"
+# Valid opaque experiment id (issue #128 grammar: ^exp_[Crockford]{26}$).
+_EXP = "exp_0123456789abcdefghjkmnpqrs"
 
 
 def _store() -> InMemoryStore:
     store = InMemoryStore(
-        experiment_id="exp-baseline",
+        experiment_id=_EXP,
         evaluation_schema=EvaluationSchema({"score": "real"}),
     )
     for wid in ("orchestrator", "executor-1", "evaluator-1"):
@@ -34,7 +36,7 @@ def test_baseline_excluded_from_running_and_attempted_counts() -> None:
     store.create_variant(
         Variant(
             variant_id="baseline",
-            experiment_id="exp-baseline",
+            experiment_id=_EXP,
             kind="baseline",
             status="starting",
             parent_commits=[_SEED],
@@ -45,7 +47,7 @@ def test_baseline_excluded_from_running_and_attempted_counts() -> None:
     store.create_variant(
         Variant(
             variant_id="variant-1",
-            experiment_id="exp-baseline",
+            experiment_id=_EXP,
             idea_id="idea-1",
             status="starting",
             parent_commits=[_SEED],

@@ -19,10 +19,15 @@ Covers:
 
 from __future__ import annotations
 
-from conftest import get_csrf
+from conftest import get_csrf, group_id_by_name, web_ui_worker_id
 from eden_contracts import ExecutionTask, Idea, TaskTarget
 from eden_storage import InMemoryStore
 from fastapi.testclient import TestClient
+
+
+def _w(store: InMemoryStore, name: str) -> str:
+    """Resolve a worker display name → minted opaque id (#128)."""
+    return store._test_worker_ids[name]  # type: ignore[attr-defined]
 
 
 def _seed_idea(
@@ -69,15 +74,15 @@ class TestAdminIdeasList:
         _seed_idea(
             store,
             idea_id="idea-1",
-            intended_executor=TaskTarget(kind="worker", id="executor-w"),
+            intended_executor=TaskTarget(kind="worker", id=_w(store, "executor-w")),
         )
         _seed_idea(store, idea_id="idea-2")
         resp = signed_in_client.get("/admin/ideas/")
         assert resp.status_code == 200
         assert "idea-1" in resp.text
         assert "idea-2" in resp.text
-        # intended_executor renders as kind:id.
-        assert "worker:executor-w" in resp.text
+        # intended_executor renders as kind:id (bare opaque id in list).
+        assert f"worker:{_w(store, 'executor-w')}" in resp.text
 
     def test_state_filter(
         self, signed_in_client: TestClient, store: InMemoryStore
@@ -109,12 +114,14 @@ class TestAdminIdeaDetail:
         _seed_idea(
             store,
             idea_id="idea-1",
-            intended_executor=TaskTarget(kind="group", id="humans"),
+            intended_executor=TaskTarget(kind="group", id=group_id_by_name(store, "admins")),
         )
         resp = signed_in_client.get("/admin/ideas/idea-1/")
         assert resp.status_code == 200
         assert "idea-1" in resp.text
-        assert "group:humans" in resp.text
+        # Detail view resolves the group target as name(id).
+        assert "group:" in resp.text
+        assert "admins" in resp.text
         # Create-execution-task form is visible for `ready` idea.
         assert "create execution task" in resp.text
 
@@ -176,7 +183,7 @@ class TestCreateExecutionTaskPost:
         _seed_idea(
             store,
             idea_id="idea-1",
-            intended_executor=TaskTarget(kind="worker", id="executor-w"),
+            intended_executor=TaskTarget(kind="worker", id=_w(store, "executor-w")),
         )
         csrf = get_csrf(signed_in_client)
         resp = signed_in_client.post(
@@ -194,7 +201,7 @@ class TestCreateExecutionTaskPost:
         assert task.payload.idea_id == "idea-1"
         assert task.target is not None
         assert task.target.kind == "worker"
-        assert task.target.id == "executor-w"
+        assert task.target.id == _w(store, "executor-w")
 
     def test_explicit_target_overrides_intended_executor(
         self, signed_in_client: TestClient, store: InMemoryStore
@@ -202,15 +209,16 @@ class TestCreateExecutionTaskPost:
         _seed_idea(
             store,
             idea_id="idea-1",
-            intended_executor=TaskTarget(kind="worker", id="executor-w"),
+            intended_executor=TaskTarget(kind="worker", id=_w(store, "executor-w")),
         )
+        admins_gid = group_id_by_name(store, "admins")
         csrf = get_csrf(signed_in_client)
         resp = signed_in_client.post(
             "/admin/ideas/idea-1/create-execution-task",
             data={
                 "csrf_token": csrf,
                 "target_kind": "group",
-                "target_id": "humans",
+                "target_id": admins_gid,
             },
             follow_redirects=False,
         )
@@ -221,7 +229,7 @@ class TestCreateExecutionTaskPost:
         assert isinstance(task, ExecutionTask)
         assert task.target is not None
         assert task.target.kind == "group"
-        assert task.target.id == "humans"
+        assert task.target.id == admins_gid
 
     def test_invalid_target_grammar_banner(
         self, signed_in_client: TestClient, store: InMemoryStore
@@ -289,7 +297,7 @@ class TestCreateExecutionTaskPost:
         _seed_idea(store, idea_id="idea-1")
         # Need a worker_id matching the §6.1 grammar; the test fixture
         # auto-registers "ui-w" as the session worker_id.
-        store.terminate_experiment(reason="x", terminated_by="ui-w")
+        store.terminate_experiment(reason="x", terminated_by=web_ui_worker_id(store))
         csrf = get_csrf(signed_in_client)
         resp = signed_in_client.post(
             "/admin/ideas/idea-1/create-execution-task",
@@ -318,13 +326,14 @@ class TestAdminExperimentDetail:
     def test_renders_terminated_state(
         self, signed_in_client: TestClient, store: InMemoryStore
     ) -> None:
-        store.terminate_experiment(reason="done for test", terminated_by="ui-w")
+        store.terminate_experiment(reason="done for test", terminated_by=web_ui_worker_id(store))
         resp = signed_in_client.get("/admin/experiment/")
         assert resp.status_code == 200
         assert "terminated" in resp.text
-        # Termination record renders the reason + terminated_by.
+        # Termination record renders the reason + terminated_by (the
+        # minted opaque web-ui worker id).
         assert "done for test" in resp.text
-        assert "ui-w" in resp.text
+        assert web_ui_worker_id(store) in resp.text
         # Terminate form is hidden when already terminated.
         assert 'name="reason"' not in resp.text
 
@@ -388,14 +397,14 @@ class TestTerminateExperimentPost:
         ]
         assert len(term_events) == 1
         assert term_events[0].data["reason"] == "max variants reached"
-        assert term_events[0].data["terminated_by"] == "ui-w"
+        assert term_events[0].data["terminated_by"] == web_ui_worker_id(store)
 
     def test_idempotent_repeat_already_terminated(
         self, signed_in_client: TestClient, store: InMemoryStore
     ) -> None:
         # Pre-seed a termination from a different reason.
         store.terminate_experiment(
-            reason="initial reason", terminated_by="other-w"
+            reason="initial reason", terminated_by="admin"
         )
         csrf = get_csrf(signed_in_client)
         resp = signed_in_client.post(
@@ -447,7 +456,7 @@ class TestAdminDashboardLifecycleBanner:
     def test_terminated_shows_banner(
         self, signed_in_client: TestClient, store: InMemoryStore
     ) -> None:
-        store.terminate_experiment(reason="done", terminated_by="ui-w")
+        store.terminate_experiment(reason="done", terminated_by=web_ui_worker_id(store))
         resp = signed_in_client.get("/admin/")
         assert resp.status_code == 200
         assert "experiment is" in resp.text
@@ -459,8 +468,9 @@ class TestIdeatorIntendedExecutorFlow:
         self, signed_in_client: TestClient, store: InMemoryStore
     ) -> None:
         """Full ideator path: claim → submit with intended_executor → idea persists with it."""
-        # Pre-register an executor worker the operator can name.
-        store.register_worker("custom-executor")
+        # Pre-register an executor worker; the operator pastes its
+        # minted opaque id into the form (#128).
+        custom, _ = store.register_worker("custom-executor")
         store.create_ideation_task("plan-1")
         csrf = get_csrf(signed_in_client)
         # Claim via ideator route.
@@ -481,7 +491,7 @@ class TestIdeatorIntendedExecutorFlow:
                 "parent_commits": "a" * 40,
                 "content": "do the thing",
                 "intended_executor_kind": "worker",
-                "intended_executor_id": "custom-executor",
+                "intended_executor_id": custom.worker_id,
             },
             follow_redirects=False,
         )
@@ -490,7 +500,7 @@ class TestIdeatorIntendedExecutorFlow:
         assert len(ideas) == 1
         assert ideas[0].intended_executor is not None
         assert ideas[0].intended_executor.kind == "worker"
-        assert ideas[0].intended_executor.id == "custom-executor"
+        assert ideas[0].intended_executor.id == custom.worker_id
 
     def test_invalid_intended_executor_id_renders_error(
         self, signed_in_client: TestClient, store: InMemoryStore

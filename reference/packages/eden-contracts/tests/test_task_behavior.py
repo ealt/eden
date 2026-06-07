@@ -14,10 +14,13 @@ from eden_contracts import (
 )
 from pydantic import ValidationError
 
+_EXP = "exp_01hqs3m4n5p6q7r8s9t0v1w2x3"
+_WKR = "wkr_01hqs3m4n5p6q7r8s9t0v1w2x3"
+
 
 def _claim() -> dict[str, str]:
     return {
-        "worker_id": "w",
+        "worker_id": _WKR,
         "claimed_at": "2026-04-23T12:00:00Z",
     }
 
@@ -28,14 +31,14 @@ def test_discriminator_dispatches_ideation() -> None:
             "task_id": "t",
             "kind": "ideation",
             "state": "pending",
-            "payload": {"experiment_id": "exp-1"},
+            "payload": {"experiment_id": _EXP},
             "created_at": "2026-04-23T12:00:00Z",
             "updated_at": "2026-04-23T12:00:00Z",
         }
     )
     assert isinstance(task, IdeationTask)
     assert isinstance(task.payload, IdeationPayload)
-    assert task.payload.experiment_id == "exp-1"
+    assert task.payload.experiment_id == _EXP
 
 
 def test_discriminator_dispatches_execution() -> None:
@@ -77,7 +80,7 @@ def test_claim_required_when_claimed() -> None:
                 "task_id": "t",
                 "kind": "ideation",
                 "state": "claimed",
-                "payload": {"experiment_id": "exp-1"},
+                "payload": {"experiment_id": _EXP},
                 "created_at": "2026-04-23T12:00:00Z",
                 "updated_at": "2026-04-23T12:00:00Z",
             }
@@ -91,7 +94,7 @@ def test_claim_forbidden_when_completed() -> None:
                 "task_id": "t",
                 "kind": "ideation",
                 "state": "completed",
-                "payload": {"experiment_id": "exp-1"},
+                "payload": {"experiment_id": _EXP},
                 "claim": _claim(),
                 "created_at": "2026-04-23T12:00:00Z",
                 "updated_at": "2026-04-23T12:00:00Z",

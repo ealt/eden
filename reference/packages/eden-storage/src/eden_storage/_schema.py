@@ -240,12 +240,35 @@ def _apply_v7(conn: sqlite3.Connection) -> None:
         conn.execute(stmt)
 
 
+# Issue #128 (identity rename): every identity-bearing row gains an
+# optional operator-supplied display `name`. `experiment.name` is the
+# durable storage for the experiment's name; `worker.name` /
+# `worker_group.name` are denormalized index columns (the canonical
+# value still lives in the JSON `data` blob, exactly like the
+# `group_membership` aid) so a `WHERE name = ?` lookup can use an
+# index. Clean break — no in-place data migration; pre-#128 rows pick
+# up NULL (= "no name", a bare opaque id).
+_V8_STATEMENTS: list[str] = [
+    "ALTER TABLE experiment ADD COLUMN name text",
+    "ALTER TABLE worker ADD COLUMN name text",
+    "ALTER TABLE worker_group ADD COLUMN name text",
+    "CREATE INDEX experiment_by_name ON experiment(name)",
+    "CREATE INDEX worker_by_name ON worker(name)",
+    "CREATE INDEX worker_group_by_name ON worker_group(name)",
+]
+
+
+def _apply_v8(conn: sqlite3.Connection) -> None:
+    for stmt in _V8_STATEMENTS:
+        conn.execute(stmt)
+
+
 # Issue #166: the artifact-metadata store. `data` carries the canonical
 # ArtifactMetadata JSON (`spec/v0/schemas/artifact-metadata.schema.json`);
 # the bytes themselves live in a separate ArtifactBackend, not here. No
 # event accompanies an artifact row (the artifact store is distinct from
 # the event log — `08-storage.md` §5).
-_V8_STATEMENTS: list[str] = [
+_V9_STATEMENTS: list[str] = [
     """
     CREATE TABLE artifact (
         opaque_id TEXT NOT NULL PRIMARY KEY,
@@ -255,8 +278,8 @@ _V8_STATEMENTS: list[str] = [
 ]
 
 
-def _apply_v8(conn: sqlite3.Connection) -> None:
-    for stmt in _V8_STATEMENTS:
+def _apply_v9(conn: sqlite3.Connection) -> None:
+    for stmt in _V9_STATEMENTS:
         conn.execute(stmt)
 
 
@@ -269,6 +292,7 @@ _MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _apply_v6,
     _apply_v7,
     _apply_v8,
+    _apply_v9,
 ]
 
 

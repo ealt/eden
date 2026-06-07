@@ -104,7 +104,7 @@ def test_orchestrator_authority_does_not_impersonate_claimant(
     accept_resp.raise_for_status()
     final = _seed.read_task(wire_client, tid)
     assert final["state"] == "completed"
-    assert final["submitted_by"] == "worker-a"
+    assert final["submitted_by"] == wire_client.worker_id_for("worker-a")
 
 
 def test_executed_by_is_claimant_not_acceptor(
@@ -138,7 +138,7 @@ def test_executed_by_is_claimant_not_acceptor(
     )
     accept_resp.raise_for_status()
     variant = _seed.read_variant(wire_client, variant_id)
-    assert variant["executed_by"] == "impl-worker"
+    assert variant["executed_by"] == wire_client.worker_id_for("impl-worker")
 
 
 def test_manual_dispatch_does_not_block_admin_driven_create_task(

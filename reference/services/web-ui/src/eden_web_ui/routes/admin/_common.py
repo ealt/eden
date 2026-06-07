@@ -18,6 +18,7 @@ from datetime import datetime
 from typing import Any
 
 from eden_contracts import Task, Variant
+from eden_contracts._common import MEMBER_ID_PATTERN
 from fastapi import Request
 from fastapi.responses import HTMLResponse
 
@@ -60,7 +61,7 @@ _REASSIGN_OUTCOMES: dict[str, tuple[str, str]] = {
     "no-change": ("ok", "no change — task target already at requested value"),
     "invalid-target": (
         "error",
-        "target id must match the §6.1 grammar; pick a worker or group from the lists",
+        "target id must be an opaque wkr_*/grp_* member id; pick a worker or group from the lists",
     ),
     "missing-reason": ("error", "reason is required"),
     "illegal-state": (
@@ -103,9 +104,10 @@ _DISPATCH_MODE_KEYS: tuple[tuple[str, str, str], ...] = (
 _DISPATCH_MODE_VALUES: tuple[str, ...] = ("auto", "manual")
 _REASSIGN_TARGET_KINDS: tuple[str, ...] = ("none", "worker", "group")
 
-# §6.1 registry-id grammar. Inline so admin doesn't reach into a
-# leading-underscore module of eden_storage.
-_REGISTRY_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+# Opaque member-id grammar (``wkr_*`` / ``grp_*``) per
+# spec/v0/02-data-model.md §1.6 (identity rename #128). A reassign /
+# create-execution target id is a TaskTarget.id (a MemberId).
+_MEMBER_ID_RE = re.compile(MEMBER_ID_PATTERN)
 
 _REF_DELETE_OUTCOMES: dict[str, tuple[str, str]] = {
     "ok": ("ok", "ref deleted"),
@@ -130,7 +132,7 @@ _CREATE_EXECUTION_OUTCOMES: dict[str, tuple[str, str]] = {
     ),
     "invalid-target": (
         "error",
-        "target id must match the §6.1 registry-id grammar; pick worker / group / none",
+        "target id must be an opaque wkr_*/grp_* member id; pick worker / group / none",
     ),
     "not-found": ("error", "idea not found"),
     "illegal-transition": (

@@ -33,6 +33,10 @@ from eden_service_common import (
 from eden_wire import StoreClient
 from eden_wire.errors import Unauthorized
 
+from .auto_checkpoint import (
+    build_auto_checkpoint_scheduler,
+    validate_auto_checkpoint,
+)
 from .baseline import ensure_baseline_variant
 from .control_plane_bootstrap import (
     bootstrap_control_plane_worker,
@@ -101,10 +105,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--worker-id",
         default="orchestrator",
         help=(
-            "worker_id under which the orchestrator registers itself "
-            "with the task-store at startup. Defaults to 'orchestrator'. "
-            "Required when --admin-token (or $EDEN_ADMIN_TOKEN) is set "
-            "so the orchestrator can bootstrap its per-worker bearer."
+            "Identity the orchestrator runs under. Single-experiment "
+            "mode: the setup-minted opaque worker_id (wkr_*) read from "
+            "$EDEN_ORCHESTRATOR_WORKER_ID — the orchestrator verifies/"
+            "reissues this credential, never fresh-registers. "
+            "Multi-experiment (control-plane) mode: the operator-stable "
+            "display NAME under which the orchestrator self-registers "
+            "against the control plane (which mints the opaque id and "
+            "persists it locally). Defaults to 'orchestrator'."
         ),
     )
     parser.add_argument(
@@ -213,6 +221,23 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "non-default CLI value triggers a startup-warning and is "
             "ignored. In --control-plane-url multi-experiment mode the CLI "
             "value is consulted (deferred to #214)."
+        ),
+    )
+    parser.add_argument(
+        "--auto-checkpoint-dir",
+        default=os.environ.get("EDEN_AUTO_CHECKPOINT_DIR") or None,
+        help=(
+            "Destination directory for automatic checkpoints (issue "
+            "#131). Defaults to $EDEN_AUTO_CHECKPOINT_DIR. The "
+            "experiment-config ``auto_checkpoint`` block carries the "
+            "portable intent (enabled / cadence / retention / "
+            "on_terminate); this flag is the deployment-local path where "
+            "the archives land (a host path is not portable, so it is "
+            "NOT a config field). Required when "
+            "``auto_checkpoint.enabled`` is true in single-experiment "
+            "mode; the orchestrator fails fast at startup if the "
+            "directory is missing/unwritable or no admin token is "
+            "available for the admin-gated export endpoint."
         ),
     )
     parser.add_argument(
@@ -466,6 +491,14 @@ def _run_single_experiment(
             "--experiment-id is required when --control-plane-url is not set"
         )
 
+    # Fail fast (plan §3.3) on auto-checkpoint misconfiguration BEFORE any
+    # store work: validate the destination dir + admin-token availability
+    # here so a missing/unwritable path surfaces as a clear startup error,
+    # never as post-startup warning churn that silently drops every export.
+    auto_checkpoint_dir = validate_auto_checkpoint(
+        args=args, config=config, admin_token=admin_token
+    )
+
     log.info("waiting_for_task_store", url=args.task_store_url)
     wait_for_task_store(
         base_url=args.task_store_url,
@@ -510,19 +543,31 @@ def _run_single_experiment(
             admin_token=admin_token,
             log=log,
         )
-        run_orchestrator_loop(
-            store=client,
-            integrator=integrator,
-            ideation_policy=ideation_policy,
-            termination_policy=termination_policy,
-            terminated_by=args.worker_id,
-            ideation_task_prefix=args.ideation_task_prefix,
-            execution_task_prefix=args.execution_task_prefix,
-            evaluation_task_prefix=args.evaluation_task_prefix,
-            poll_interval=args.poll_interval,
-            max_quiescent_iterations=max_quiescent_iterations,
-            stop=stop,
+        scheduler, export_client = build_auto_checkpoint_scheduler(
+            args=args,
+            config=config,
+            admin_token=admin_token,
+            destination=auto_checkpoint_dir,
+            log=log,
         )
+        try:
+            run_orchestrator_loop(
+                store=client,
+                integrator=integrator,
+                ideation_policy=ideation_policy,
+                termination_policy=termination_policy,
+                terminated_by=args.worker_id,
+                ideation_task_prefix=args.ideation_task_prefix,
+                execution_task_prefix=args.execution_task_prefix,
+                evaluation_task_prefix=args.evaluation_task_prefix,
+                poll_interval=args.poll_interval,
+                max_quiescent_iterations=max_quiescent_iterations,
+                stop=stop,
+                scheduler=scheduler,
+            )
+        finally:
+            if export_client is not None:
+                export_client.close()
     log.info("orchestrator exited")
     return 0
 
@@ -603,21 +648,29 @@ def _run_multi_experiment(
     """
     admin_token = _resolve_control_plane_admin_token(args)
     credentials_dir = resolve_credentials_dir(args)
-    cp_bearer = _bootstrap_control_plane(
+    cp_bearer, cp_worker_id = _bootstrap_control_plane(
         args=args, log=log, credentials_dir=credentials_dir, admin_token=admin_token
     )
     cp_client = ControlPlaneClient(args.control_plane_url, bearer=cp_bearer)
 
+    # Since #128 the deployment lease holder MUST be the MINTED opaque
+    # worker_id (the authenticated principal), not the operator-supplied
+    # NAME (``args.worker_id``). When the control plane is auth-disabled
+    # (no bootstrap) ``cp_worker_id`` falls back to the name so the
+    # test/in-process posture keeps working.
+    holder_worker_id = cp_worker_id or args.worker_id
+
     manager = LeaseManager(
         cp_client,
-        worker_id=args.worker_id,
+        worker_id=holder_worker_id,
         lease_duration_seconds=args.lease_duration_seconds,
     )
     log.info(
         "starting",
         mode="multi-experiment",
         control_plane_url=args.control_plane_url,
-        worker_id=args.worker_id,
+        worker_id=holder_worker_id,
+        worker_name=args.worker_id,
         holder_instance=manager.holder_instance,
         lease_duration_seconds=args.lease_duration_seconds,
     )
@@ -635,7 +688,7 @@ def _run_multi_experiment(
         run_multi_experiment_loop(
             manager=manager,
             factory=factory,
-            terminated_by=args.worker_id,
+            terminated_by=holder_worker_id,
             ideation_policy=ideation_policy,
             termination_policy=termination_policy,
             poll_interval=args.poll_interval,
@@ -655,35 +708,35 @@ def _bootstrap_control_plane(
     log,  # noqa: ANN001
     credentials_dir,  # noqa: ANN001 — Path
     admin_token: str | None,
-) -> str | None:
-    """Resolve the deployment-scoped control-plane bearer.
+) -> tuple[str | None, str | None]:
+    """Resolve the deployment-scoped control-plane bearer + minted worker_id.
+
+    Returns ``(bearer, worker_id)``. Since #128 the orchestrator
+    SELF-registers under the operator-supplied NAME (``args.worker_id``)
+    and the control plane MINTS the opaque ``worker_id``; the minted id
+    is persisted locally and reused across restarts.
 
     Three startup postures, decided by an UNAUTHENTICATED whoami probe
     FIRST (before consulting persisted credentials):
       (a) Probe returns 200 → control plane is auth-DISABLED (server
           started with ``admin_token=None`` — test / in-process / local-
-          dev). No bootstrap, no bearer; the server has no auth gate and
-          every lease op passes through. A leftover persisted credential
-          MUST NOT trigger bootstrap here: auth-disabled whoami returns
-          the default ``worker_id`` (not ours), ``bootstrap_control_plane_worker``
-          would observe the mismatch and try to reissue, which requires
-          the admin token we do not have — a spurious startup failure.
-      (b) Probe returns 401 AND we have admin_token OR persisted
-          credential → bootstrap the deployment-scoped worker credential
-          and use the worker bearer for every lease op.
-      (c) Probe returns 401 AND no admin_token AND no persisted credential
+          dev). No bootstrap, no bearer, no minted id; the server has no
+          auth gate and every lease op passes through. A leftover
+          persisted credential MUST NOT trigger bootstrap here.
+      (b) Probe returns 401 AND we have admin_token OR a persisted
+          worker_id → bootstrap the deployment-scoped worker credential
+          and use the worker bearer + minted id for every lease op.
+      (c) Probe returns 401 AND no admin_token AND no persisted worker_id
           → bootstrap CANNOT succeed; raise an explicit RuntimeError so
           the operator sees the misconfiguration at startup rather than
           silently running unauthenticated and tripping a 401 at the
           first lease op.
     """
-    from .control_plane_bootstrap import (
-        credential_path as _cp_credential_path,
-    )
     from .control_plane_bootstrap import read_token as _cp_read_token
+    from .control_plane_bootstrap import worker_id_path as _cp_worker_id_path
 
-    persisted_token = _cp_read_token(
-        _cp_credential_path(credentials_dir, args.worker_id)
+    persisted_worker_id = _cp_read_token(
+        _cp_worker_id_path(credentials_dir, args.worker_id)
     )
     with ControlPlaneClient(args.control_plane_url) as _probe:
         try:
@@ -696,18 +749,18 @@ def _bootstrap_control_plane(
         # Posture (a)
         log.info(
             "control_plane_bootstrap_skipped_auth_disabled",
-            worker_id=args.worker_id,
-            persisted_token_present=persisted_token is not None,
+            worker_name=args.worker_id,
+            persisted_worker_id_present=persisted_worker_id is not None,
         )
-        return None
-    if admin_token is None and persisted_token is None:
+        return (None, None)
+    if admin_token is None and persisted_worker_id is None:
         # Posture (c)
         msg = (
             "control-plane server is auth-enabled but no admin "
-            "token and no persisted credential are available. "
+            "token and no persisted worker_id are available. "
             "Set --control-plane-admin-token, "
             "$EDEN_CONTROL_PLANE_ADMIN_TOKEN, or --admin-token to "
-            "let the orchestrator bootstrap its deployment-scoped "
+            "let the orchestrator self-register its deployment-scoped "
             "worker credential."
         )
         raise RuntimeError(msg)
@@ -715,25 +768,26 @@ def _bootstrap_control_plane(
     # Posture (b)
     cp_credential = bootstrap_control_plane_worker(
         control_plane_url=args.control_plane_url,
-        worker_id=args.worker_id,
+        name=args.worker_id,
         credentials_dir=credentials_dir,
         admin_token=admin_token,
         labels={"role": "orchestrator"},
     )
-    # Join the deployment-scoped `orchestrators` group so the chapter 07
-    # §15.2 lease ops admit this worker. Admin-gated; skipped (with
-    # warning) when admin_token is unavailable.
+    # Join the deployment-scoped `orchestrators` group (resolved by
+    # reserved NAME → minted grp_* id) so the chapter 07 §15.2 lease
+    # ops admit this worker. Admin-gated; skipped (with warning) when
+    # admin_token is unavailable.
     try:
         ensure_orchestrators_group_membership(
             control_plane_url=args.control_plane_url,
-            worker_id=args.worker_id,
+            worker_id=cp_credential.worker_id,
             admin_token=admin_token,
         )
     except Exception:  # noqa: BLE001 — defensive at startup
         log.exception(
             "ensure_control_plane_orchestrators_membership_failed"
         )
-    return cp_credential.bearer
+    return (cp_credential.bearer, cp_credential.worker_id)
 
 
 def _build_runtime_factory(
@@ -904,28 +958,34 @@ def _ensure_orchestrators_membership(
     with StoreClient(
         base_url, experiment_id, bearer=f"admin:{admin_token}"
     ) as admin:
+        # Since #128 groups carry minted grp_* ids; the `orchestrators`
+        # authority group is resolved by its reserved display NAME.
+        def _resolve_or_create() -> str:
+            existing = admin.list_groups(name="orchestrators")
+            if existing:
+                return existing[0].group_id
+            try:
+                return admin.register_group("orchestrators").group_id
+            except AlreadyExists:
+                # Concurrent creator won; re-read its minted id.
+                return admin.list_groups(name="orchestrators")[0].group_id
+
+        group_id = _resolve_or_create()
         try:
-            admin.register_group("orchestrators")
-            log.info("registered_group", group_id="orchestrators")
-        except AlreadyExists:
-            # The group already exists (setup-experiment ran, or
-            # another orchestrator beat us here). Nothing to do.
-            pass
-        try:
-            admin.add_to_group("orchestrators", worker_id)
+            admin.add_to_group(group_id, worker_id)
             log.info(
                 "joined_group",
-                group_id="orchestrators",
+                group_id=group_id,
                 worker_id=worker_id,
             )
         except NotFound:
-            # Race: the group disappeared between our register and our
-            # add. Re-register and retry once.
-            admin.register_group("orchestrators")
-            admin.add_to_group("orchestrators", worker_id)
+            # Race: the group disappeared between our resolve and our
+            # add. Re-resolve (re-creating if needed) and retry once.
+            group_id = _resolve_or_create()
+            admin.add_to_group(group_id, worker_id)
             log.info(
                 "joined_group_after_race",
-                group_id="orchestrators",
+                group_id=group_id,
                 worker_id=worker_id,
             )
 

@@ -10,11 +10,23 @@ set -euo pipefail
 #
 # Idempotent: re-running on an already-configured stack preserves
 # existing secrets (POSTGRES_PASSWORD, EDEN_ADMIN_TOKEN,
-# EDEN_SESSION_SECRET, FORGEJO_*) and re-runs the seed step (which
-# itself short-circuits on a previously-seeded repo).
+# EDEN_SESSION_SECRET, FORGEJO_*), reuses the opaque ids minted on the
+# first run (EDEN_EXPERIMENT_ID, EDEN_*_WORKER_ID, EDEN_*_GROUP_ID —
+# read back from .env so re-running never mints a duplicate identity),
+# and re-runs the seed step (which itself short-circuits on a
+# previously-seeded repo).
+#
+# Identity model (#128): the experiment id and all infra worker / group
+# ids are opaque, system-minted (exp_* / wkr_* / grp_*) — NOT
+# operator-typed. setup-experiment mints the experiment id (or accepts
+# one an operator / control-plane already minted via --experiment-id)
+# and registers the per-experiment infra workers (operator,
+# orchestrator, web-ui-1, ideator-host-1, executor-host-1,
+# evaluator-host-1) and reserved groups (admins, orchestrators) under
+# the admin bearer, capturing each server-minted id into .env.
 #
 # Usage:
-#   setup-experiment.sh <config.yaml> [--experiment-id <id>]
+#   setup-experiment.sh <config.yaml> [--experiment-id <exp_*>]
 #                                     [--admin-token <T>]
 #                                     [--postgres-password <P>]
 #                                     [--env-file <path>]
@@ -25,7 +37,7 @@ usage() {
     cat <<'EOF' >&2
 Usage:
   setup-experiment.sh <config.yaml>
-                      [--experiment-id <id>]
+                      [--experiment-id <exp_*>]
                       [--admin-token <T>]
                       [--postgres-password <P>]
                       [--env-file <path>]
@@ -148,22 +160,28 @@ if [[ -z "$ENV_FILE" ]]; then
     ENV_FILE="${COMPOSE_DIR}/.env"
 fi
 
-# --- Default experiment-id from the config's parent dir ---
-if [[ -z "$EXPERIMENT_ID" ]]; then
-    # `<some-path>/.eden/config.yaml` → use the directory containing `.eden`.
-    parent="$(dirname "$CONFIG_PATH")"
-    grandparent="$(dirname "$parent")"
-    if [[ "$(basename "$parent")" == ".eden" ]]; then
-        EXPERIMENT_ID="$(basename "$grandparent")"
-    else
-        EXPERIMENT_ID="$(basename "$parent")"
-    fi
-fi
-
 # --- Secret helpers ---
 gen_hex() {
     # 32 bytes of hex.
     python3 -c 'import secrets,sys; sys.stdout.write(secrets.token_hex(int(sys.argv[1])))' "${1:-32}"
+}
+
+# --- #128 opaque-id minting (Crockford base32 ULID) ---
+# Mint an opaque id of shape "<prefix>_<26-char-ULID>" matching the
+# spec/v0/02-data-model.md §1.6 grammar (^<prefix>_[0-9a-hjkmnp-tv-z]{26}$).
+# Prefix is one of exp / wkr / grp. The 26-char suffix is a 48-bit ms
+# timestamp + 80-bit random, encoded with the lowercase Crockford
+# alphabet (no i/l/o/u). This mirrors eden_contracts.mint_opaque_id so a
+# setup-minted id is indistinguishable from a server-minted one.
+mint_opaque_id() {
+    python3 - "$1" <<'PY'
+import secrets, sys, time
+prefix = sys.argv[1]
+alphabet = "0123456789abcdefghjkmnpqrstvwxyz"
+value = ((int(time.time() * 1000) & ((1 << 48) - 1)) << 80) | secrets.randbits(80)
+suffix = "".join(alphabet[(value >> (5 * i)) & 31] for i in range(26))[::-1]
+sys.stdout.write(f"{prefix}_{suffix}")
+PY
 }
 
 # Read a key from an existing env file, returning empty if absent.
@@ -174,6 +192,26 @@ read_env_key() {
         sed -n "s/^${key}=\(.*\)$/\1/p" "$file" | head -n1
     fi
 }
+
+# --- Resolve the opaque experiment id (#128) ---
+# The experiment id is now an opaque, system-minted `exp_*` id (no
+# longer the operator-typed mnemonic from the config's parent dir).
+# Precedence:
+#   1. --experiment-id flag (an operator / control-plane that already
+#      minted an `exp_*`; we do NOT validate the grammar here — the
+#      task-store-server rejects an ill-formed id at first use).
+#   2. EDEN_EXPERIMENT_ID in an existing .env (idempotent re-run: reuse
+#      the previously-minted id; re-minting would orphan the prior
+#      data root + registry).
+#   3. Mint a fresh `exp_*`.
+if [[ -z "$EXPERIMENT_ID" ]]; then
+    EXISTING_EXPERIMENT_ID="$(read_env_key EDEN_EXPERIMENT_ID "$ENV_FILE")"
+    if [[ -n "$EXISTING_EXPERIMENT_ID" ]]; then
+        EXPERIMENT_ID="$EXISTING_EXPERIMENT_ID"
+    else
+        EXPERIMENT_ID="$(mint_opaque_id exp)"
+    fi
+fi
 
 # --- Resolve / preserve / generate secrets ---
 EXISTING_POSTGRES_PASSWORD="$(read_env_key POSTGRES_PASSWORD "$ENV_FILE")"
@@ -236,25 +274,28 @@ GRAFANA_HOST_PORT="${EXISTING_GRAFANA_HOST_PORT:-3000}"
 # copies the operator's YAML to that path (see below). Smoke scripts
 # that previously sed-edited EDEN_IDEATION_POLICY_* now edit the
 # experiment config YAML directly.
-# 12a-2 wave 4 / §3.8: auto-orchestrator worker_id. Multi-replica
-# deployments override per-replica.
-EXISTING_ORCH_WID="$(read_env_key EDEN_ORCHESTRATOR_WORKER_ID "$ENV_FILE")"
-EDEN_ORCHESTRATOR_WORKER_ID="${EXISTING_ORCH_WID:-orchestrator}"
-# 12a-2 wave 7 / §5.7: initial admin worker_id seeded into the
-# `admins` group below. Operators acting through the web UI
-# authenticate as this worker; it's the only principal that can
-# drive reassign_task / update_dispatch_mode / create_task(kind=execution)
-# under the wave-3 §3.7 authority gates.
-EXISTING_ADMIN_MEMBER="$(read_env_key EDEN_ADMINS_INITIAL_MEMBER "$ENV_FILE")"
-EDEN_ADMINS_INITIAL_MEMBER="${EXISTING_ADMIN_MEMBER:-operator}"
 
-# 12a-2 wave 7 follow-up: the web-ui's worker_id is the deployment-
-# level admin actor (until the §D.5b per-user session-bearer retrofit
-# lands in a later phase). Adding it to `admins` lets operators flip
-# dispatch_mode + reassign tasks through the /admin/ routes; without
-# this, the web-ui's StoreClient hits 403 on every admin-gated PATCH.
-EXISTING_WEB_UI_WID="$(read_env_key EDEN_WEB_UI_WORKER_ID "$ENV_FILE")"
-EDEN_WEB_UI_WORKER_ID="${EXISTING_WEB_UI_WID:-web-ui-1}"
+# --- #128 infra worker / group ids: read-from-.env, mint-later ---
+# Under the opaque-id model setup-experiment is the SOLE minter of the
+# per-experiment infra workers (operator, orchestrator, web-ui-1,
+# ideator-host-1, executor-host-1, evaluator-host-1) and the two
+# reserved groups (admins, orchestrators). The server mints the id at
+# register-time and returns it; the operator no longer picks it.
+#
+# Idempotency now lives in `.env`: on a re-run we REUSE any id already
+# present (registering again would mint a NEW id and orphan the prior
+# registry row + credential). An empty value here means "not yet
+# minted" — the reserved-group + initial-admin bootstrap block below
+# mints it and writes it back to `.env`. The worker NAMES are the
+# stable role labels (also the reserved literals for the groups).
+EDEN_ORCHESTRATOR_WORKER_ID="$(read_env_key EDEN_ORCHESTRATOR_WORKER_ID "$ENV_FILE")"
+EDEN_ADMINS_INITIAL_MEMBER="$(read_env_key EDEN_ADMINS_INITIAL_MEMBER "$ENV_FILE")"
+EDEN_WEB_UI_WORKER_ID="$(read_env_key EDEN_WEB_UI_WORKER_ID "$ENV_FILE")"
+EDEN_IDEATOR_HOST_WORKER_ID="$(read_env_key EDEN_IDEATOR_HOST_WORKER_ID "$ENV_FILE")"
+EDEN_EXECUTOR_HOST_WORKER_ID="$(read_env_key EDEN_EXECUTOR_HOST_WORKER_ID "$ENV_FILE")"
+EDEN_EVALUATOR_HOST_WORKER_ID="$(read_env_key EDEN_EVALUATOR_HOST_WORKER_ID "$ENV_FILE")"
+EDEN_ADMINS_GROUP_ID="$(read_env_key EDEN_ADMINS_GROUP_ID "$ENV_FILE")"
+EDEN_ORCHESTRATORS_GROUP_ID="$(read_env_key EDEN_ORCHESTRATORS_GROUP_ID "$ENV_FILE")"
 
 # 10d subprocess overlay: experiment-dir bind-mount source. Default
 # is the directory containing the experiment config's `.eden`
@@ -344,11 +385,13 @@ mkdir -p \
     "${EDEN_EXPERIMENT_DATA_ROOT}/evaluator-repo" \
     "${EDEN_EXPERIMENT_DATA_ROOT}/web-ui-repo" \
     "${EDEN_EXPERIMENT_DATA_ROOT}/ideator-repo" \
+    "${EDEN_EXPERIMENT_DATA_ROOT}/checkpoints" \
     "${EDEN_EXPERIMENT_DATA_ROOT}/credentials/orchestrator" \
     "${EDEN_EXPERIMENT_DATA_ROOT}/credentials/ideator" \
     "${EDEN_EXPERIMENT_DATA_ROOT}/credentials/executor" \
     "${EDEN_EXPERIMENT_DATA_ROOT}/credentials/evaluator" \
     "${EDEN_EXPERIMENT_DATA_ROOT}/credentials/web-ui" \
+    "${EDEN_EXPERIMENT_DATA_ROOT}/credentials/operator" \
     "${EDEN_EXPERIMENT_DATA_ROOT}/web-ui-configs" \
     "${EDEN_EXPERIMENT_DATA_ROOT}/web-ui-repos" \
     "${EDEN_EXPERIMENT_DATA_ROOT}/logs/task-store-server" \
@@ -379,12 +422,14 @@ if ! chmod 0777 \
     "${EDEN_EXPERIMENT_DATA_ROOT}/evaluator-repo" \
     "${EDEN_EXPERIMENT_DATA_ROOT}/web-ui-repo" \
     "${EDEN_EXPERIMENT_DATA_ROOT}/ideator-repo" \
+    "${EDEN_EXPERIMENT_DATA_ROOT}/checkpoints" \
     "${EDEN_EXPERIMENT_DATA_ROOT}/credentials" \
     "${EDEN_EXPERIMENT_DATA_ROOT}/credentials/orchestrator" \
     "${EDEN_EXPERIMENT_DATA_ROOT}/credentials/ideator" \
     "${EDEN_EXPERIMENT_DATA_ROOT}/credentials/executor" \
     "${EDEN_EXPERIMENT_DATA_ROOT}/credentials/evaluator" \
     "${EDEN_EXPERIMENT_DATA_ROOT}/credentials/web-ui" \
+    "${EDEN_EXPERIMENT_DATA_ROOT}/credentials/operator" \
     "${EDEN_EXPERIMENT_DATA_ROOT}/web-ui-configs" \
     "${EDEN_EXPERIMENT_DATA_ROOT}/web-ui-repos" \
     "${EDEN_EXPERIMENT_DATA_ROOT}/logs" \
@@ -537,7 +582,7 @@ WEB_UI_HOST_PORT=${WEB_UI_HOST_PORT}
 # with no extra setup flag. EDEN_LOGGING_DOCKER_GID is intentionally
 # absent here — it is required ONLY for the optional infra-stdout
 # overlay (compose.logging-infra.yaml) and the operator supplies it at
-# `up` time (see that overlay's header + .env.example).
+# bring-up time (see that overlay's header + .env.example).
 EDEN_GRAFANA_ADMIN_PASSWORD=${EDEN_GRAFANA_ADMIN_PASSWORD}
 GRAFANA_HOST_PORT=${GRAFANA_HOST_PORT}
 
@@ -549,10 +594,22 @@ GRAFANA_HOST_PORT=${GRAFANA_HOST_PORT}
 # --data-root <path>.
 EDEN_EXPERIMENT_DATA_ROOT=${EDEN_EXPERIMENT_DATA_ROOT}
 
-# --- 12a-2 orchestrator-role ---
+# --- #128 opaque infra worker + group ids ---
+# All system-minted (wkr_... / grp_...) by the reserved-group +
+# initial-admin bootstrap block at the end of this script. On the
+# FIRST run these are written empty here and then filled in-place once
+# the task-store-server is up and has minted them; on a re-run they
+# carry the previously-minted ids (idempotent reuse). Do NOT hand-edit
+# — the value is the registry's primary key and the per-host credential
+# filename (<id>.token) under the credentials/* data-root dirs.
 EDEN_ORCHESTRATOR_WORKER_ID=${EDEN_ORCHESTRATOR_WORKER_ID}
 EDEN_ADMINS_INITIAL_MEMBER=${EDEN_ADMINS_INITIAL_MEMBER}
 EDEN_WEB_UI_WORKER_ID=${EDEN_WEB_UI_WORKER_ID}
+EDEN_IDEATOR_HOST_WORKER_ID=${EDEN_IDEATOR_HOST_WORKER_ID}
+EDEN_EXECUTOR_HOST_WORKER_ID=${EDEN_EXECUTOR_HOST_WORKER_ID}
+EDEN_EVALUATOR_HOST_WORKER_ID=${EDEN_EVALUATOR_HOST_WORKER_ID}
+EDEN_ADMINS_GROUP_ID=${EDEN_ADMINS_GROUP_ID}
+EDEN_ORCHESTRATORS_GROUP_ID=${EDEN_ORCHESTRATORS_GROUP_ID}
 
 # --- 12c / #147 control plane ---
 # The control-plane service is always-on in compose.yaml. Its Postgres
@@ -736,32 +793,38 @@ sed -E "s/^EDEN_BASE_COMMIT_SHA=.*/EDEN_BASE_COMMIT_SHA=${SEED_SHA}/" \
     "$ENV_FILE" > "$TMP_REPLACE"
 mv "$TMP_REPLACE" "$ENV_FILE"
 
-# --- 12a-2 wave 7: reserved-group + initial-admin bootstrap ---
+# --- #128: reserved-group + initial-admin + infra-worker bootstrap ---
 #
-# Per plan §5.7: register the `admins` and `orchestrators` groups
-# (both reserved per chapter 02 §7.5) and seed the initial admin
-# worker into `admins`. The `orchestrators` group is created empty;
-# auto-orchestrator instances populate it themselves at startup via
-# `_ensure_orchestrators_membership` (12a-2 wave 4).
+# Under the opaque-id model setup-experiment is the SOLE minter of the
+# per-experiment infra workers and reserved groups. The server mints
+# every id (`wkr_*` / `grp_*`) at register-time and returns it; we
+# capture the minted id (and, for workers, the registration_token),
+# persist the id to `.env`, and persist the token to the per-host
+# credentials dir so each container's startup
+# `bootstrap_worker_credential` finds a usable credential without an
+# admin reissue.
 #
-# All three calls are admin-token-authenticated and idempotent on
-# existing record (per 12a-1 §D.1 / §D.2), so re-running setup on an
-# already-configured experiment is safe. We swallow 409 on
-# register_group (group exists) and 200 on register_worker
-# (idempotent re-registration returns the existing record without a
-# new token).
-echo "--- bringing up task-store-server for group bootstrap ---" >&2
+# Idempotency lives in the .env file: a non-empty EDEN_..._WORKER_ID /
+# EDEN_..._GROUP_ID means a prior run already minted it. We REUSE it and
+# SKIP re-minting (registering again would mint a NEW id, orphaning the
+# prior registry row + credential). Reserved groups are created under
+# the admin bearer (which is allowed to mint reserved-named groups);
+# ordinary workers cannot.
+echo "--- bringing up task-store-server for registry bootstrap ---" >&2
 (cd "$COMPOSE_DIR" && docker compose --env-file "$ENV_FILE" \
     up -d --wait task-store-server >&2)
 
-bootstrap_curl() {
+EXP_BASE="/v0/experiments/${EXPERIMENT_ID}"
+
+bootstrap_curl_body() {
     # Issue an admin-token-authenticated wire call from inside the
-    # task-store-server container; that keeps the bootstrap working
-    # whether or not the host has curl, and avoids guessing at the
-    # exposed port (the container always listens on 8080).
+    # task-store-server container and return the RESPONSE BODY on
+    # stdout (so we can parse the server-minted id). HTTP errors fail
+    # the script (curl -f → non-zero); the caller decides whether to
+    # tolerate that (e.g. a GET ?name= lookup that may 404).
     local method="$1" path="$2" body="${3:-}"
     local args=(
-        -fsS -o /dev/null -w '%{http_code}'
+        -fsS
         -X "$method"
         -H "Authorization: Bearer admin:${EDEN_ADMIN_TOKEN}"
         -H "X-Eden-Experiment-Id: ${EXPERIMENT_ID}"
@@ -772,110 +835,157 @@ bootstrap_curl() {
     fi
     args+=("http://localhost:8080${path}")
     (cd "$COMPOSE_DIR" && docker compose --env-file "$ENV_FILE" \
-        exec -T task-store-server curl "${args[@]}") || true
+        exec -T task-store-server curl "${args[@]}")
 }
 
-echo "--- registering reserved groups + initial admin worker ---" >&2
-EXP_BASE="/v0/experiments/${EXPERIMENT_ID}"
+# Parse a single top-level string field out of a JSON object body
+# using python3 (guaranteed present; jq is not on the host in every
+# environment). Empty stdout if absent/null.
+json_field() {
+    python3 -c 'import json,sys; d=json.load(sys.stdin); v=d.get(sys.argv[1]); sys.stdout.write(v if isinstance(v,str) else "")' "$1"
+}
 
-# 1. register_group("orchestrators") — accept 200 (created) or 409
-# (already exists; orchestrator may have raced us, or this is a
-# re-run).
-rc=$(bootstrap_curl POST "${EXP_BASE}/groups" \
-    "{\"group_id\":\"orchestrators\"}")
-case "$rc" in
-    200|409) ;;
-    *) echo "register_group(orchestrators) failed: http=$rc" >&2; exit 1 ;;
-esac
+# Replace KEY=… in $ENV_FILE in place (the line always exists — it was
+# written by the heredoc above, possibly empty). Portable sed for BSD
+# + GNU; the value is an opaque id (no sed-special chars), so a plain
+# s||| with `|` delimiter is safe.
+upsert_env_key() {
+    local key="$1" value="$2" tmp
+    tmp="$(mktemp)"
+    sed -E "s|^${key}=.*|${key}=${value}|" "$ENV_FILE" > "$tmp"
+    mv "$tmp" "$ENV_FILE"
+}
 
-# 2. register_group("admins") — same idempotency posture.
-rc=$(bootstrap_curl POST "${EXP_BASE}/groups" \
-    "{\"group_id\":\"admins\"}")
-case "$rc" in
-    200|409) ;;
-    *) echo "register_group(admins) failed: http=$rc" >&2; exit 1 ;;
-esac
-
-# 3. register_worker(EDEN_ADMINS_INITIAL_MEMBER) — admin-gated. Per
-# chapter 02 §6.3, re-registration of an existing worker_id returns
-# the existing record (200) without a fresh registration_token. We
-# intentionally do NOT capture the returned token here; the operator
-# acquires a credential via the documented reissue path
-# (`reference/scripts/setup-experiment/README.md` will be updated to
-# point at the `eden_orchestrator` host's cred dir for inspection).
-rc=$(bootstrap_curl POST "${EXP_BASE}/workers" \
-    "{\"worker_id\":\"${EDEN_ADMINS_INITIAL_MEMBER}\"}")
-case "$rc" in
-    200) ;;
-    *) echo "register_worker(${EDEN_ADMINS_INITIAL_MEMBER}) failed: http=$rc" >&2; exit 1 ;;
-esac
-
-# 4. add_to_group(initial-admin, "admins") — admin-gated; idempotent
-# on existing membership.
-rc=$(bootstrap_curl POST "${EXP_BASE}/groups/admins/members" \
-    "{\"member_id\":\"${EDEN_ADMINS_INITIAL_MEMBER}\"}")
-case "$rc" in
-    200) ;;
-    *) echo "add_to_group(admins, ${EDEN_ADMINS_INITIAL_MEMBER}) failed: http=$rc" >&2; exit 1 ;;
-esac
-
-# 5. register_worker(EDEN_WEB_UI_WORKER_ID) — admin-gated, idempotent
-# (re-registration returns existing record without a fresh token).
-# Pre-registering here means the web-ui container's startup
-# bootstrap_worker_credential will see an existing row and reissue
-# (per §8.2: no fall-through to fresh register on existing record).
-rc=$(bootstrap_curl POST "${EXP_BASE}/workers" \
-    "{\"worker_id\":\"${EDEN_WEB_UI_WORKER_ID}\"}")
-case "$rc" in
-    200) ;;
-    *) echo "register_worker(${EDEN_WEB_UI_WORKER_ID}) failed: http=$rc" >&2; exit 1 ;;
-esac
-
-# 6. add_to_group(web-ui, "admins") — admin-gated; idempotent on
-# existing membership. The web-ui's StoreClient bearer is its own
-# worker_id, so PATCH /dispatch_mode + POST /tasks/{T}/reassign
-# routes (both admins-gated per §3.7) need this membership to land.
-rc=$(bootstrap_curl POST "${EXP_BASE}/groups/admins/members" \
-    "{\"member_id\":\"${EDEN_WEB_UI_WORKER_ID}\"}")
-case "$rc" in
-    200) ;;
-    *) echo "add_to_group(admins, ${EDEN_WEB_UI_WORKER_ID}) failed: http=$rc" >&2; exit 1 ;;
-esac
-
-# 7. Pre-register the headless worker host worker_ids (ideator-1,
-# executor-1, evaluator-1) so they're known to the registry from
-# bootstrap. Each worker host's own startup
-# `bootstrap_worker_credential` will see the existing row and reissue
-# per §8.2. Pre-registering matters for the wave-5 reassign route's
-# unknown-target check (the route validates `new_target` against the
-# live worker registry); without it, e2e drills that reassign a task
-# to a worker that hasn't yet self-registered see `error=unknown-target`.
-# The set of worker_ids is the reference deployment's known shape;
-# operators with different worker_id schemes register theirs the same
-# way (admin-gated POST /workers).
+# Persist a per-worker credential token to <credentials_dir>/<id>.token
+# (matches eden_service_common.auth.credential_path).
 #
-# --no-auto-host-workers skips this block for fully-manual experiments
-# that won't run the auto-host services (`compose up` without the
-# *_host services). Tradeoff: without pre-registration, an operator
-# who later reassigns a task to one of these auto-host worker_ids
-# *before* that host has self-registered will get the reassign route's
-# `error=unknown-target`; for fully-manual flows that's the right
-# failure mode (the host isn't coming).
+# Mode 0644 (world-READABLE), NOT 0600: setup-experiment runs as the HOST
+# user, but the worker-host containers read this token as eden:1000. On a
+# Linux native bind-mount the host-uid-owned 0600 file is unreadable by
+# eden:1000 (PermissionError at startup); macOS Docker Desktop's uid
+# mapping masks this, so 0600 only fails on Linux/CI. 0644 matches the
+# already-0777 credentials dir's documented bind-mount posture (this
+# reference deployment trades token-file secrecy on the host fs for
+# cross-uid host↔container access; a hardened deployment uses matching
+# uids or a secrets manager — chapter 01 §13.5 token-storage hygiene).
+persist_token() {
+    local cred_dir="$1" worker_id="$2" token="$3"
+    local path="${EDEN_EXPERIMENT_DATA_ROOT}/credentials/${cred_dir}/${worker_id}.token"
+    printf '%s' "$token" > "$path"
+    chmod 0644 "$path" 2>/dev/null || true
+}
+
+# Mint a reserved group by NAME under the admin bearer (allowed to
+# create reserved-named groups) IF its id isn't already in `.env`.
+# Echoes the resolved group id. On a re-run with a populated `.env`
+# we trust the persisted id (idempotent reuse, no wire call).
+mint_group() {
+    local name="$1" existing_id="$2" body gid
+    if [[ -n "$existing_id" ]]; then
+        printf '%s' "$existing_id"
+        return 0
+    fi
+    body="$(bootstrap_curl_body POST "${EXP_BASE}/groups" \
+        "{\"name\":\"${name}\"}")"
+    gid="$(printf '%s' "$body" | json_field group_id)"
+    if [[ -z "$gid" ]]; then
+        echo "register_group(name=${name}) returned no group_id: $body" >&2
+        exit 1
+    fi
+    printf '%s' "$gid"
+}
+
+# Mint an infra worker by NAME under the admin bearer IF its id isn't
+# already in `.env`. Persists the minted id to `.env` (key=$3) and the
+# returned registration_token to the per-host credentials dir (=$4).
+# Echoes the resolved worker id.
+mint_worker() {
+    local name="$1" existing_id="$2" env_key="$3" cred_dir="$4" body wid token
+    if [[ -n "$existing_id" ]]; then
+        printf '%s' "$existing_id"
+        return 0
+    fi
+    body="$(bootstrap_curl_body POST "${EXP_BASE}/workers" \
+        "{\"name\":\"${name}\"}")"
+    wid="$(printf '%s' "$body" | json_field worker_id)"
+    token="$(printf '%s' "$body" | json_field registration_token)"
+    if [[ -z "$wid" || -z "$token" ]]; then
+        echo "register_worker(name=${name}) missing worker_id/registration_token: $body" >&2
+        exit 1
+    fi
+    upsert_env_key "$env_key" "$wid"
+    persist_token "$cred_dir" "$wid" "$token"
+    printf '%s' "$wid"
+}
+
+# add_to_group(member, group) — admin-gated; idempotent on existing
+# membership (200). The URL uses the OPAQUE group id; the body's
+# member_id is the opaque worker (or group) id.
+add_to_group() {
+    local grp_id="$1" member_id="$2"
+    bootstrap_curl_body POST "${EXP_BASE}/groups/${grp_id}/members" \
+        "{\"member_id\":\"${member_id}\"}" >/dev/null
+}
+
+echo "--- minting reserved groups + infra workers ---" >&2
+
+# 1. Reserved groups (admins, orchestrators). `orchestrators` is
+# created empty; auto-orchestrator instances add themselves at startup
+# via `_ensure_orchestrators_membership`.
+EDEN_ORCHESTRATORS_GROUP_ID="$(mint_group orchestrators "$EDEN_ORCHESTRATORS_GROUP_ID")"
+upsert_env_key EDEN_ORCHESTRATORS_GROUP_ID "$EDEN_ORCHESTRATORS_GROUP_ID"
+EDEN_ADMINS_GROUP_ID="$(mint_group admins "$EDEN_ADMINS_GROUP_ID")"
+upsert_env_key EDEN_ADMINS_GROUP_ID "$EDEN_ADMINS_GROUP_ID"
+
+# 2. Initial admin worker ("operator"). Operators acting through the
+# web UI authenticate as this worker; it is the principal that drives
+# reassign_task / update_dispatch_mode / create_task(kind=execution)
+# under the §3.7 admins-gated authority. Its token lands in
+# credentials/operator/<id>.token for operator inspection (no
+# container consumes it directly).
+EDEN_ADMINS_INITIAL_MEMBER="$(mint_worker operator "$EDEN_ADMINS_INITIAL_MEMBER" \
+    EDEN_ADMINS_INITIAL_MEMBER operator)"
+
+# 3. web-ui-1 worker — the deployment-level admin actor for the web-ui
+# container's StoreClient. Token lands in credentials/web-ui so the
+# container's bootstrap_worker_credential reuses it (no admin reissue).
+EDEN_WEB_UI_WORKER_ID="$(mint_worker web-ui-1 "$EDEN_WEB_UI_WORKER_ID" \
+    EDEN_WEB_UI_WORKER_ID web-ui)"
+
+# 4. orchestrator worker. Token lands in credentials/orchestrator.
+EDEN_ORCHESTRATOR_WORKER_ID="$(mint_worker orchestrator "$EDEN_ORCHESTRATOR_WORKER_ID" \
+    EDEN_ORCHESTRATOR_WORKER_ID orchestrator)"
+
+# 5. admins-group memberships: initial-admin + web-ui both need it so
+# their bearer (their own opaque worker id) passes the §3.7 admins gate
+# on PATCH /dispatch_mode + POST /tasks/{T}/reassign.
+add_to_group "$EDEN_ADMINS_GROUP_ID" "$EDEN_ADMINS_INITIAL_MEMBER"
+add_to_group "$EDEN_ADMINS_GROUP_ID" "$EDEN_WEB_UI_WORKER_ID"
+
+# 6. Headless worker-host workers (ideator-host-1, executor-host-1,
+# evaluator-host-1). Pre-minting matters for the reassign route's
+# unknown-target check (the route validates new_target against the live
+# registry); without it, e2e drills that reassign to a host that hasn't
+# yet self-bootstrapped see error=unknown-target. Each host container's
+# startup bootstrap_worker_credential reuses the persisted token.
+#
+# --no-auto-host-workers skips this for fully-manual experiments that
+# won't run the auto-host services. Tradeoff: a reassign to one of these
+# ids before the host comes up returns error=unknown-target — the right
+# failure mode when the host isn't coming.
 if [[ -z "$ARG_NO_AUTO_HOST_WORKERS" ]]; then
-    for wid in ideator-1 executor-1 evaluator-1; do
-        rc=$(bootstrap_curl POST "${EXP_BASE}/workers" \
-            "{\"worker_id\":\"${wid}\"}")
-        case "$rc" in
-            200) ;;
-            *) echo "register_worker(${wid}) failed: http=$rc" >&2; exit 1 ;;
-        esac
-    done
-    bootstrap_summary="worker hosts pre-registered"
+    EDEN_IDEATOR_HOST_WORKER_ID="$(mint_worker ideator-host-1 "$EDEN_IDEATOR_HOST_WORKER_ID" \
+        EDEN_IDEATOR_HOST_WORKER_ID ideator)"
+    EDEN_EXECUTOR_HOST_WORKER_ID="$(mint_worker executor-host-1 "$EDEN_EXECUTOR_HOST_WORKER_ID" \
+        EDEN_EXECUTOR_HOST_WORKER_ID executor)"
+    EDEN_EVALUATOR_HOST_WORKER_ID="$(mint_worker evaluator-host-1 "$EDEN_EVALUATOR_HOST_WORKER_ID" \
+        EDEN_EVALUATOR_HOST_WORKER_ID evaluator)"
+    bootstrap_summary="worker hosts minted (ideator/executor/evaluator)"
 else
-    bootstrap_summary="auto-host workers NOT pre-registered (--no-auto-host-workers)"
+    bootstrap_summary="auto-host workers NOT minted (--no-auto-host-workers)"
 fi
 
-echo "--- bootstrap complete: admins + orchestrators groups; initial admin = ${EDEN_ADMINS_INITIAL_MEMBER}; web-ui admin = ${EDEN_WEB_UI_WORKER_ID}; ${bootstrap_summary} ---" >&2
+echo "--- bootstrap complete: admins=${EDEN_ADMINS_GROUP_ID} orchestrators=${EDEN_ORCHESTRATORS_GROUP_ID}; initial admin=${EDEN_ADMINS_INITIAL_MEMBER}; web-ui=${EDEN_WEB_UI_WORKER_ID}; orchestrator=${EDEN_ORCHESTRATOR_WORKER_ID}; ${bootstrap_summary} ---" >&2
 
 # If the operator passed a custom --env-file path, echo a
 # next-step that uses an absolute path so they don't have to
@@ -890,6 +1000,13 @@ setup-experiment complete.
   base commit SHA:  ${SEED_SHA}
   env file:         ${ENV_FILE}
   data root:        ${EDEN_EXPERIMENT_DATA_ROOT}
+
+  minted ids (opaque, system-minted — see ${ENV_FILE}):
+    admins group:       ${EDEN_ADMINS_GROUP_ID}
+    orchestrators group:${EDEN_ORCHESTRATORS_GROUP_ID}
+    operator (admin):   ${EDEN_ADMINS_INITIAL_MEMBER}
+    web-ui:             ${EDEN_WEB_UI_WORKER_ID}
+    orchestrator:       ${EDEN_ORCHESTRATOR_WORKER_ID}
 
 Next steps:
 

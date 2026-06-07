@@ -1,18 +1,33 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "EDEN experiment runtime object",
-  "description": "Observed runtime state of an EDEN experiment, distinct from the declarative experiment-config (experiment-config.schema.json). Carries the lifecycle state field introduced in 12a-3 (spec/v0/02-data-model.md §2.5). The split mirrors task vs task-payload: declarative input lives in the config, observed runtime in the experiment object.",
+  "description": "Observed runtime state of an EDEN experiment, distinct from the declarative experiment-config (experiment-config.schema.json). Carries the lifecycle state field introduced in 12a-3 (spec/v0/02-data-model.md \u00a72.5). The split mirrors task vs task-payload: declarative input lives in the config, observed runtime in the experiment object.",
   "type": "object",
-  "required": ["experiment_id", "state", "created_at"],
+  "required": [
+    "experiment_id",
+    "state",
+    "created_at"
+  ],
   "properties": {
     "experiment_id": {
       "type": "string",
-      "minLength": 1
+      "pattern": "^exp_[0-9a-hjkmnp-tv-z]{26}$",
+      "description": "Opaque, system-minted experiment identifier (spec/v0/02-data-model.md \u00a71.6)."
+    },
+    "name": {
+      "type": "string",
+      "format": "display-name",
+      "minLength": 1,
+      "maxLength": 128,
+      "description": "OPTIONAL operator-supplied display label (spec/v0/02-data-model.md \u00a71.7). The `pattern`-inexpressible rules (NFC normalization, Unicode-category exclusions, no leading/trailing whitespace) are carried by `format: display-name`."
     },
     "state": {
       "type": "string",
-      "enum": ["running", "terminated"],
-      "description": "Lifecycle state per 02-data-model.md §2.5. Default at creation is 'running'; the transition to 'terminated' is one-way in v0."
+      "enum": [
+        "running",
+        "terminated"
+      ],
+      "description": "Lifecycle state per 02-data-model.md \u00a72.5. Default at creation is 'running'; the transition to 'terminated' is one-way in v0."
     },
     "created_at": {
       "type": "string",
@@ -23,15 +38,21 @@
     "base_commit_sha": {
       "type": "string",
       "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?$",
-      "description": "The experiment seed commit on main, recorded at registration / repo-init time (spec/v0/02-data-model.md §2.5). The orchestrator reads this per experiment to create the kind=='baseline' variant (§9.4); both single- and multi-experiment modes read it via read_experiment. Absent (never JSON null) on experiments registered before this field existed; such experiments never acquire a baseline."
+      "description": "The experiment seed commit on main, recorded at registration / repo-init time (spec/v0/02-data-model.md \u00a72.5). The orchestrator reads this per experiment to create the kind=='baseline' variant (\u00a79.4); both single- and multi-experiment modes read it via read_experiment. Absent (never JSON null) on experiments registered before this field existed; such experiments never acquire a baseline."
     },
     "imported_from": {
-      "description": "Provenance of the experiment when it was imported from a portable checkpoint (spec/v0/10-checkpoints.md §10). Absent (or JSON null) on natively-created experiments; present on experiments produced by the import endpoint (07-wire-protocol.md §14.2). Recovery probe: a client that lost the import 201 response queries this field and matches checkpoint_exported_at against the local manifest's exported_at.",
+      "description": "Provenance of the experiment when it was imported from a portable checkpoint (spec/v0/10-checkpoints.md \u00a710). Absent (or JSON null) on natively-created experiments; present on experiments produced by the import endpoint (07-wire-protocol.md \u00a714.2). Recovery probe: a client that lost the import 201 response queries this field and matches the (source_experiment_id, checkpoint_exported_at) pair against the local manifest's (experiment_id, exported_at).",
       "oneOf": [
-        {"type": "null"},
+        {
+          "type": "null"
+        },
         {
           "type": "object",
-          "required": ["checkpoint_exported_at", "checkpoint_format_version"],
+          "required": [
+            "checkpoint_exported_at",
+            "checkpoint_format_version",
+            "source_experiment_id"
+          ],
           "properties": {
             "checkpoint_exported_at": {
               "type": "string",
@@ -43,6 +64,11 @@
               "type": "string",
               "minLength": 1,
               "description": "The source checkpoint's manifest.checkpoint_format_version value, copied verbatim at import time."
+            },
+            "source_experiment_id": {
+              "type": "string",
+              "pattern": "^exp_[0-9a-hjkmnp-tv-z]{26}$",
+              "description": "Export-side experiment_id of the source experiment, copied verbatim from the source manifest at import time. REQUIRED within imported_from (the importer always stamps it; the recovery-probe matches on it). Provenance only \u2014 never reused as the primary key; the receiving experiment carries its own id (spec/v0/10-checkpoints.md \u00a710)."
             }
           }
         }

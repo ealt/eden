@@ -27,6 +27,7 @@ Sub-cases:
 - I-c ``IllegalTransition`` + read-back finds non-equivalent
       submission — orphan conflict.
 """
+# pyright: reportAttributeAccessIssue=false
 
 from __future__ import annotations
 
@@ -133,7 +134,7 @@ class TestSubCaseAPrime:
                 # this with the same token, so reclaim and re-claim
                 # with a different worker.
                 store.reclaim(task_id, "operator")
-                other = store.claim(task_id, "evaluator-other")
+                other = store.claim(task_id, store._test_worker_ids["evaluator-other"])
                 # The "other" worker submits a different metric.
                 original_submit(
                     task_id,
@@ -245,7 +246,7 @@ class TestSubCaseD:
             created_at="2026-04-24T11:00:00.000Z",
             updated_at="2026-04-24T12:00:00.000Z",
             claim=TaskClaim(
-                worker_id="ui-w",
+                worker_id=store._test_worker_ids["ui-w"],
                 claimed_at="2026-04-24T11:30:00.000Z",
             ),
         )
@@ -412,7 +413,7 @@ class TestSubCaseIb:
             status="success", variant_id=variant_id, evaluation={"score": 0.9}
         )
         store.reclaim(eval_id, "operator")
-        other = store.claim(eval_id, "evaluator-other")
+        other = store.claim(eval_id, store._test_worker_ids["evaluator-other"])
         store.submit(eval_id, other.worker_id, equivalent)
         store.accept(eval_id)
         # Task is now in completed; our subsequent submit will hit
@@ -435,7 +436,7 @@ class TestSubCaseIc:
     ) -> None:
         eval_id, variant_id, csrf = _claim(signed_in_client, store)
         store.reclaim(eval_id, "operator")
-        other = store.claim(eval_id, "evaluator-other")
+        other = store.claim(eval_id, store._test_worker_ids["evaluator-other"])
         store.submit(
             eval_id,
             other.worker_id,

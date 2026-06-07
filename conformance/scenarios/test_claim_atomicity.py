@@ -124,7 +124,10 @@ def test_concurrent_claim_at_most_one_succeeds(wire_client: WireClient) -> None:
     # (e.g. a later overwrite) would surface here.
     winning_worker_id = successes[0].json().get("worker_id")
     assert isinstance(winning_worker_id, str) and winning_worker_id
-    assert winning_worker_id in contender_ids
+    minted_contenders = {
+        wire_client.worker_id_for(wid) for wid in contender_ids
+    }
+    assert winning_worker_id in minted_contenders
 
     task = _seed.read_task(wire_client, tid)
     assert task["state"] == "claimed", (

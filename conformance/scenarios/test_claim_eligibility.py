@@ -60,7 +60,7 @@ def test_null_target_permits_any_registered_worker(wire_client: WireClient) -> N
     _seed.register_worker(wire_client, wid)
     tid = _seed.create_ideation_task(wire_client)
     c = _seed.claim(wire_client, tid, worker_id=wid)
-    assert c["worker_id"] == wid
+    assert c["worker_id"] == wire_client.worker_id_for(wid)
 
 
 def test_worker_target_match_permits_claim(wire_client: WireClient) -> None:
@@ -71,7 +71,7 @@ def test_worker_target_match_permits_claim(wire_client: WireClient) -> None:
         wire_client, target={"kind": "worker", "id": wid}
     )
     c = _seed.claim(wire_client, tid, worker_id=wid)
-    assert c["worker_id"] == wid
+    assert c["worker_id"] == wire_client.worker_id_for(wid)
 
 
 def test_worker_target_mismatch_returns_worker_not_eligible(
@@ -104,7 +104,7 @@ def test_group_target_member_permits_claim(wire_client: WireClient) -> None:
         wire_client, target={"kind": "group", "id": gid}
     )
     c = _seed.claim(wire_client, tid, worker_id=wid)
-    assert c["worker_id"] == wid
+    assert c["worker_id"] == wire_client.worker_id_for(wid)
 
 
 def test_group_target_non_member_returns_worker_not_eligible(
@@ -189,7 +189,10 @@ def test_worker_target_round_trips_through_create_read(
         wire_client, target={"kind": "worker", "id": wid}
     )
     task = _seed.read_task(wire_client, tid)
-    assert task.get("target") == {"kind": "worker", "id": wid}
+    assert task.get("target") == {
+        "kind": "worker",
+        "id": wire_client.worker_id_for(wid),
+    }
 
 
 def test_group_target_round_trips_through_create_read(
@@ -202,7 +205,10 @@ def test_group_target_round_trips_through_create_read(
         wire_client, target={"kind": "group", "id": gid}
     )
     task = _seed.read_task(wire_client, tid)
-    assert task.get("target") == {"kind": "group", "id": gid}
+    assert task.get("target") == {
+        "kind": "group",
+        "id": wire_client.group_id_for(gid),
+    }
 
 
 def test_target_round_trips_through_list_tasks(
@@ -218,4 +224,7 @@ def test_target_round_trips_through_list_tasks(
     r.raise_for_status()
     matches = [t for t in r.json() if t.get("task_id") == tid]
     assert len(matches) == 1, r.json()
-    assert matches[0].get("target") == {"kind": "worker", "id": wid}
+    assert matches[0].get("target") == {
+        "kind": "worker",
+        "id": wire_client.worker_id_for(wid),
+    }

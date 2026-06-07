@@ -1,8 +1,21 @@
 """Pydantic bindings for the EDEN protocol wire formats (spec/v0)."""
 
-from ._common import CommitSha, DateTimeStr, DurationStr, WorkerId
+from ._common import (
+    ActorId,
+    CommitSha,
+    DateTimeStr,
+    DisplayName,
+    DurationStr,
+    ExperimentId,
+    GroupId,
+    MemberId,
+    WorkerId,
+    mint_opaque_id,
+    mint_ulid,
+)
 from .artifact import ArtifactMetadata
 from .config import (
+    AutoCheckpointConfig,
     BaselineConfig,
     ConvergenceWindowTerminationConfig,
     Direction,
@@ -72,11 +85,19 @@ from .worker import Worker, WorkerLabels
 
 __all__ = [
     "REGISTERED_EVENT_TYPES",
+    "ActorId",
     "ArtifactMetadata",
     "CommitSha",
     "DateTimeStr",
+    "DisplayName",
     "DurationStr",
+    "AutoCheckpointConfig",
     "BaselineConfig",
+    "ExperimentId",
+    "GroupId",
+    "MemberId",
+    "mint_opaque_id",
+    "mint_ulid",
     "Direction",
     "DispatchMode",
     "DispatchModeValue",

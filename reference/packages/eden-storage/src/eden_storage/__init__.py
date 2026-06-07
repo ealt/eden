@@ -7,7 +7,7 @@ three reference backends. Error types and submission dataclasses
 live in [`errors.py`](errors.py) and [`submissions.py`](submissions.py).
 """
 
-from ._base import RESERVED_IDENTIFIERS
+from ._base import RESERVED_GROUP_NAMES, RESERVED_WORKER_NAMES
 from ._checkpoint import ImportResult
 from ._ops.events import iter_events_by_type
 from .artifact_backend import (
@@ -21,6 +21,7 @@ from .errors import (
     CycleDetected,
     DispatchError,
     IllegalTransition,
+    InvalidName,
     InvalidPrecondition,
     NoOpVariant,
     NotClaimed,
@@ -57,6 +58,7 @@ __all__ = [
     "VariantSubmission",
     "InMemoryArtifactBackend",
     "InMemoryStore",
+    "InvalidName",
     "InvalidPrecondition",
     "NotClaimed",
     "NotFound",
@@ -64,7 +66,8 @@ __all__ = [
     "ImportResult",
     "NoOpVariant",
     "PostgresStore",
-    "RESERVED_IDENTIFIERS",
+    "RESERVED_GROUP_NAMES",
+    "RESERVED_WORKER_NAMES",
     "ReservedIdentifier",
     "SqliteStore",
     "StorageError",

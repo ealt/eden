@@ -23,7 +23,8 @@
     },
     "experiment_id": {
       "type": "string",
-      "minLength": 1
+      "pattern": "^exp_[0-9a-hjkmnp-tv-z]{26}$",
+      "description": "Opaque, system-minted experiment identifier (spec/v0/02-data-model.md §1.6)."
     },
     "data": {
       "type": "object",
@@ -34,7 +35,9 @@
     "taskId": {"type": "string", "minLength": 1},
     "ideaId": {"type": "string", "minLength": 1},
     "variantId": {"type": "string", "minLength": 1},
-    "workerId": {"type": "string", "minLength": 1},
+    "workerId": {"type": "string", "pattern": "^wkr_[0-9a-hjkmnp-tv-z]{26}$"},
+    "actorId": {"type": "string", "pattern": "^(admin|wkr_[0-9a-hjkmnp-tv-z]{26})$"},
+    "memberId": {"type": "string", "pattern": "^(wkr|grp)_[0-9a-hjkmnp-tv-z]{26}$"},
     "taskKind": {"type": "string", "enum": ["ideation", "execution", "evaluation"]},
     "commitSha": {"type": "string", "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?$"},
     "failReason": {"type": "string", "enum": ["worker_error", "validation_error", "policy_limit"]},
@@ -146,13 +149,13 @@
                     "required": ["kind", "id"],
                     "properties": {
                       "kind": {"type": "string", "enum": ["worker", "group"]},
-                      "id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"}
+                      "id": {"$ref": "#/$defs/memberId"}
                     }
                   }
                 ]
               },
               "reason": {"type": "string", "minLength": 1},
-              "reassigned_by": {"type": "string", "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"}
+              "reassigned_by": {"$ref": "#/$defs/actorId"}
             }
           }
         }
@@ -174,7 +177,7 @@
                 "type": "object",
                 "additionalProperties": {"type": "string", "enum": ["auto", "manual"]}
               },
-              "updated_by": {"type": "string", "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"}
+              "updated_by": {"$ref": "#/$defs/actorId"}
             }
           }
         }
@@ -328,7 +331,7 @@
             "required": ["reason", "terminated_by"],
             "properties": {
               "reason": {"type": "string"},
-              "terminated_by": {"type": "string", "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"}
+              "terminated_by": {"$ref": "#/$defs/actorId"}
             }
           }
         }

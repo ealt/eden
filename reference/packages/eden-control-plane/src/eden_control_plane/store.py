@@ -55,13 +55,17 @@ class ControlPlaneStore(Protocol):
     `eden_control_plane.errors`:
 
     - `NotFound` — referenced entity does not exist.
-    - `AlreadyExists` — insert collided with an existing id
-      (`register_experiment` with a conflicting `config_uri`).
+    - `AlreadyExists` — insert collided with an existing id (reserved
+      for backend-internal integrity; ids are system-minted so caller
+      collisions no longer occur).
     - `InvalidPrecondition` — referenced entity not in required state
       (`unregister_experiment` while the experiment is still running
-      OR an active lease exists).
+      OR an active lease exists), or an ill-formed display `name`
+      (until `eden_storage.errors.InvalidName` lands — see
+      `_credentials.validate_display_name`).
     - `ReservedIdentifier` — `register_worker` / `register_group`
-      against a reserved id.
+      against a reserved NAME (`admin` / `system` / `internal` for
+      workers; `admins` / `orchestrators` for groups).
     - `CycleDetected` — group mutation would introduce a cycle.
     - `LeaseHeldByOther` — `acquire_lease` against a still-active lease.
     - `LeaseNotHeld` — `renew_lease` / `release_lease` against a
@@ -77,25 +81,22 @@ class ControlPlaneStore(Protocol):
     # ------------------------------------------------------------------
 
     def register_experiment(
-        self, experiment_id: str, config_uri: str
+        self, config_uri: str, *, name: str | None = None
     ) -> tuple[RegisteredExperiment, bool]:
-        """Create or return the registry entry for `experiment_id`.
+        """Mint a fresh `exp_*` and create its registry entry.
 
-        Idempotent on (experiment_id, config_uri): a second call with
-        identical inputs returns the existing entry. A second call
-        with a DIFFERENT `config_uri` MUST raise `AlreadyExists`.
-        New entries have `created_at = now`, `last_known_state =
-        "running"`, `lease = None`.
+        The id is system-minted (`mint_opaque_id("exp")`); the caller
+        does NOT supply one (chapter 11 §2 / data-model §1.6). `name`
+        is an optional operator-supplied display label (data-model
+        §1.7); an ill-formed name MUST be rejected. New entries have
+        `created_at = now`, `last_known_state = "running"`,
+        `lease = None`.
 
-        Returns `(entry, created)` where `created` is `True` when a
-        fresh row was inserted by this call, and `False` when this
-        call observed an existing row with the same `config_uri`.
-        The atomicity of the inserted-vs-observed decision is
-        load-bearing: chapter 07 §15 mandates `201` on first-create
-        vs `200` on idempotent replay, so two concurrent callers
-        that race against the same `(experiment_id, config_uri)`
-        MUST observe exactly one `created=True` and one
-        `created=False` result (no double-create, no double-replay).
+        Because the id is minted, every call creates a distinct entry —
+        there is no idempotent re-registration by id (the pre-rename
+        caller-supplied-id idempotency is retired). The returned
+        `created` flag is therefore always `True`; the tuple shape is
+        retained so the wire layer can keep emitting `201` uniformly.
         """
         ...
 
@@ -108,8 +109,15 @@ class ControlPlaneStore(Protocol):
         """
         ...
 
-    def list_experiments(self) -> list[RegisteredExperiment]:
-        """Return every registered experiment, sorted by `experiment_id`."""
+    def list_experiments(
+        self, *, name: str | None = None
+    ) -> list[RegisteredExperiment]:
+        """Return every registered experiment, sorted by `experiment_id`.
+
+        When `name` is supplied, filter to entries whose display `name`
+        matches it exactly (case-sensitive). Mirrors the `name=` filter
+        on `list_workers` / `list_groups`.
+        """
         ...
 
     def read_experiment_metadata(self, experiment_id: str) -> RegisteredExperiment:
@@ -209,19 +217,21 @@ class ControlPlaneStore(Protocol):
 
     def register_worker(
         self,
-        worker_id: str,
+        name: str | None = None,
         *,
         labels: dict[str, str] | None = None,
         registered_by: str | None = None,
     ) -> tuple[Worker, str | None]:
-        """Register `worker_id` at the deployment scope.
+        """Mint a fresh `wkr_*` at the deployment scope.
 
-        Returns `(worker, registration_token)`. On first registration
-        the second element is the freshly-minted plaintext token; on
-        idempotent re-registration of an existing `worker_id` it is
-        `None`. Raises `ReservedIdentifier` for `admin` / `system` /
-        `internal` or any id that violates the chapter 02 §6.1
-        grammar.
+        The id is system-minted (`mint_opaque_id("wkr")`); the caller
+        supplies only an optional display `name`. Returns
+        `(worker, registration_token)` — every call mints a fresh
+        worker and a fresh plaintext token (no id-based idempotency;
+        names MAY collide). Raises `ReservedIdentifier` when `name` is
+        one of the reserved worker names (`admin` / `system` /
+        `internal`); an ill-formed `name` is rejected by the
+        display-name validator.
         """
         ...
 
@@ -248,8 +258,13 @@ class ControlPlaneStore(Protocol):
         """Return the wire-visible Worker, or raise `NotFound`."""
         ...
 
-    def list_workers(self) -> list[Worker]:
-        """Return all registered workers (sorted by `worker_id`)."""
+    def list_workers(self, *, name: str | None = None) -> list[Worker]:
+        """Return registered workers (sorted by `worker_id`).
+
+        When `name` is supplied, return only workers whose display
+        `name` matches exactly (case-sensitive); 0..N results. Default
+        (None) returns all workers.
+        """
         ...
 
     # ------------------------------------------------------------------
@@ -258,16 +273,23 @@ class ControlPlaneStore(Protocol):
 
     def register_group(
         self,
-        group_id: str,
+        name: str | None = None,
         *,
         members: Iterable[str] | None = None,
+        created_by: str | None = None,
+        allow_reserved: bool = False,
     ) -> Group:
-        """Register a group with optional initial members.
+        """Mint a fresh `grp_*` with optional initial members.
 
-        Raises `ReservedIdentifier` for reserved ids; `AlreadyExists`
-        when a worker with the same id is already registered
-        (disjoint-namespace per chapter 02 §7.1); `CycleDetected` if
-        initial members would introduce a cycle.
+        The id is system-minted (`mint_opaque_id("grp")`); the caller
+        supplies only an optional display `name`. Every call mints a
+        fresh group (no id-based idempotency). Raises
+        `ReservedIdentifier` when `name` is a reserved group name
+        (`admins` / `orchestrators`) UNLESS `allow_reserved=True` —
+        the privileged setup-experiment seam that seeds the reserved
+        groups. Raises `CycleDetected` if initial members would
+        introduce a cycle. Members MUST resolve to real `wkr_*` /
+        `grp_*` ids (member-grammar validated).
         """
         ...
 
@@ -287,8 +309,13 @@ class ControlPlaneStore(Protocol):
         """Return one group. Raises `NotFound` when unknown."""
         ...
 
-    def list_groups(self) -> list[Group]:
-        """Return all groups (sorted by `group_id`)."""
+    def list_groups(self, *, name: str | None = None) -> list[Group]:
+        """Return groups (sorted by `group_id`).
+
+        When `name` is supplied, return only groups whose display
+        `name` matches exactly (case-sensitive); 0..N results. Default
+        (None) returns all groups.
+        """
         ...
 
     def resolve_worker_in_group(self, worker_id: str, group_id: str) -> bool:

@@ -46,7 +46,20 @@ class WireClient:
         # admin bearer; ``request(..., as_worker=<wid>)`` swaps it for
         # the worker's registered credential for that single call.
         # See the chapter-7 §13 per-worker bearer scheme.
+        #
+        # Since the identity rename (#128) worker/group ids are opaque,
+        # system-minted (``wkr_*`` / ``grp_*``); scenarios still want to
+        # refer to a worker/group by a stable human handle. The bearer
+        # registry is keyed by BOTH the minted opaque id and (when a
+        # display name was used at registration) the display name, so
+        # ``as_worker="executor-host"`` and ``as_worker="wkr_..."`` both
+        # resolve. The name<->id maps below let scenarios resolve a
+        # display name to the minted opaque id when building wire
+        # payloads that carry an opaque reference (``target.id``,
+        # ``member_id``, ``intended_executor`` / ``intended_evaluator``).
         self._worker_bearers: dict[str, str] = {}
+        self._worker_id_by_name: dict[str, str] = {}
+        self._group_id_by_name: dict[str, str] = {}
         self._client = httpx.Client(
             base_url=self.base_url,
             headers=headers,
@@ -63,13 +76,57 @@ class WireClient:
         self.close()
 
     def copy_worker_bearers_from(self, other: WireClient) -> None:
-        """Mirror ``other``'s per-worker bearer registry onto this client.
+        """Mirror ``other``'s per-worker bearer + name->id registries onto this client.
 
         Used by scenarios that spawn a second WireClient against the
         same IUT to model two distinct client applications sharing
         a worker identity (chapter 04 §3.3 cross-application claim).
         """
         self._worker_bearers.update(other._worker_bearers)
+        self._worker_id_by_name.update(other._worker_id_by_name)
+        self._group_id_by_name.update(other._group_id_by_name)
+
+    # Identity registry (name <-> minted opaque id) -----------------
+
+    def record_worker_identity(self, name: str | None, worker_id: str) -> None:
+        """Record the minted ``worker_id`` and (optional) display name.
+
+        Lets later calls resolve a stable display name to the opaque
+        ``wkr_*`` id the server minted at registration time.
+        """
+        if name is not None:
+            self._worker_id_by_name[name] = worker_id
+
+    def record_group_identity(self, name: str | None, group_id: str) -> None:
+        """Record a minted ``grp_*`` id under its (optional) display name."""
+        if name is not None:
+            self._group_id_by_name[name] = group_id
+
+    def worker_id_for(self, name: str) -> str:
+        """Resolve a worker display name to its minted ``wkr_*`` id.
+
+        If ``name`` already looks like an opaque id (or is unknown), it
+        is returned unchanged so callers can pass either a handle or a
+        raw id, and deliberate "unknown worker" probes still flow the
+        literal through.
+        """
+        return self._worker_id_by_name.get(name, name)
+
+    def group_id_for(self, name: str) -> str:
+        """Resolve a group display name to its minted ``grp_*`` id (else unchanged)."""
+        return self._group_id_by_name.get(name, name)
+
+    def member_ref(self, kind: str, name: str) -> dict[str, str]:
+        """Build a ``{kind, id}`` target/member ref, resolving name->opaque id.
+
+        ``kind`` is ``"worker"`` or ``"group"``; ``name`` is the stable
+        handle the scenario uses. The returned ``id`` is the minted
+        opaque id (``wkr_*`` / ``grp_*``) so it satisfies the
+        ``MemberId`` grammar the wire now enforces.
+        """
+        if kind == "group":
+            return {"kind": "group", "id": self.group_id_for(name)}
+        return {"kind": "worker", "id": self.worker_id_for(name)}
 
     def register_worker_bearer(self, worker_id: str, bearer: str) -> None:
         """Associate ``worker_id`` with the per-worker bearer.
@@ -123,11 +180,16 @@ class WireClient:
             kwargs["content"] = encoded.read()
             request_headers["Content-Type"] = encoded.headers["content-type"]
         if as_worker is not None:
-            # Per-call bearer swap. Look up the worker's credential and
-            # override the Authorization header for this single
-            # request; the client's default header (typically the
-            # admin bearer) stays in place for other calls.
-            bearer = self._worker_bearers.get(as_worker)
+            # Per-call bearer swap. ``as_worker`` may be a display-name
+            # handle or an already-minted ``wkr_*`` id; resolve to the
+            # opaque id first, then look up the credential and override
+            # the Authorization header for this single request. The
+            # client's default header (typically the admin bearer) stays
+            # in place for other calls.
+            principal = self.worker_id_for(as_worker)
+            bearer = self._worker_bearers.get(principal)
+            if bearer is None:
+                bearer = self._worker_bearers.get(as_worker)
             if bearer is not None:
                 request_headers["Authorization"] = f"Bearer {bearer}"
             else:
@@ -136,7 +198,7 @@ class WireClient:
                 # secret). Scenarios deliberately probing the
                 # ``unauthorized`` / ``worker-not-registered`` paths
                 # use this fallback rather than seeding a credential.
-                request_headers["Authorization"] = f"Bearer {as_worker}:not-a-real-token"
+                request_headers["Authorization"] = f"Bearer {principal}:not-a-real-token"
         if request_headers:
             kwargs["headers"] = request_headers
         if timeout is not None:

@@ -29,7 +29,17 @@ ENV_FILE="$(mktemp)"
 # Phase 12a-1g: per-smoke ephemeral data root, cleaned up on every
 # exit path. See smoke.sh for rationale.
 SMOKE_DATA_ROOT="$(mktemp -d -t eden-smoke-sub-XXXXXX)"
-EXPERIMENT_ID="smoke-exp-sub"
+# #128: mint an opaque `exp_*` experiment id (the wire grammar rejects
+# the old typed "smoke-exp-sub" mnemonic). Same Crockford-base32 ULID
+# one-liner setup-experiment uses; passed via `--experiment-id` and
+# echoed back to `.env` as EDEN_EXPERIMENT_ID.
+EXPERIMENT_ID="$(python3 - <<'PY'
+import secrets, time
+alphabet = "0123456789abcdefghjkmnpqrstvwxyz"
+value = ((int(time.time() * 1000) & ((1 << 48) - 1)) << 80) | secrets.randbits(80)
+print("exp_" + "".join(alphabet[(value >> (5 * i)) & 31] for i in range(26))[::-1])
+PY
+)"
 
 cleanup() {
     local rc=$?

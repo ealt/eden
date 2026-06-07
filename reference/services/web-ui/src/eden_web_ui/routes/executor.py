@@ -47,6 +47,7 @@ from ..artifacts import (
     write_artifact_bundle,
 )
 from ..forms import FormErrors, parse_implement_form
+from ._display import best_effort_worker_names
 from ._helpers import (
     EligibilityResolver,
     arrange_pending_rows,
@@ -427,6 +428,7 @@ async def list_pending(request: Request) -> HTMLResponse | RedirectResponse:
             "pending": pending,
             "pending_rows": arranged_rows,
             "pending_groups": pending_groups,
+            "worker_names": best_effort_worker_names(store),
             "view": view,
             "links": build_list_links(view),
             "registered": resolver.registered,

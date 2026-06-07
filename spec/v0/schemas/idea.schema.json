@@ -20,7 +20,8 @@
     },
     "experiment_id": {
       "type": "string",
-      "minLength": 1
+      "pattern": "^exp_[0-9a-hjkmnp-tv-z]{26}$",
+      "description": "Opaque, system-minted experiment identifier (spec/v0/02-data-model.md §1.6)."
     },
     "slug": {
       "type": "string",
@@ -54,10 +55,8 @@
     },
     "created_by": {
       "type": "string",
-      "minLength": 1,
-      "maxLength": 64,
-      "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
-      "description": "worker_id of the ideator that drafted the idea; preserved across the idea's terminal state."
+      "pattern": "^wkr_[0-9a-hjkmnp-tv-z]{26}$",
+      "description": "worker_id of the ideator that drafted the idea; preserved across the idea's terminal state (spec/v0/02-data-model.md §1.6)."
     },
     "intended_executor": {
       "type": "object",
@@ -70,9 +69,7 @@
         },
         "id": {
           "type": "string",
-          "minLength": 1,
-          "maxLength": 64,
-          "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
+          "pattern": "^(wkr|grp)_[0-9a-hjkmnp-tv-z]{26}$"
         }
       }
     },
@@ -87,9 +84,7 @@
         },
         "id": {
           "type": "string",
-          "minLength": 1,
-          "maxLength": 64,
-          "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
+          "pattern": "^(wkr|grp)_[0-9a-hjkmnp-tv-z]{26}$"
         }
       }
     }

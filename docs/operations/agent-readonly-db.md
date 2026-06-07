@@ -19,23 +19,26 @@ parametrized backend tests.
 The role gets full-table `SELECT` on these tables in the active
 schema:
 
-- `experiment` — `(experiment_id text, evaluation_schema text)`
+- `experiment` — `(experiment_id text, name text, evaluation_schema text)` — `experiment_id` is the opaque `exp_*` id; `name` is the optional operator-supplied display label (`NULL` when none was given), indexed for the `?name=` lookup path (issue [#128](https://github.com/ealt/eden/issues/128)).
 - `task` — `(task_id text, kind text, state text, data text)`
 - `submission` — `(task_id text, kind text, data text)`
 - `idea` — `(idea_id text, state text, data text)`
 - `variant` — `(variant_id text, status text, data text)`
 - `event` — `(seq bigint, event_id text, type text, occurred_at text, experiment_id text, data text)`
-- `worker_group` — `(group_id text, data text)`
-- `group_membership` — `(group_id text, member_id text, position integer)`
+- `worker_group` — `(group_id text, name text, data text)` — `group_id` is the opaque `grp_*` id; `name` is the optional display label (reserved groups carry `name == 'admins'` / `'orchestrators'`), indexed for `?name=` lookups (issue [#128](https://github.com/ealt/eden/issues/128)).
+- `group_membership` — `(group_id text, member_id text, position integer)` — `member_id` is an opaque id (a `wkr_*` worker or a `grp_*` group).
 - `schema_version` — migration bookkeeping
 
 ## 2. The `worker` table — column-projection required
 
-The `worker` table is `(worker_id text, data text,
-credential_hash text)`. The role has **column-level** SELECT on
-`worker_id` + `data` only; `credential_hash` is intentionally
-excluded (it carries the argon2id hash of the per-worker bearer
-secret, which the role MUST NOT see).
+The `worker` table is `(worker_id text, name text, data text,
+credential_hash text)`. `worker_id` is the opaque `wkr_*` id; `name`
+is the optional operator-supplied display label (`NULL` when none was
+given), indexed for the `?name=` lookup path (issue
+[#128](https://github.com/ealt/eden/issues/128)). The role has
+**column-level** SELECT on `worker_id` + `name` + `data` only;
+`credential_hash` is intentionally excluded (it carries the argon2id
+hash of the per-worker bearer secret, which the role MUST NOT see).
 
 PostgreSQL's permission check on `SELECT *` is against the full
 set of columns the parser expands `*` into. If any column lacks
@@ -43,7 +46,7 @@ SELECT, the whole statement fails. The operator-visible posture:
 
 | Query | Result |
 |---|---|
-| `SELECT worker_id, data FROM worker` | Works |
+| `SELECT worker_id, name, data FROM worker` | Works |
 | `SELECT * FROM worker` | Fails — "permission denied for column credential_hash" |
 | `COPY worker TO STDOUT` | Fails (same reason) |
 | `pg_dump --table=worker` | Fails (same reason) |
@@ -107,11 +110,15 @@ parity with the SQLite + in-memory backends.
 
 The worker `data` column carries the per-worker labels,
 registration timestamp, and the actor (`registered_by`) that
-called `register_worker`. Example:
+called `register_worker`. The optional display label is the
+top-level `name` column (and is also mirrored in `data`); the
+`registered_by` actor is an opaque `wkr_*` id or the literal
+`admin`. Example:
 
 ```sql
 SELECT
     worker_id,
+    name,
     data->>'registered_at'                  AS registered_at,
     data->>'registered_by'                  AS registered_by,
     data->'labels'                          AS labels
@@ -173,17 +180,22 @@ view in addition to the underlying `variant` table.
 
 The artifact tables carry redundant attribution fields per
 chapter 02 §3.1 / §5.1 / §9 so an agent can join without going
-through the worker registry. Example: "every variant evaluator-1
-has terminalized":
+through the worker registry. The attribution fields
+(`evaluated_by`, `executed_by`, …) carry opaque `wkr_*` ids since
+issue [#128](https://github.com/ealt/eden/issues/128); resolve a
+display name to its id via the `worker` table's `name` column (names
+MAY collide — 0..N rows). Example: "every variant the evaluator-host-1
+worker has terminalized":
 
 ```sql
 SELECT
-    variant_id,
-    status,
-    data->>'evaluated_by' AS evaluated_by
-FROM variant
-WHERE data->>'evaluated_by' = 'evaluator-1'
-  AND status IN ('success', 'error', 'evaluation_error');
+    v.variant_id,
+    v.status,
+    v.data->>'evaluated_by' AS evaluated_by
+FROM variant v
+JOIN worker w ON w.worker_id = v.data->>'evaluated_by'
+WHERE w.name = 'evaluator-host-1'
+  AND v.status IN ('success', 'error', 'evaluation_error');
 ```
 
 ## 7. Privilege boundary

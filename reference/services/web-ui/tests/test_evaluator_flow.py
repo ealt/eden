@@ -8,6 +8,7 @@ race.
 Failure-recovery and orphan paths live in
 ``test_evaluator_partial_write.py``.
 """
+# pyright: reportAttributeAccessIssue=false
 
 from __future__ import annotations
 
@@ -19,12 +20,12 @@ import pytest
 from conftest import (
     EXPERIMENT_ID,
     SESSION_SECRET,
-    WORKER_ID,
     _config,
     _one_experiment_factory,
     get_csrf,
     get_evaluate_submission,
     seed_evaluate_task,
+    web_ui_worker_id,
 )
 from eden_dispatch import sweep_expired_claims
 from eden_storage import EvaluationSubmission, InMemoryStore
@@ -173,7 +174,7 @@ class TestStrandedClaimRecovery:
             store_factory=_one_experiment_factory(store),
             experiment_id=EXPERIMENT_ID,
             experiment_config=_config(),
-            worker_id=WORKER_ID,
+            worker_id=web_ui_worker_id(store),
             session_secret=SESSION_SECRET,
             claim_ttl_seconds=1,
             artifacts_dir=artifacts_dir,
@@ -222,7 +223,7 @@ class TestConflictPath:
         # A different worker reclaims and submits a different
         # metric value.
         store.reclaim(eval_id, "operator")
-        other = store.claim(eval_id, "evaluator-other")
+        other = store.claim(eval_id, store._test_worker_ids["evaluator-other"])
         store.submit(
             eval_id,
             other.worker_id,

@@ -8,7 +8,12 @@
   query params; every href is precomputed in the route handler from
   allow-listed values (`links`), so this template echoes no raw query
   input (§D.2 query-param-injection guard).
+
+  ``worker_names`` (id -> display name) resolves attribution ids to
+  ``<name> (<id>)`` per the identity rename (#128); it defaults to ``{}``
+  so callers that don't supply it degrade to bare ids.
 #}
+{% from "_macros.html" import name_id %}
 
 {% macro _sort_th(col, label, links) %}
 <th>
@@ -57,13 +62,13 @@
 {% endif %}
 {% endmacro %}
 
-{% macro _expansion(row, role) %}
+{% macro _expansion(row, role, worker_names) %}
 <details class="row-expand">
     <summary>context links</summary>
     <div class="expand-body">
         <ul class="context-links">
             <li>task: <a href="{{ row.lineage_link }}"><code>{{ row.task.task_id }}</code></a></li>
-            {% if row.created_by %}<li>creator: <a href="/admin/workers/{{ row.created_by }}/"><code>{{ row.created_by }}</code></a></li>{% endif %}
+            {% if row.created_by %}<li>creator: <a href="/admin/workers/{{ row.created_by }}/">{{ name_id(worker_names.get(row.created_by), row.created_by) }}</a></li>{% endif %}
             {% if row.idea_id %}<li>idea: <a href="/admin/ideas/{{ row.idea_id }}/"><code>{{ row.idea_id }}</code></a></li>{% endif %}
             {% if role == 'evaluator' and row.variant_id %}
             <li>variant: <a href="/admin/variants/{{ row.variant_id }}/"><code>{{ row.variant_id }}</code></a>{% if row.variant and row.variant.branch %} &mdash; branch <code>{{ row.variant.branch }}</code>{% endif %}</li>
@@ -83,7 +88,7 @@
 {% endif %}
 {% endmacro %}
 
-{% macro _pending_table(rows, role, claim_prefix, session, links) %}
+{% macro _pending_table(rows, role, claim_prefix, session, links, worker_names={}) %}
 <table class="pending-table">
     <thead>
         <tr>
@@ -100,10 +105,10 @@
             <td class="slug-cell">{{ _slug_cell(row, role) }}</td>
             <td>{% if row.priority is not none %}{{ row.priority }}{% else %}<span class="muted">—</span>{% endif %}</td>
             <td>{{ _target_cell(row.target) }}</td>
-            <td>{% if row.created_by %}<a href="/admin/workers/{{ row.created_by }}/"><code>{{ row.created_by }}</code></a>{% else %}<span class="muted">—</span>{% endif %}</td>
+            <td>{% if row.created_by %}<a href="/admin/workers/{{ row.created_by }}/">{{ name_id(worker_names.get(row.created_by), row.created_by) }}</a>{% else %}<span class="muted">—</span>{% endif %}</td>
             <td class="claim-cell">{{ _claim_cell(row, claim_prefix, session) }}</td>
         </tr>
-        <tr class="expand-row"><td colspan="5">{{ _expansion(row, role) }}</td></tr>
+        <tr class="expand-row"><td colspan="5">{{ _expansion(row, role, worker_names) }}</td></tr>
     {% endfor %}
     </tbody>
 </table>
@@ -116,7 +121,7 @@
 #}
 {% macro pending_section(role, claim_prefix, kind_label, read_fail_copy, session, view, links,
                          pending_rows, pending_groups, registered, registration_unknown,
-                         eligibility_unresolved_count, read_failed_count) %}
+                         eligibility_unresolved_count, read_failed_count, worker_names={}) %}
 {% if read_failed_count and read_failed_count > 0 %}
 <div class="banner banner-warn">{{ read_failed_count }} {{ read_fail_copy }}; refresh to retry.</div>
 {% endif %}
@@ -143,12 +148,12 @@
         {% if pending_groups is not none %}
             {% for group in pending_groups %}
             <details class="creator-group" open>
-                <summary>created by {% if group.created_by %}<code>{{ group.created_by }}</code>{% else %}<em>(unknown)</em>{% endif %} ({{ group.rows | length }})</summary>
-                {{ _pending_table(group.rows, role, claim_prefix, session, links) }}
+                <summary>created by {% if group.created_by %}{{ name_id(worker_names.get(group.created_by), group.created_by) }}{% else %}<em>(unknown)</em>{% endif %} ({{ group.rows | length }})</summary>
+                {{ _pending_table(group.rows, role, claim_prefix, session, links, worker_names) }}
             </details>
             {% endfor %}
         {% else %}
-            {{ _pending_table(pending_rows, role, claim_prefix, session, links) }}
+            {{ _pending_table(pending_rows, role, claim_prefix, session, links, worker_names) }}
         {% endif %}
     {% else %}
     <p>no pending {{ kind_label }} tasks{% if view.eligible_only %} eligible for you{% endif %}.</p>

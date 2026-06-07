@@ -32,15 +32,24 @@ from eden_web_ui.routes._lineage import (
     lineage_for_variant,
 )
 
-EXPERIMENT_ID = "exp-lineage"
+EXPERIMENT_ID = "exp_0123456789abcdefghjkmnpqrs"
 BASE_SHA = "a" * 40
 
 
 def _store() -> InMemoryStore:
     store = InMemoryStore(experiment_id=EXPERIMENT_ID, evaluation_schema={})
-    for wid in ("ideator-w", "executor-w", "evaluator-w", "executor-other"):
-        store.register_worker(wid)
+    # Identity rename (#128): register by name, capture the minted ids.
+    worker_ids: dict[str, str] = {}
+    for name in ("ideator-w", "executor-w", "evaluator-w", "executor-other"):
+        worker, _ = store.register_worker(name)
+        worker_ids[name] = worker.worker_id
+    store._test_worker_ids = worker_ids  # type: ignore[attr-defined]
     return store
+
+
+def _w(store: InMemoryStore, name: str) -> str:
+    """Resolve a worker display name → minted opaque id (#128)."""
+    return store._test_worker_ids[name]  # type: ignore[attr-defined]
 
 
 def _make_idea(
@@ -73,7 +82,7 @@ def _seed_ideation_submission(
 ) -> tuple[str, tuple[str, ...]]:
     """Drive an ideation task to ``submitted`` with the given idea slugs."""
     store.create_ideation_task(task_id)
-    claim = store.claim(task_id, "ideator-w")
+    claim = store.claim(task_id, _w(store, "ideator-w"))
     idea_ids: list[str] = []
     if status == "success":
         for slug in slugs:
@@ -102,7 +111,7 @@ def _seed_execution_to_starting(
 ) -> tuple[str, str]:
     """Seed an execution task → claim → create_variant(starting)."""
     store.create_execution_task(task_id, idea_id)
-    store.claim(task_id, worker)
+    store.claim(task_id, _w(store, worker))
     store.create_variant(
         Variant(
             variant_id=variant_id,
@@ -129,7 +138,7 @@ def _seed_execution_completed(
 ) -> tuple[str, str]:
     """Seed an execution task all the way through submit+accept."""
     store.create_execution_task(task_id, idea_id)
-    claim = store.claim(task_id, worker)
+    claim = store.claim(task_id, _w(store, worker))
     store.create_variant(
         Variant(
             variant_id=variant_id,
@@ -272,7 +281,7 @@ def test_execution_lineage_multiple_variants_on_reclaim() -> None:
     _, (idea_id,) = _seed_ideation_submission(store, slugs=("alpha",))
     # First execution: create variant v1; status=error → exec task fails.
     store.create_execution_task("exec-1", idea_id)
-    claim_1 = store.claim("exec-1", "executor-w")
+    claim_1 = store.claim("exec-1", _w(store, "executor-w"))
     store.create_variant(
         Variant(
             variant_id="v1",
@@ -457,7 +466,7 @@ def test_idea_lineage_pre_submit_ideation_task_yields_none() -> None:
     submission; the reverse walk skips it."""
     store = _store()
     store.create_ideation_task("plan-pending")
-    store.claim("plan-pending", "ideator-w")
+    store.claim("plan-pending", _w(store, "ideator-w"))
     # Independently seed an idea to walk against.
     orphan_id = _make_idea(store, slug="orphan")
     idea = store.read_idea(orphan_id)
@@ -537,7 +546,7 @@ def test_variant_lineage_ambiguous_attribution_yields_none() -> None:
     # Two execution tasks against the same idea, both attributed to
     # the same worker. We need the idea to be re-dispatchable.
     store.create_execution_task("exec-A", idea_id)
-    claim_a = store.claim("exec-A", "executor-w")
+    claim_a = store.claim("exec-A", _w(store, "executor-w"))
     store.create_variant(
         Variant(
             variant_id="vA",
@@ -587,7 +596,7 @@ def test_variant_lineage_ambiguous_attribution_yields_none() -> None:
     fake_extra = SimpleNamespace(
         task_id="exec-B",
         state="submitted",
-        submitted_by="executor-w",
+        submitted_by=_w(store, "executor-w"),
         payload=SimpleNamespace(idea_id=idea_id),
     )
 
@@ -601,7 +610,7 @@ def test_variant_lineage_ambiguous_attribution_yields_none() -> None:
         parent_commits=[BASE_SHA],
         branch="work/vA",
         started_at="2026-04-24T12:00:00Z",
-        executed_by="executor-w",
+        executed_by=_w(store, "executor-w"),
     )
 
     result = lineage_for_variant(
@@ -677,7 +686,7 @@ def test_ideation_lineage_caps_at_twenty() -> None:
     """A submission with > 20 ideas renders 20 links + total = N."""
     store = _store()
     store.create_ideation_task("plan-many")
-    claim = store.claim("plan-many", "ideator-w")
+    claim = store.claim("plan-many", _w(store, "ideator-w"))
     slugs = [f"s{i:02d}" for i in range(25)]
     idea_ids = [_make_idea(store, slug=s) for s in slugs]
     store.submit(
@@ -752,7 +761,7 @@ def test_idea_reverse_walk_soft_timing_at_fixture_scale() -> None:
     for task_idx in range(20):
         task_id = f"plan-{task_idx:02d}"
         store.create_ideation_task(task_id)
-        claim = store.claim(task_id, "ideator-w")
+        claim = store.claim(task_id, _w(store, "ideator-w"))
         idea_ids_this_task: list[str] = []
         for idea_idx in range(10):
             slug = f"t{task_idx:02d}i{idea_idx:02d}"

@@ -24,6 +24,7 @@
         "eden://error/conflicting-resubmission",
         "eden://error/invalid-precondition",
         "eden://error/reserved-identifier",
+        "eden://error/invalid-name",
         "eden://error/cycle-detected"
       ],
       "description": "Closed v0 vocabulary of error types."

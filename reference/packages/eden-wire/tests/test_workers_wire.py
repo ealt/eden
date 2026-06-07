@@ -20,7 +20,7 @@ from eden_storage import InMemoryStore
 from eden_wire import StoreClient, make_app
 from fastapi.testclient import TestClient
 
-EXPERIMENT_ID = "exp-workers"
+EXPERIMENT_ID = "exp_dqa7yrxcfzrqwkh2qm4c9cpad3"
 ADMIN_TOKEN = "wires-admin"
 
 
@@ -67,8 +67,10 @@ def _proxy(test_client: TestClient) -> httpx.MockTransport:
 def test_register_worker_returns_token_and_record(
     admin_client: StoreClient,
 ) -> None:
-    worker, token = admin_client.register_worker("eric")
-    assert worker.worker_id == "eric"
+    # The server mints the opaque worker_id; the caller supplies a name.
+    worker, token = admin_client.register_worker(name="eric")
+    assert worker.worker_id.startswith("wkr_")
+    assert worker.name == "eric"
     assert worker.experiment_id == EXPERIMENT_ID
     assert token is not None
     assert len(token) == 64  # 32 hex bytes
@@ -76,39 +78,52 @@ def test_register_worker_returns_token_and_record(
 
 def test_register_worker_with_labels(admin_client: StoreClient) -> None:
     worker, _ = admin_client.register_worker(
-        "agent-claude", labels={"role": "executor"}
+        name="agent-claude", labels={"role": "executor"}
     )
     assert worker.labels == {"role": "executor"}
 
 
-def test_register_worker_idempotent_no_new_token(
+def test_register_worker_mints_fresh_id_each_call(
     admin_client: StoreClient,
 ) -> None:
-    _, first_token = admin_client.register_worker("eric")
-    second, second_token = admin_client.register_worker("eric")
-    assert second.worker_id == "eric"
-    assert second_token is None
+    """Names MAY collide; each register mints a fresh worker + credential."""
+    first, first_token = admin_client.register_worker(name="eric")
+    second, second_token = admin_client.register_worker(name="eric")
+    assert first.worker_id != second.worker_id
     assert first_token is not None
+    assert second_token is not None
+    assert first_token != second_token
 
 
 def test_read_worker_after_register(admin_client: StoreClient) -> None:
-    admin_client.register_worker("eric")
-    fresh = admin_client.read_worker("eric")
-    assert fresh.worker_id == "eric"
+    worker, _ = admin_client.register_worker(name="eric")
+    fresh = admin_client.read_worker(worker.worker_id)
+    assert fresh.worker_id == worker.worker_id
+    assert fresh.name == "eric"
 
 
-def test_list_workers_sorted(admin_client: StoreClient) -> None:
-    for wid in ["zoe", "alice", "bob"]:
-        admin_client.register_worker(wid)
-    workers = admin_client.list_workers()
-    assert [w.worker_id for w in workers] == ["alice", "bob", "zoe"]
+def test_list_workers_filter_by_name(admin_client: StoreClient) -> None:
+    minted: dict[str, str] = {}
+    for nm in ["zoe", "alice", "bob"]:
+        worker, _ = admin_client.register_worker(name=nm)
+        minted[nm] = worker.worker_id
+    # Unfiltered list returns all three.
+    assert {w.worker_id for w in admin_client.list_workers()} == set(
+        minted.values()
+    )
+    # Exact name filter returns only the match.
+    alice = admin_client.list_workers(name="alice")
+    assert [w.worker_id for w in alice] == [minted["alice"]]
+    # A name nobody holds returns the empty set.
+    assert admin_client.list_workers(name="nobody") == []
 
 
 def test_reissue_credential_invalidates_prior(
     app: Any, admin_client: StoreClient
 ) -> None:
-    _, first_token = admin_client.register_worker("eric")
-    second_token = admin_client.reissue_credential("eric")
+    worker, first_token = admin_client.register_worker(name="eric")
+    wid = worker.worker_id
+    second_token = admin_client.reissue_credential(wid)
     assert first_token is not None
     assert first_token != second_token
     # The prior credential is invalid: hitting whoami with it should 401.
@@ -117,7 +132,7 @@ def test_reissue_credential_invalidates_prior(
         f"/v0/experiments/{EXPERIMENT_ID}/whoami",
         headers={
             "X-Eden-Experiment-Id": EXPERIMENT_ID,
-            "Authorization": f"Bearer eric:{first_token}",
+            "Authorization": f"Bearer {wid}:{first_token}",
         },
     )
     assert resp.status_code == 401
@@ -126,28 +141,28 @@ def test_reissue_credential_invalidates_prior(
         f"/v0/experiments/{EXPERIMENT_ID}/whoami",
         headers={
             "X-Eden-Experiment-Id": EXPERIMENT_ID,
-            "Authorization": f"Bearer eric:{second_token}",
+            "Authorization": f"Bearer {wid}:{second_token}",
         },
     )
     assert resp.status_code == 200
-    assert resp.json() == {"worker_id": "eric"}
+    assert resp.json() == {"worker_id": wid, "name": "eric"}
 
 
 def test_register_worker_reserved_returns_reserved_identifier(
     admin_client: StoreClient,
 ) -> None:
-    """``admin`` / ``system`` / ``internal`` MUST be rejected."""
+    """Reserved worker NAMES ``admin`` / ``system`` / ``internal`` MUST be rejected."""
     from eden_storage import ReservedIdentifier
 
     for reserved in ["admin", "system", "internal"]:
         with pytest.raises(ReservedIdentifier):
-            admin_client.register_worker(reserved)
+            admin_client.register_worker(name=reserved)
 
 
-def test_register_worker_grammar_violation_400(
+def test_register_worker_ill_formed_name_422(
     app: Any,
 ) -> None:
-    """Grammar-violating ``worker_id`` returns 400 bad-request via Pydantic."""
+    """An ill-formed display ``name`` returns 422 invalid-name."""
     test_client = TestClient(app)
     resp = test_client.post(
         f"/v0/experiments/{EXPERIMENT_ID}/workers",
@@ -155,7 +170,29 @@ def test_register_worker_grammar_violation_400(
             "X-Eden-Experiment-Id": EXPERIMENT_ID,
             "Authorization": f"Bearer admin:{ADMIN_TOKEN}",
         },
-        json={"worker_id": "Eric"},
+        # Leading whitespace violates the display-name grammar. The
+        # request model's ``name`` is a plain string (#128), so the body
+        # parses and the Store's ``_validate_display_name`` raises
+        # ``InvalidName`` → 422 ``eden://error/invalid-name`` (07-wire
+        # §6.1 / 02-data-model §1.7), NOT a 400 request-validation error.
+        json={"name": " leading-space"},
+    )
+    assert resp.status_code == 422
+    assert resp.json()["type"] == "eden://error/invalid-name"
+
+
+def test_register_worker_legacy_worker_id_field_rejected(
+    app: Any,
+) -> None:
+    """The caller no longer supplies a worker_id; the field is rejected (extra=forbid)."""
+    test_client = TestClient(app)
+    resp = test_client.post(
+        f"/v0/experiments/{EXPERIMENT_ID}/workers",
+        headers={
+            "X-Eden-Experiment-Id": EXPERIMENT_ID,
+            "Authorization": f"Bearer admin:{ADMIN_TOKEN}",
+        },
+        json={"worker_id": "wkr_0000000000000000000000000a"},
     )
     assert resp.status_code == 400
     assert resp.json()["type"] == "eden://error/bad-request"

@@ -1,0 +1,15 @@
+Findings:
+
+- **major**: [spec/v0/07-wire-protocol.md](/Users/ericalt/Documents/eden-worktrees/impl-issue-128-disambiguate-names/spec/v0/07-wire-protocol.md:474) and [spec/v0/10-checkpoints.md](/Users/ericalt/Documents/eden-worktrees/impl-issue-128-disambiguate-names/spec/v0/10-checkpoints.md:200) still normatively say an unkeyed checkpoint import mints a fresh `exp_*`, and recovery should enumerate/match provenance. The implementation instead imports into the receiver store’s configured id at [checkpoints.py](/Users/ericalt/Documents/eden-worktrees/impl-issue-128-disambiguate-names/reference/packages/eden-wire/src/eden_wire/routers/checkpoints.py:132) / [_checkpoint.py](/Users/ericalt/Documents/eden-worktrees/impl-issue-128-disambiguate-names/reference/packages/eden-storage/src/eden_storage/_checkpoint.py:685), and the fixed client probes `self._experiment_id` at [client.py](/Users/ericalt/Documents/eden-worktrees/impl-issue-128-disambiguate-names/reference/packages/eden-wire/src/eden_wire/client.py:1317). If receiver-id import is intended, those spec sections need amendment; if fresh-per-import is intended, impl/client/conformance are wrong.
+
+Round 0 status:
+
+- Blocking client recovery bug: **resolved**. I verified distinct source/receiver ids with a dropped import response; recovery returned the receiver id and matched `imported_from.source_experiment_id`.
+- Reserved control-plane second create: **resolved** for the reviewed in-process/sequential path. Guards are at [memory.py](/Users/ericalt/Documents/eden-worktrees/impl-issue-128-disambiguate-names/reference/packages/eden-control-plane/src/eden_control_plane/memory.py:419) and [postgres.py](/Users/ericalt/Documents/eden-worktrees/impl-issue-128-disambiguate-names/reference/packages/eden-control-plane/src/eden_control_plane/postgres.py:708); bootstrap suppresses `ReservedIdentifier` at [control_plane_bootstrap.py](/Users/ericalt/Documents/eden-worktrees/impl-issue-128-disambiguate-names/reference/services/orchestrator/src/eden_orchestrator/control_plane_bootstrap.py:313).
+- `labels` / `members` explicit null: **resolved** at [models.py](/Users/ericalt/Documents/eden-worktrees/impl-issue-128-disambiguate-names/reference/packages/eden-wire/src/eden_wire/models.py:139) and [models.py](/Users/ericalt/Documents/eden-worktrees/impl-issue-128-disambiguate-names/reference/packages/eden-wire/src/eden_wire/models.py:192).
+- The specific stale §1.3/read-experiment/docstring prose from Round 0: **resolved**.
+
+I did not find a new defect in the `staticmethod` to instance-method change, the bootstrap race handling, or the `NotNone` additions. Not converged yet because the remaining spec/impl checkpoint-import semantics split is major.
+
+Verification run:
+`131 passed, 49 skipped` for targeted wire/checkpoint/control-plane/orchestrator tests, plus `3 passed` for the checkpoint recovery conformance scenario.

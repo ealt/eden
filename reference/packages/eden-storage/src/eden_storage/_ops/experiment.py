@@ -98,7 +98,7 @@ class _ExperimentOpsMixin(_StoreCore):
         [`spec/v0/05-event-protocol.md`](../../../../spec/v0/05-event-protocol.md)
         §2.
         """
-        self._validate_registry_id(terminated_by, kind="actor")
+        self._validate_actor_id(terminated_by, kind="terminated_by")
         with self._atomic_operation():
             current = self._get_experiment()
             if current.state == "terminated":
@@ -178,7 +178,7 @@ class _ExperimentOpsMixin(_StoreCore):
         changes value, NO event fires (the spec records changes, not
         idempotent no-ops).
         """
-        self._validate_registry_id(updated_by, kind="actor")
+        self._validate_actor_id(updated_by, kind="updated_by")
         if isinstance(updates, DispatchMode):
             update_map = updates.model_dump(mode="json", exclude_none=True)
         else:

@@ -78,14 +78,18 @@ def test_intended_executor_worker_flows_to_task_target(
     resulting execution task's ``target`` MUST be the same tagged
     object.
     """
+    # Since the identity rename (#128) ``TaskTarget.id`` is a minted
+    # ``wkr_*`` MemberId; register the worker and resolve its handle.
+    _seed.register_worker(wire_client, "executor-w")
+    target = wire_client.member_ref("worker", "executor-w")
     idea_id = _create_idea_with_intended_executor(
         wire_client,
-        intended_executor={"kind": "worker", "id": "executor-w"},
+        intended_executor=target,
     )
     _seed.mark_idea_ready(wire_client, idea_id)
     exec_tid = _seed.create_execution_task(wire_client, idea_id=idea_id)
     task = _seed.read_task(wire_client, exec_tid)
-    assert task.get("target") == {"kind": "worker", "id": "executor-w"}
+    assert task.get("target") == target
 
 
 def test_intended_executor_group_flows_to_task_target(
@@ -98,15 +102,17 @@ def test_intended_executor_group_flows_to_task_target(
     """
     # Pre-register the group so claim-time resolution doesn't break
     # downstream tests; the flow-through is what's under test here.
-    _seed.create_group(wire_client, group_id="humans", members=())
+    # The server mints the ``grp_*`` id (#128); resolve the handle.
+    _seed.create_group(wire_client, name="humans", members=[])
+    target = wire_client.member_ref("group", "humans")
     idea_id = _create_idea_with_intended_executor(
         wire_client,
-        intended_executor={"kind": "group", "id": "humans"},
+        intended_executor=target,
     )
     _seed.mark_idea_ready(wire_client, idea_id)
     exec_tid = _seed.create_execution_task(wire_client, idea_id=idea_id)
     task = _seed.read_task(wire_client, exec_tid)
-    assert task.get("target") == {"kind": "group", "id": "humans"}
+    assert task.get("target") == target
 
 
 def test_explicit_create_task_target_overrides_intended_executor(
@@ -122,12 +128,17 @@ def test_explicit_create_task_target_overrides_intended_executor(
     ``idea.intended_executor``." This test pins the override leg of
     that disjunction.
     """
+    # Both ids are minted ``wkr_*`` MemberIds since the rename (#128).
+    _seed.register_worker(wire_client, "ideator-1")
+    _seed.register_worker(wire_client, "executor-w")
     idea_id = _create_idea_with_intended_executor(
         wire_client,
-        intended_executor={"kind": "worker", "id": "ideator-1"},
+        intended_executor=wire_client.member_ref("worker", "ideator-1"),
     )
     _seed.mark_idea_ready(wire_client, idea_id)
-    # Admin path: caller supplies a different explicit target.
+    # Admin path: caller supplies a different explicit target. The
+    # ``create_execution_task`` helper resolves the handle to its
+    # minted id via ``_resolve_target``.
     exec_tid = _seed.create_execution_task(
         wire_client,
         idea_id=idea_id,
@@ -135,4 +146,4 @@ def test_explicit_create_task_target_overrides_intended_executor(
     )
     task = _seed.read_task(wire_client, exec_tid)
     # Explicit target wins; the idea's hint is NOT what landed.
-    assert task.get("target") == {"kind": "worker", "id": "executor-w"}
+    assert task.get("target") == wire_client.member_ref("worker", "executor-w")

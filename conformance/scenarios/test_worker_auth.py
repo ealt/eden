@@ -48,13 +48,13 @@ def test_two_clients_share_a_claim_via_worker_identity(
     server-side — would break this scenario because client B has no
     way to obtain it.
     """
-    wid = _seed.fresh_worker_id("eric")
-    _seed.register_worker(wire_client, wid)
+    _seed.register_worker(wire_client, name="eric")
+    eric_id = wire_client.worker_id_for("eric")
     tid = _seed.create_ideation_task(wire_client)
 
     # Client A: claim.
-    claim = _seed.claim(wire_client, tid, worker_id=wid)
-    assert claim["worker_id"] == wid
+    claim = _seed.claim(wire_client, tid, worker_id="eric")
+    assert claim["worker_id"] == eric_id
 
     # Client B: a fresh WireClient pointed at the same IUT, sharing
     # ``wid``'s bearer (the §13.2 cross-application identity surface).
@@ -64,11 +64,11 @@ def test_two_clients_share_a_claim_via_worker_identity(
         extra_headers=iut.extra_headers,
     ) as client_b:
         client_b.copy_worker_bearers_from(wire_client)
-        r = _seed.submit_idea(client_b, tid, worker_id=wid)
+        r = _seed.submit_idea(client_b, tid, worker_id="eric")
     assert r.status_code == 200, r.text
     task = _seed.read_task(wire_client, tid)
     assert task["state"] == "submitted"
-    assert task.get("submitted_by") == wid
+    assert task.get("submitted_by") == eric_id
 
 
 def test_two_clients_disagreeing_on_worker_id_rejected(
@@ -80,12 +80,10 @@ def test_two_clients_disagreeing_on_worker_id_rejected(
     as the same worker. A client B authenticated as a different
     registered worker MUST fail the §4.1 atomic claim-match.
     """
-    claimant = _seed.fresh_worker_id("claimant")
-    intruder = _seed.fresh_worker_id("intruder")
-    _seed.register_worker(wire_client, claimant)
-    _seed.register_worker(wire_client, intruder)
+    _seed.register_worker(wire_client, name="claimant")
+    _seed.register_worker(wire_client, name="intruder")
     tid = _seed.create_ideation_task(wire_client)
-    _seed.claim(wire_client, tid, worker_id=claimant)
+    _seed.claim(wire_client, tid, worker_id="claimant")
 
     with WireClient(
         base_url=iut.base_url,
@@ -93,6 +91,6 @@ def test_two_clients_disagreeing_on_worker_id_rejected(
         extra_headers=iut.extra_headers,
     ) as client_b:
         client_b.copy_worker_bearers_from(wire_client)
-        r = _seed.submit_idea(client_b, tid, worker_id=intruder)
+        r = _seed.submit_idea(client_b, tid, worker_id="intruder")
     assert r.status_code == 403, r.text
     assert r.json().get("type") == "eden://error/wrong-claimant"

@@ -71,7 +71,12 @@ fi
 if [[ "${EDEN_PREPUSH_FAST:-0}" != "1" ]] && command -v uv >/dev/null 2>&1; then
   # Pyright across the whole tree is slow; scope to reference/ which has the
   # actual production code. Tests use per-file `# pyright:` disables.
-  run_check "pyright" uv run pyright reference/ --outputjson=/dev/null
+  # Wrap in `bash -c` so pyright's verbose output is discarded while the
+  # exit code (and run_check's ✓/✗ status line) is preserved. (A bare
+  # `--outputjson=/dev/null` is invalid — `--outputjson` is a boolean flag,
+  # so the `=value` form makes pyright exit non-zero on arg-parse and the
+  # gate fails spuriously even on type-clean trees.)
+  run_check "pyright" bash -c 'uv run pyright reference/ >/dev/null 2>&1'
 fi
 
 # 5. docs-lint (markdownlint) — fast, catches the cite-marker-in-table gotcha

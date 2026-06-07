@@ -1,4 +1,11 @@
-"""Lease renewal conformance — chapter 11 §4.5."""
+"""Lease renewal conformance — chapter 11 §4.5.
+
+Identity rename (#128): a lease's `holder` is the opaque, system-minted
+`wkr_*` id of a deployment-scoped worker. Each scenario registers its
+worker(s) first so the harness can resolve the stable handle to the
+minted `wkr_*` the wire requires (the `holder` field is grammar-gated
+to `wkr_*`).
+"""
 
 from __future__ import annotations
 
@@ -19,6 +26,7 @@ def test_renew_extends_expires(
     original's. The lease_id is unchanged.
     """
     control_plane_client.register_experiment("exp-a", "file:///etc/a.yaml")
+    control_plane_client.register_worker("auto-orchestrator-1")
     first = control_plane_client.acquire_lease(
         "exp-a", "auto-orchestrator-1", "uuid-1"
     ).json()
@@ -39,6 +47,8 @@ def test_renew_after_replacement_raises_lease_not_held(
     lease-not-held.
     """
     control_plane_client.register_experiment("exp-a", "file:///etc/a.yaml")
+    control_plane_client.register_worker("auto-orchestrator-1")
+    control_plane_client.register_worker("auto-orchestrator-2")
     first = control_plane_client.acquire_lease(
         "exp-a", "auto-orchestrator-1", "uuid-1"
     ).json()

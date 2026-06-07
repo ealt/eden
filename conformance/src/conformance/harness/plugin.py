@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import importlib
 import shutil
-import uuid
 from collections.abc import Iterator
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
@@ -22,6 +21,7 @@ if TYPE_CHECKING:
 from .adapter import IutAdapter, IutHandle
 from .error_vocabulary import out_of_vocabulary, unobserved_core
 from .event_cursor import EventLog
+from .identity import mint_experiment_id
 from .wire_client import WireClient
 
 _FIXTURES_DIR = Path(__file__).resolve().parent.parent / "fixtures"
@@ -209,8 +209,13 @@ def session_observed_problem_types(pytestconfig: pytest.Config) -> set[str]:
 
 @pytest.fixture
 def experiment_id() -> str:
-    """Fresh experiment id per scenario to isolate state."""
-    return f"test-{uuid.uuid4().hex[:8]}"
+    """Fresh opaque experiment id per scenario to isolate state.
+
+    Post-rename (#128) experiment ids are opaque ``exp_*`` (spec §1.6);
+    the manifest schema and the wire's ``X-Eden-Experiment-Id`` header
+    flow this value into the IUT, so the suite mints a grammar-valid id.
+    """
+    return mint_experiment_id()
 
 
 @pytest.fixture

@@ -23,9 +23,10 @@ from __future__ import annotations
 
 from typing import Any
 
+from eden_contracts._common import _check_display_name
 from eden_control_plane import ControlPlaneClient
 from eden_storage.errors import (
-    AlreadyExists,
+    InvalidName,
     InvalidPrecondition,
     NotFound,
 )
@@ -33,6 +34,7 @@ from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
 from ..sessions import Session, new_csrf_token
+from ._display import sort_by_name_then_id
 from ._helpers import (
     csrf_ok,
     get_session,
@@ -44,13 +46,12 @@ router = APIRouter(prefix="/admin/experiments")
 
 
 _REGISTER_OUTCOMES: dict[str, tuple[str, str]] = {
-    "ok": ("ok", "experiment registered"),
-    "already-exists": (
+    "ok": ("ok", "experiment registered — id minted by the control plane"),
+    "invalid-name": (
         "error",
-        "an experiment with that id is already registered under a different "
-        "config_uri; pick a different id or reuse the existing one",
+        "name must be 1–128 visible characters (no control chars; "
+        "no leading/trailing whitespace)",
     ),
-    "missing-experiment-id": ("error", "experiment_id is required"),
     "missing-config-uri": ("error", "config_uri is required"),
     "transport": (
         "error",
@@ -182,10 +183,11 @@ async def dashboard(
     except Exception as exc:  # noqa: BLE001 — surface to operator
         experiments = []
         transport_error = f"failed to read experiments from control plane: {exc}"
-    for entry in experiments:
+    for entry in sort_by_name_then_id(experiments, id_attr="experiment_id"):
         rows.append(
             {
                 "experiment_id": entry.experiment_id,
+                "name": entry.name,
                 "config_uri": entry.config_uri,
                 "created_at": entry.created_at,
                 "last_known_state": entry.last_known_state,
@@ -228,7 +230,7 @@ async def dashboard(
 async def register(
     request: Request,
     csrf_token: str = Form(default=""),
-    experiment_id: str = Form(default=""),
+    name: str = Form(default=""),
     config_uri: str = Form(default=""),
 ) -> Response:
     session_or_redirect = _require_session(request)
@@ -239,20 +241,29 @@ async def register(
         return htmx_aware_redirect(
             request, "/admin/experiments/?registered=transport"
         )
-    if not experiment_id:
-        return htmx_aware_redirect(
-            request, "/admin/experiments/?registered=missing-experiment-id"
-        )
     if not config_uri:
         return htmx_aware_redirect(
             request, "/admin/experiments/?registered=missing-config-uri"
         )
+    # The control plane mints the opaque exp_*; the operator supplies
+    # only the config_uri and an OPTIONAL display name (#128). Every
+    # registration mints a distinct experiment (no id-collision case).
+    # Empty/whitespace-only name → nameless; otherwise validate the RAW
+    # name (so leading/trailing whitespace is rejected).
+    name = name if name.strip() else ""
+    if name:
+        try:
+            _check_display_name(name)
+        except ValueError:
+            return htmx_aware_redirect(
+                request, "/admin/experiments/?registered=invalid-name"
+            )
     cp = _control_plane(request)
     try:
-        cp.register_experiment(experiment_id, config_uri)
-    except AlreadyExists:
+        cp.register_experiment(config_uri, name=name or None)
+    except InvalidName:
         return htmx_aware_redirect(
-            request, "/admin/experiments/?registered=already-exists"
+            request, "/admin/experiments/?registered=invalid-name"
         )
     except Exception:  # noqa: BLE001 — transport / unknown
         return htmx_aware_redirect(

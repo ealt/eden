@@ -32,7 +32,7 @@ from eden_wire import (
 )
 from fastapi.testclient import TestClient
 
-EXPERIMENT_ID = "exp-wave3-lifecycle"
+EXPERIMENT_ID = "exp_a1h2a1203pbmrecqqycyaj1gd6"
 ADMIN_TOKEN = "test-admin-token-lifecycle"
 
 
@@ -58,20 +58,23 @@ def _worker_headers(worker_id: str, token: str) -> dict[str, str]:
     }
 
 
-def _register_worker(client: TestClient, worker_id: str) -> str:
+def _register_worker(client: TestClient, name: str) -> tuple[str, str]:
+    """Register a worker by name; return (minted ``wkr_*`` id, token)."""
     resp = client.post(
         f"/v0/experiments/{EXPERIMENT_ID}/workers",
         headers=_admin_headers(),
-        json={"worker_id": worker_id},
+        json={"name": name},
     )
     assert resp.status_code == 200, resp.text
-    return resp.json()["registration_token"]
+    body = resp.json()
+    return body["worker_id"], body["registration_token"]
 
 
 def _register_group(
-    client: TestClient, group_id: str, members: list[str] | None = None
-) -> None:
-    body: dict[str, Any] = {"group_id": group_id}
+    client: TestClient, name: str, members: list[str] | None = None
+) -> str:
+    """Register a group by name; return the minted ``grp_*`` id."""
+    body: dict[str, Any] = {"name": name}
     if members:
         body["members"] = members
     resp = client.post(
@@ -80,18 +83,22 @@ def _register_group(
         json=body,
     )
     assert resp.status_code == 200, resp.text
+    return resp.json()["group_id"]
 
 
-def _bootstrap_admins_member(client: TestClient, worker_id: str) -> str:
-    token = _register_worker(client, worker_id)
+def _bootstrap_admins_member(client: TestClient, name: str) -> tuple[str, str]:
+    """Register a worker (by name) into ``admins``; return (minted id, token)."""
+    worker_id, token = _register_worker(client, name)
     _register_group(client, "admins", members=[worker_id])
-    return token
+    return worker_id, token
 
 
-def _bootstrap_orchestrators_member(client: TestClient, worker_id: str) -> str:
-    token = _register_worker(client, worker_id)
+def _bootstrap_orchestrators_member(
+    client: TestClient, name: str
+) -> tuple[str, str]:
+    worker_id, token = _register_worker(client, name)
     _register_group(client, "orchestrators", members=[worker_id])
-    return token
+    return worker_id, token
 
 
 # ----------------------------------------------------------------------
@@ -103,10 +110,10 @@ class TestTerminateEndpoint:
     def test_running_to_terminated_transition(self, store: InMemoryStore) -> None:
         app = make_app(store, admin_token=ADMIN_TOKEN)
         client = TestClient(app)
-        admin_token = _bootstrap_admins_member(client, "admin-eric")
+        admin_eric_id, admin_token = _bootstrap_admins_member(client, "admin-eric")
         resp = client.post(
             f"/v0/experiments/{EXPERIMENT_ID}/terminate",
-            headers=_worker_headers("admin-eric", admin_token),
+            headers=_worker_headers(admin_eric_id, admin_token),
             json={"reason": "max_variants policy reached"},
         )
         assert resp.status_code == 200, resp.text
@@ -122,22 +129,22 @@ class TestTerminateEndpoint:
         ]
         assert len(term_events) == 1
         assert term_events[0].data["reason"] == "max_variants policy reached"
-        assert term_events[0].data["terminated_by"] == "admin-eric"
+        assert term_events[0].data["terminated_by"] == admin_eric_id
 
     def test_idempotent_repeat_same_caller(self, store: InMemoryStore) -> None:
         """Second terminate from the same caller returns 200 with no new event."""
         app = make_app(store, admin_token=ADMIN_TOKEN)
         client = TestClient(app)
-        admin_token = _bootstrap_admins_member(client, "admin-eric")
+        admin_eric_id, admin_token = _bootstrap_admins_member(client, "admin-eric")
         client.post(
             f"/v0/experiments/{EXPERIMENT_ID}/terminate",
-            headers=_worker_headers("admin-eric", admin_token),
+            headers=_worker_headers(admin_eric_id, admin_token),
             json={"reason": "first"},
         )
         pre_events = len(store.events())
         resp = client.post(
             f"/v0/experiments/{EXPERIMENT_ID}/terminate",
-            headers=_worker_headers("admin-eric", admin_token),
+            headers=_worker_headers(admin_eric_id, admin_token),
             json={"reason": "second"},
         )
         assert resp.status_code == 200, resp.text
@@ -154,24 +161,32 @@ class TestTerminateEndpoint:
         """A racing admin call sees idempotency win; first admin's record stands."""
         app = make_app(store, admin_token=ADMIN_TOKEN)
         client = TestClient(app)
-        admin_a_token = _bootstrap_admins_member(client, "admin-eric")
-        admin_b_token = _register_worker(client, "admin-alice")
-        # `admins` group already exists from the first bootstrap; add
-        # alice via the group-mutation endpoint.
-        resp = client.post(
-            f"/v0/experiments/{EXPERIMENT_ID}/groups/admins/members",
+        admin_eric_id, admin_a_token = _bootstrap_admins_member(
+            client, "admin-eric"
+        )
+        admin_alice_id, admin_b_token = _register_worker(client, "admin-alice")
+        # `admins` group already exists from the first bootstrap; find its
+        # minted id and add alice via the group-mutation endpoint.
+        admins_group = client.get(
+            f"/v0/experiments/{EXPERIMENT_ID}/groups",
+            params={"name": "admins"},
             headers=_admin_headers(),
-            json={"member_id": "admin-alice"},
+        ).json()["groups"][0]
+        resp = client.post(
+            f"/v0/experiments/{EXPERIMENT_ID}"
+            f"/groups/{admins_group['group_id']}/members",
+            headers=_admin_headers(),
+            json={"member_id": admin_alice_id},
         )
         assert resp.status_code == 200, resp.text
         client.post(
             f"/v0/experiments/{EXPERIMENT_ID}/terminate",
-            headers=_worker_headers("admin-eric", admin_a_token),
+            headers=_worker_headers(admin_eric_id, admin_a_token),
             json={"reason": "eric won"},
         )
         resp = client.post(
             f"/v0/experiments/{EXPERIMENT_ID}/terminate",
-            headers=_worker_headers("admin-alice", admin_b_token),
+            headers=_worker_headers(admin_alice_id, admin_b_token),
             json={"reason": "alice tries"},
         )
         assert resp.status_code == 200
@@ -181,7 +196,7 @@ class TestTerminateEndpoint:
         assert len(term_events) == 1
         # First call's reason + terminated_by are the ones recorded.
         assert term_events[0].data["reason"] == "eric won"
-        assert term_events[0].data["terminated_by"] == "admin-eric"
+        assert term_events[0].data["terminated_by"] == admin_eric_id
 
     def test_non_admin_non_orchestrator_rejected_with_forbidden(
         self, store: InMemoryStore
@@ -189,10 +204,10 @@ class TestTerminateEndpoint:
         """A registered worker outside admins AND orchestrators MUST get 403 (§13.3)."""
         app = make_app(store, admin_token=ADMIN_TOKEN)
         client = TestClient(app)
-        random_token = _register_worker(client, "random-worker")
+        random_id, random_token = _register_worker(client, "random-worker")
         resp = client.post(
             f"/v0/experiments/{EXPERIMENT_ID}/terminate",
-            headers=_worker_headers("random-worker", random_token),
+            headers=_worker_headers(random_id, random_token),
             json={"reason": "x"},
         )
         assert resp.status_code == 403
@@ -211,10 +226,10 @@ class TestTerminateEndpoint:
         """
         app = make_app(store, admin_token=ADMIN_TOKEN)
         client = TestClient(app)
-        orch_token = _bootstrap_orchestrators_member(client, "orch-1")
+        orch_1_id, orch_token = _bootstrap_orchestrators_member(client, "orch-1")
         resp = client.post(
             f"/v0/experiments/{EXPERIMENT_ID}/terminate",
-            headers=_worker_headers("orch-1", orch_token),
+            headers=_worker_headers(orch_1_id, orch_token),
             json={"reason": "policy fired"},
         )
         assert resp.status_code == 200, resp.text
@@ -224,16 +239,16 @@ class TestTerminateEndpoint:
             e for e in store.events() if e.type == "experiment.terminated"
         ]
         assert len(term_events) == 1
-        assert term_events[0].data["terminated_by"] == "orch-1"
+        assert term_events[0].data["terminated_by"] == orch_1_id
 
     def test_body_rejects_terminated_by_field(self, store: InMemoryStore) -> None:
         """The body MUST NOT carry ``terminated_by`` (server stamps it)."""
         app = make_app(store, admin_token=ADMIN_TOKEN)
         client = TestClient(app)
-        admin_token = _bootstrap_admins_member(client, "admin-eric")
+        admin_eric_id, admin_token = _bootstrap_admins_member(client, "admin-eric")
         resp = client.post(
             f"/v0/experiments/{EXPERIMENT_ID}/terminate",
-            headers=_worker_headers("admin-eric", admin_token),
+            headers=_worker_headers(admin_eric_id, admin_token),
             json={"reason": "x", "terminated_by": "spoofed-id"},
         )
         assert resp.status_code == 400
@@ -253,10 +268,10 @@ class TestTerminateEndpoint:
     def test_missing_reason_rejected(self, store: InMemoryStore) -> None:
         app = make_app(store, admin_token=ADMIN_TOKEN)
         client = TestClient(app)
-        admin_token = _bootstrap_admins_member(client, "admin-eric")
+        admin_eric_id, admin_token = _bootstrap_admins_member(client, "admin-eric")
         resp = client.post(
             f"/v0/experiments/{EXPERIMENT_ID}/terminate",
-            headers=_worker_headers("admin-eric", admin_token),
+            headers=_worker_headers(admin_eric_id, admin_token),
             json={},
         )
         assert resp.status_code == 400
@@ -271,10 +286,10 @@ class TestExperimentStateEndpoint:
     def test_default_running(self, store: InMemoryStore) -> None:
         app = make_app(store, admin_token=ADMIN_TOKEN)
         client = TestClient(app)
-        random_token = _register_worker(client, "reader")
+        reader_id, random_token = _register_worker(client, "reader")
         resp = client.get(
             f"/v0/experiments/{EXPERIMENT_ID}/state",
-            headers=_worker_headers("reader", random_token),
+            headers=_worker_headers(reader_id, random_token),
         )
         assert resp.status_code == 200, resp.text
         assert resp.json() == {"state": "running"}
@@ -282,15 +297,15 @@ class TestExperimentStateEndpoint:
     def test_post_terminate_returns_terminated(self, store: InMemoryStore) -> None:
         app = make_app(store, admin_token=ADMIN_TOKEN)
         client = TestClient(app)
-        admin_token = _bootstrap_admins_member(client, "admin-eric")
+        admin_eric_id, admin_token = _bootstrap_admins_member(client, "admin-eric")
         client.post(
             f"/v0/experiments/{EXPERIMENT_ID}/terminate",
-            headers=_worker_headers("admin-eric", admin_token),
+            headers=_worker_headers(admin_eric_id, admin_token),
             json={"reason": "done"},
         )
         resp = client.get(
             f"/v0/experiments/{EXPERIMENT_ID}/state",
-            headers=_worker_headers("admin-eric", admin_token),
+            headers=_worker_headers(admin_eric_id, admin_token),
         )
         assert resp.status_code == 200
         assert resp.json() == {"state": "terminated"}
@@ -306,11 +321,11 @@ class TestPolicyErrorEndpoint:
         """Orchestrators-group caller appends experiment.policy_error."""
         app = make_app(store, admin_token=ADMIN_TOKEN)
         client = TestClient(app)
-        orch_token = _bootstrap_orchestrators_member(client, "orch-1")
+        orch_1_id, orch_token = _bootstrap_orchestrators_member(client, "orch-1")
         pre_events = len(store.events())
         resp = client.post(
             f"/v0/experiments/{EXPERIMENT_ID}/policy-errors",
-            headers=_worker_headers("orch-1", orch_token),
+            headers=_worker_headers(orch_1_id, orch_token),
             json={
                 "policy_kind": "termination",
                 "error_type": "ValueError",
@@ -334,10 +349,10 @@ class TestPolicyErrorEndpoint:
         client = TestClient(app)
         # Admin group membership is NOT sufficient — the endpoint is
         # gated specifically on the orchestrators group.
-        admin_token = _bootstrap_admins_member(client, "admin-eric")
+        admin_eric_id, admin_token = _bootstrap_admins_member(client, "admin-eric")
         resp = client.post(
             f"/v0/experiments/{EXPERIMENT_ID}/policy-errors",
-            headers=_worker_headers("admin-eric", admin_token),
+            headers=_worker_headers(admin_eric_id, admin_token),
             json={
                 "policy_kind": "termination",
                 "error_type": "X",
@@ -350,10 +365,10 @@ class TestPolicyErrorEndpoint:
     def test_missing_required_field_rejected(self, store: InMemoryStore) -> None:
         app = make_app(store, admin_token=ADMIN_TOKEN)
         client = TestClient(app)
-        orch_token = _bootstrap_orchestrators_member(client, "orch-1")
+        orch_1_id, orch_token = _bootstrap_orchestrators_member(client, "orch-1")
         resp = client.post(
             f"/v0/experiments/{EXPERIMENT_ID}/policy-errors",
-            headers=_worker_headers("orch-1", orch_token),
+            headers=_worker_headers(orch_1_id, orch_token),
             json={"policy_kind": "termination", "error_type": ""},
         )
         # Missing `error_message` (or empty `error_type`) → 400.
@@ -371,10 +386,10 @@ class TestTerminatedExperimentGuard:
     ) -> None:
         app = make_app(store, admin_token=ADMIN_TOKEN)
         client = TestClient(app)
-        admin_token = _bootstrap_admins_member(client, "admin-eric")
+        admin_eric_id, admin_token = _bootstrap_admins_member(client, "admin-eric")
         client.post(
             f"/v0/experiments/{EXPERIMENT_ID}/terminate",
-            headers=_worker_headers("admin-eric", admin_token),
+            headers=_worker_headers(admin_eric_id, admin_token),
             json={"reason": "done"},
         )
         body = {
@@ -387,7 +402,7 @@ class TestTerminatedExperimentGuard:
         }
         resp = client.post(
             f"/v0/experiments/{EXPERIMENT_ID}/tasks",
-            headers=_worker_headers("admin-eric", admin_token),
+            headers=_worker_headers(admin_eric_id, admin_token),
             json=body,
         )
         assert resp.status_code == 409
@@ -397,18 +412,18 @@ class TestTerminatedExperimentGuard:
         """A pending task claimed AFTER terminate surfaces illegal-transition."""
         app = make_app(store, admin_token=ADMIN_TOKEN)
         client = TestClient(app)
-        admin_token = _bootstrap_admins_member(client, "admin-eric")
-        ideator_token = _register_worker(client, "ideator-1")
+        admin_eric_id, admin_token = _bootstrap_admins_member(client, "admin-eric")
+        ideator_1_id, ideator_token = _register_worker(client, "ideator-1")
         # Seed a pending ideation task before termination.
         store.create_ideation_task("plan-1")
         client.post(
             f"/v0/experiments/{EXPERIMENT_ID}/terminate",
-            headers=_worker_headers("admin-eric", admin_token),
+            headers=_worker_headers(admin_eric_id, admin_token),
             json={"reason": "done"},
         )
         resp = client.post(
             f"/v0/experiments/{EXPERIMENT_ID}/tasks/plan-1/claim",
-            headers=_worker_headers("ideator-1", ideator_token),
+            headers=_worker_headers(ideator_1_id, ideator_token),
             json={},
         )
         assert resp.status_code == 409
@@ -457,16 +472,16 @@ class TestStoreClientEndToEnd:
     def test_terminate_round_trips(self, store: InMemoryStore) -> None:
         app = make_app(store, admin_token=ADMIN_TOKEN)
         test_client = TestClient(app)
-        admin_token = _bootstrap_admins_member(test_client, "admin-eric")
-        sc = _store_client_for(test_client, bearer=f"admin-eric:{admin_token}")
+        admin_eric_id, admin_token = _bootstrap_admins_member(test_client, "admin-eric")
+        sc = _store_client_for(test_client, bearer=f"{admin_eric_id}:{admin_token}")
         exp = sc.terminate_experiment(
-            reason="policy fired", terminated_by="admin-eric"
+            reason="policy fired", terminated_by=admin_eric_id
         )
         assert exp.state == "terminated"
         assert exp.experiment_id == EXPERIMENT_ID
         # Second call hits the idempotent branch on the server.
         exp2 = sc.terminate_experiment(
-            reason="ignored", terminated_by="admin-eric"
+            reason="ignored", terminated_by=admin_eric_id
         )
         assert exp2.state == "terminated"
         term_events = [
@@ -479,15 +494,15 @@ class TestStoreClientEndToEnd:
         app = make_app(store, admin_token=ADMIN_TOKEN)
         test_client = TestClient(app)
         # A non-admin registered worker can read the state — either-auth.
-        reader_token = _register_worker(test_client, "reader")
-        sc = _store_client_for(test_client, bearer=f"reader:{reader_token}")
+        reader_id, reader_token = _register_worker(test_client, "reader")
+        sc = _store_client_for(test_client, bearer=f"{reader_id}:{reader_token}")
         assert sc.read_experiment_state() == "running"
         # Drive terminate via a separate admin client.
-        admin_token = _bootstrap_admins_member(test_client, "admin-eric")
+        admin_eric_id, admin_token = _bootstrap_admins_member(test_client, "admin-eric")
         admin_sc = _store_client_for(
-            test_client, bearer=f"admin-eric:{admin_token}"
+            test_client, bearer=f"{admin_eric_id}:{admin_token}"
         )
-        admin_sc.terminate_experiment(reason="x", terminated_by="admin-eric")
+        admin_sc.terminate_experiment(reason="x", terminated_by=admin_eric_id)
         assert sc.read_experiment_state() == "terminated"
 
     def test_terminate_indeterminate_read_back_resolves_to_success(
@@ -501,14 +516,14 @@ class TestStoreClientEndToEnd:
         """
         app = make_app(store, admin_token=ADMIN_TOKEN)
         test_client = TestClient(app)
-        admin_token = _bootstrap_admins_member(test_client, "admin-eric")
+        admin_eric_id, admin_token = _bootstrap_admins_member(test_client, "admin-eric")
 
         # First terminate succeeds normally via wire; this puts the
         # server in the post-condition.
         sc = _store_client_for(
-            test_client, bearer=f"admin-eric:{admin_token}"
+            test_client, bearer=f"{admin_eric_id}:{admin_token}"
         )
-        sc.terminate_experiment(reason="real", terminated_by="admin-eric")
+        sc.terminate_experiment(reason="real", terminated_by=admin_eric_id)
 
         # Now build a flaky transport that raises on the POST /terminate
         # path but delegates the GET /state read-back to TestClient.
@@ -533,13 +548,13 @@ class TestStoreClientEndToEnd:
         flaky_sc = StoreClient(
             "http://unused",
             experiment_id=EXPERIMENT_ID,
-            bearer=f"admin-eric:{admin_token}",
+            bearer=f"{admin_eric_id}:{admin_token}",
             client=flaky_http,
         )
         # The POST fails (transport error). The read-back ladder
         # observes state="terminated" → synthetic Experiment returned.
         exp = flaky_sc.terminate_experiment(
-            reason="replay", terminated_by="admin-eric"
+            reason="replay", terminated_by=admin_eric_id
         )
         assert exp.state == "terminated"
 
@@ -549,7 +564,7 @@ class TestStoreClientEndToEnd:
         """Transport blip + read-back showing running → IndeterminateTermination."""
         app = make_app(store, admin_token=ADMIN_TOKEN)
         test_client = TestClient(app)
-        admin_token = _bootstrap_admins_member(test_client, "admin-eric")
+        admin_eric_id, admin_token = _bootstrap_admins_member(test_client, "admin-eric")
 
         def _flaky(request: httpx.Request) -> httpx.Response:
             if request.method == "POST" and request.url.path.endswith("/terminate"):
@@ -572,12 +587,12 @@ class TestStoreClientEndToEnd:
         flaky_sc = StoreClient(
             "http://unused",
             experiment_id=EXPERIMENT_ID,
-            bearer=f"admin-eric:{admin_token}",
+            bearer=f"{admin_eric_id}:{admin_token}",
             client=flaky_http,
         )
         with pytest.raises(IndeterminateTermination):
             flaky_sc.terminate_experiment(
-                reason="x", terminated_by="admin-eric"
+                reason="x", terminated_by=admin_eric_id
             )
         # State is still running on the server.
         assert store.read_experiment_state() == "running"
@@ -596,8 +611,8 @@ class TestIntendedExecutorWireFlow:
         the store inherits the idea's intended_executor as task.target."""
         app = make_app(store, admin_token=ADMIN_TOKEN)
         client = TestClient(app)
-        admin_token = _bootstrap_admins_member(client, "admin-eric")
-        _register_worker(client, "executor-a")
+        admin_eric_id, admin_token = _bootstrap_admins_member(client, "admin-eric")
+        executor_a_id, _ = _register_worker(client, "executor-a")
         # Seed an idea with intended_executor; mark ready.
         store.create_idea(
             Idea.model_validate(
@@ -610,7 +625,7 @@ class TestIntendedExecutorWireFlow:
                     "artifacts_uri": "s3://b/",
                     "state": "drafting",
                     "created_at": "2026-05-01T00:00:00Z",
-                    "intended_executor": {"kind": "worker", "id": "executor-a"},
+                    "intended_executor": {"kind": "worker", "id": executor_a_id},
                 }
             )
         )
@@ -625,13 +640,13 @@ class TestIntendedExecutorWireFlow:
         }
         resp = client.post(
             f"/v0/experiments/{EXPERIMENT_ID}/tasks",
-            headers=_worker_headers("admin-eric", admin_token),
+            headers=_worker_headers(admin_eric_id, admin_token),
             json=body,
         )
         assert resp.status_code == 200, resp.text
         out = resp.json()
         # The store applied the idea's intended_executor to task.target.
-        assert out["target"] == {"kind": "worker", "id": "executor-a"}
+        assert out["target"] == {"kind": "worker", "id": executor_a_id}
 
 
 # ----------------------------------------------------------------------
@@ -667,9 +682,9 @@ class TestCreateIdeaSlugWarnings:
     def test_unique_slug_has_no_warnings(self, store: InMemoryStore) -> None:
         app = make_app(store, admin_token=ADMIN_TOKEN)
         client = TestClient(app)
-        token = _register_worker(client, "ideator-a")
+        ideator_a_id, token = _register_worker(client, "ideator-a")
         resp = self._post_idea(
-            client, "ideator-a", token, idea_id="idea-1", slug="alpha"
+            client, ideator_a_id, token, idea_id="idea-1", slug="alpha"
         )
         assert resp.status_code == 200, resp.text
         # No warnings key on the unique-slug submission.
@@ -680,14 +695,14 @@ class TestCreateIdeaSlugWarnings:
     ) -> None:
         app = make_app(store, admin_token=ADMIN_TOKEN)
         client = TestClient(app)
-        token = _register_worker(client, "ideator-a")
+        ideator_a_id, token = _register_worker(client, "ideator-a")
         first = self._post_idea(
-            client, "ideator-a", token, idea_id="idea-1", slug="alpha"
+            client, ideator_a_id, token, idea_id="idea-1", slug="alpha"
         )
         assert first.status_code == 200, first.text
         assert "warnings" not in first.json()
         second = self._post_idea(
-            client, "ideator-a", token, idea_id="idea-2", slug="alpha"
+            client, ideator_a_id, token, idea_id="idea-2", slug="alpha"
         )
         # Soft-check: second submission still succeeds.
         assert second.status_code == 200, second.text
@@ -703,14 +718,14 @@ class TestCreateIdeaSlugWarnings:
     ) -> None:
         app = make_app(store, admin_token=ADMIN_TOKEN)
         client = TestClient(app)
-        token = _register_worker(client, "ideator-a")
+        ideator_a_id, token = _register_worker(client, "ideator-a")
         for n in (1, 2):
             r = self._post_idea(
-                client, "ideator-a", token, idea_id=f"idea-{n}", slug="alpha"
+                client, ideator_a_id, token, idea_id=f"idea-{n}", slug="alpha"
             )
             assert r.status_code == 200, r.text
         third = self._post_idea(
-            client, "ideator-a", token, idea_id="idea-3", slug="alpha"
+            client, ideator_a_id, token, idea_id="idea-3", slug="alpha"
         )
         assert third.status_code == 200
         joined = " ".join(third.json()["warnings"])

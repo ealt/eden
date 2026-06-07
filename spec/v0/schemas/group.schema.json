@@ -7,23 +7,27 @@
   "properties": {
     "group_id": {
       "type": "string",
+      "pattern": "^grp_[0-9a-hjkmnp-tv-z]{26}$",
+      "description": "Opaque, system-minted group identifier (spec/v0/02-data-model.md §1.6)."
+    },
+    "name": {
+      "type": "string",
+      "format": "display-name",
       "minLength": 1,
-      "maxLength": 64,
-      "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
-      "description": "Operator-supplied identifier; same grammar as `worker_id` (spec/v0/02-data-model.md §6.1). Reserved values (`admin`, `system`, `internal`) MUST be rejected by `register_group`."
+      "maxLength": 128,
+      "description": "OPTIONAL operator-supplied display label (spec/v0/02-data-model.md §1.7). Reserved group names (`admins`, `orchestrators`) MUST be rejected by `register_group` after setup-experiment's initial mint."
     },
     "experiment_id": {
       "type": "string",
-      "minLength": 1
+      "pattern": "^exp_[0-9a-hjkmnp-tv-z]{26}$",
+      "description": "Opaque, system-minted experiment identifier (spec/v0/02-data-model.md §1.6)."
     },
     "members": {
       "type": "array",
       "items": {
         "type": "string",
-        "minLength": 1,
-        "maxLength": 64,
-        "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
-        "description": "Member id — either a registered `worker_id` or another `group_id` in the same experiment."
+        "pattern": "^(wkr|grp)_[0-9a-hjkmnp-tv-z]{26}$",
+        "description": "Member id — either a registered `worker_id` (wkr_*) or a `group_id` (grp_*) in the same experiment (spec/v0/02-data-model.md §1.6)."
       }
     },
     "created_at": {
@@ -33,7 +37,8 @@
     },
     "created_by": {
       "type": "string",
-      "minLength": 1
+      "pattern": "^(admin|wkr_[0-9a-hjkmnp-tv-z]{26})$",
+      "description": "Actor identifier of the caller that created the group: the literal admin sentinel `admin` or a worker_id (spec/v0/02-data-model.md §1.6)."
     }
   }
 }

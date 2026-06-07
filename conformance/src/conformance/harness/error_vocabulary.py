@@ -79,6 +79,7 @@ CORE_VOCABULARY: frozenset[str] = frozenset(
         "eden://error/conflicting-resubmission",
         "eden://error/invalid-precondition",
         "eden://error/reserved-identifier",
+        "eden://error/invalid-name",
         "eden://error/cycle-detected",
         "eden://error/unauthorized",
         "eden://error/forbidden",

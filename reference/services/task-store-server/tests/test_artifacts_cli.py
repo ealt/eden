@@ -30,7 +30,7 @@ FIXTURE_CONFIG = (
 def _make_app_with_artifacts(artifacts_dir: Path | None):
     config = load_experiment_config(FIXTURE_CONFIG)
     store = build_store(
-        store_url=":memory:", experiment_id="exp-1", config=config
+        store_url=":memory:", experiment_id="exp_0123456789abcdefghjkmnpqrs", config=config
     )
     return build_app(store=store, artifacts_dir=artifacts_dir)
 
@@ -41,7 +41,7 @@ def test_artifacts_dir_exposes_route(tmp_path: Path) -> None:
     (art / "hello.md").write_bytes(b"hi")
     app = _make_app_with_artifacts(art)
     client = TestClient(app)
-    resp = client.get("/_reference/experiments/exp-1/artifacts/hello.md")
+    resp = client.get("/_reference/experiments/exp_0123456789abcdefghjkmnpqrs/artifacts/hello.md")
     assert resp.status_code == 200
     assert resp.content == b"hi"
 
@@ -50,7 +50,7 @@ def test_artifacts_dir_none_returns_503() -> None:
     """Route is always mounted; without --artifacts-dir → 503."""
     app = _make_app_with_artifacts(None)
     client = TestClient(app)
-    resp = client.get("/_reference/experiments/exp-1/artifacts/anything")
+    resp = client.get("/_reference/experiments/exp_0123456789abcdefghjkmnpqrs/artifacts/anything")
     assert resp.status_code == 503
     assert (
         resp.json()["type"]
@@ -64,7 +64,7 @@ def test_cli_parses_artifacts_dir() -> None:
             "--store-url",
             ":memory:",
             "--experiment-id",
-            "exp-1",
+            "exp_0123456789abcdefghjkmnpqrs",
             "--experiment-config",
             str(FIXTURE_CONFIG),
             "--artifacts-dir",
@@ -80,7 +80,7 @@ def test_cli_artifacts_dir_default_is_none() -> None:
             "--store-url",
             ":memory:",
             "--experiment-id",
-            "exp-1",
+            "exp_0123456789abcdefghjkmnpqrs",
             "--experiment-config",
             str(FIXTURE_CONFIG),
         ]
@@ -111,6 +111,6 @@ def test_artifacts_route_security_properties_preserved_via_build_app(
     art.mkdir()
     app = _make_app_with_artifacts(art)
     client = TestClient(app)
-    resp = client.get(f"/_reference/experiments/exp-1/artifacts/{path}")
+    resp = client.get(f"/_reference/experiments/exp_0123456789abcdefghjkmnpqrs/artifacts/{path}")
     # Either malformed-path 400 or missing 404, never 200.
     assert resp.status_code in (400, 404)

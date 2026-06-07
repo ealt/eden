@@ -32,19 +32,34 @@ from eden_dispatch import (
     maintain_pending,
     never_terminate,
 )
+from eden_orchestrator.checkpoint_scheduler import CheckpointScheduler
 from eden_orchestrator.cli import _ensure_orchestrators_membership
 from eden_orchestrator.loop import _read_dispatch_mode, run_orchestrator_loop
 from eden_service_common import StopFlag
 
 
+def _disabled_scheduler() -> CheckpointScheduler:
+    """No-op auto-checkpoint scheduler for loop tests that don't exercise it."""
+    return CheckpointScheduler.from_config(
+        None, experiment_id=_EXP_ID, destination=None, export_fn=None
+    )
+
+
+_EXP_ID = "exp_01kt5e4vh7h10w9fsb2pbkmt6s"
+
+
 @pytest.fixture
 def store() -> InMemoryStore:
     s = InMemoryStore(
-        experiment_id="exp-loop-unit",
+        experiment_id=_EXP_ID,
         evaluation_schema=EvaluationSchema({"loss": "real"}),
     )
-    for wid in ("orchestrator", "ideator-1", "executor-1", "evaluator-1"):
-        s.register_worker(wid)
+    # Since #128 register_worker mints opaque ids; the optional name
+    # is the operator label. The loop tests don't reference these
+    # workers by id (dispatch-mode writes use the admin principal),
+    # so the minted ids are intentionally discarded here.
+    for name in ("orchestrator", "ideator-1", "executor-1", "evaluator-1"):
+        s.register_worker(name)
     return s
 
 
@@ -55,7 +70,7 @@ def store() -> InMemoryStore:
 
 def test_read_dispatch_mode_returns_store_value(store: InMemoryStore) -> None:
     store.update_dispatch_mode(
-        {"integration": "manual"}, updated_by="orchestrator"
+        {"integration": "manual"}, updated_by="admin"
     )
     mode = _read_dispatch_mode(store)
     assert mode.integration == "manual"
@@ -128,13 +143,14 @@ def test_loop_invokes_ideation_policy_and_creates_tasks(
         integrator=_NoopIntegrator(),  # type: ignore[arg-type]
         ideation_policy=policy,
         termination_policy=never_terminate,
-        terminated_by="orchestrator",
+        terminated_by="admin",
         ideation_task_prefix="ideation-",
         execution_task_prefix="execution-",
         evaluation_task_prefix="evaluate-",
         poll_interval=0.0,
         max_quiescent_iterations=5,
         stop=stop,
+        scheduler=_disabled_scheduler(),
     )
     tasks = store.list_tasks(kind="ideation")
     assert len(tasks) == 3
@@ -144,7 +160,7 @@ def test_loop_invokes_ideation_policy_and_creates_tasks(
 def test_loop_honors_manual_ideation_creation(store: InMemoryStore) -> None:
     """Flipping ideation_creation to manual suppresses policy invocation."""
     store.update_dispatch_mode(
-        {"ideation_creation": "manual"}, updated_by="orchestrator"
+        {"ideation_creation": "manual"}, updated_by="admin"
     )
     stop = StopFlag()
     calls: list[int] = []
@@ -176,13 +192,14 @@ def test_loop_honors_manual_ideation_creation(store: InMemoryStore) -> None:
         integrator=_NoopIntegrator(),  # type: ignore[arg-type]
         ideation_policy=gating_policy,
         termination_policy=never_terminate,
-        terminated_by="orchestrator",
+        terminated_by="admin",
         ideation_task_prefix="ideation-",
         execution_task_prefix="execution-",
         evaluation_task_prefix="evaluate-",
         poll_interval=0.0,
         max_quiescent_iterations=2,  # quiesces after 2 no-progress iters
         stop=stop,
+        scheduler=_disabled_scheduler(),
     )
     # Manual mode → policy never invoked.
     assert calls == []
@@ -203,7 +220,7 @@ def test_loop_picks_up_mode_changes_between_iterations(
         if iteration[0] == 1:
             # After iter 1, flip ideation_creation to manual.
             store.update_dispatch_mode(
-                {"ideation_creation": "manual"}, updated_by="orchestrator"
+                {"ideation_creation": "manual"}, updated_by="admin"
             )
             return 2  # iter-1 creates 2 ideation tasks
         # Iter 2+ is gated off; the loop should quiesce.
@@ -216,13 +233,14 @@ def test_loop_picks_up_mode_changes_between_iterations(
         integrator=_NoopIntegrator(),  # type: ignore[arg-type]
         ideation_policy=policy,
         termination_policy=never_terminate,
-        terminated_by="orchestrator",
+        terminated_by="admin",
         ideation_task_prefix="ideation-",
         execution_task_prefix="execution-",
         evaluation_task_prefix="evaluate-",
         poll_interval=0.0,
         max_quiescent_iterations=3,
         stop=stop,
+        scheduler=_disabled_scheduler(),
     )
     # Exactly 2 ideation tasks from iter-1; iter-2+ gate prevents more.
     assert len(store.list_tasks(kind="ideation")) == 2
@@ -233,8 +251,24 @@ def test_loop_picks_up_mode_changes_between_iterations(
 # ----------------------------------------------------------------------
 
 
+class _FakeGroup:
+    """Minimal stand-in for the ``Group`` returned by the admin client."""
+
+    def __init__(self, group_id: str) -> None:
+        self.group_id = group_id
+
+
 class _FakeAdmin:
-    """In-memory stand-in for the admin StoreClient used by the bootstrap."""
+    """In-memory stand-in for the admin StoreClient used by the bootstrap.
+
+    Since #128 the ``orchestrators`` authority group is resolved by its
+    reserved display NAME (``list_groups(name="orchestrators")``) to a
+    minted ``grp_*`` id rather than addressed by a literal id. This fake
+    models a store that has no pre-existing ``orchestrators`` group (so
+    the helper falls through to ``register_group``), and surfaces the
+    group via its returned ``.group_id`` — which the fake pins to the
+    literal name so the existing add-call assertions still read cleanly.
+    """
 
     def __init__(
         self,
@@ -244,13 +278,36 @@ class _FakeAdmin:
     ) -> None:
         self.register_calls: list[str] = []
         self.add_calls: list[tuple[str, str]] = []
+        self.list_groups_calls: list[str | None] = []
         self._register_raises = register_raises
         self._add_raises = add_raises
+        # Names that resolve via list_groups. Starts empty so the helper
+        # falls through to register_group; a register attempt (whether it
+        # succeeds or races into AlreadyExists) records the name so the
+        # subsequent AlreadyExists re-read / race-retry resolve finds it.
+        self._existing: set[str] = set()
 
-    def register_group(self, group_id: str, **_kwargs: Any) -> Any:
-        self.register_calls.append(group_id)
+    def list_groups(self, *, name: str | None = None) -> list[_FakeGroup]:
+        self.list_groups_calls.append(name)
+        if name in self._existing:
+            return [_FakeGroup(name)]
+        return []
+
+    def register_group(self, name: str, **_kwargs: Any) -> _FakeGroup:
+        self.register_calls.append(name)
         if self._register_raises is not None:
+            # AlreadyExists models a concurrent creator that won: the
+            # store-of-record now holds the group, so the helper's
+            # AlreadyExists-branch re-read MUST resolve it.
+            from eden_storage.errors import AlreadyExists
+
+            if isinstance(self._register_raises, AlreadyExists):
+                self._existing.add(name)
             raise self._register_raises
+        # Successful register: the group may still be raced away before
+        # the add (the recovers-from-race test deletes it), so we do NOT
+        # mark it persistently existing — a later resolve re-registers.
+        return _FakeGroup(name)
 
     def add_to_group(self, group_id: str, member_id: str) -> Any:
         self.add_calls.append((group_id, member_id))

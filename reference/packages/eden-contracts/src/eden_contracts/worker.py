@@ -10,9 +10,9 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict
 
-from ._common import DateTimeStr, NotNone, WorkerId
+from ._common import ActorId, DateTimeStr, DisplayName, ExperimentId, NotNone, WorkerId
 
 WorkerLabels = dict[str, str]
 """Free-form deployment metadata; the protocol does not interpret labels."""
@@ -24,7 +24,8 @@ class Worker(BaseModel):
     model_config = ConfigDict(strict=True, extra="allow")
 
     worker_id: WorkerId
-    experiment_id: Annotated[str, Field(min_length=1)]
+    name: Annotated[DisplayName | None, NotNone] = None
+    experiment_id: ExperimentId
     registered_at: DateTimeStr
-    registered_by: Annotated[str | None, NotNone, Field(min_length=1)] = None
+    registered_by: Annotated[ActorId | None, NotNone] = None
     labels: Annotated[WorkerLabels | None, NotNone] = None
