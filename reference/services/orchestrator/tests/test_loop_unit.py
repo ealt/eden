@@ -251,6 +251,19 @@ def test_loop_picks_up_mode_changes_between_iterations(
 # ----------------------------------------------------------------------
 
 
+def test_quiescence_exit_reached_predicate() -> None:
+    """The extracted predicate honors the zero sentinel and the threshold."""
+    from eden_orchestrator.loop import _quiescence_exit_reached
+
+    # Sentinel: never exit on quiescence regardless of the counter.
+    assert _quiescence_exit_reached(0, 0) is False
+    assert _quiescence_exit_reached(0, 10_000) is False
+    # Non-zero budget: exit once the counter reaches the threshold.
+    assert _quiescence_exit_reached(2, 1) is False
+    assert _quiescence_exit_reached(2, 2) is True
+    assert _quiescence_exit_reached(2, 3) is True
+
+
 def test_loop_never_exits_on_quiescence_when_max_is_zero(
     store: InMemoryStore,
 ) -> None:
@@ -265,7 +278,7 @@ def test_loop_never_exits_on_quiescence_when_max_is_zero(
     zero-progress) and assert the loop is still running, then stop it.
     """
     store.update_dispatch_mode(
-        {"ideation_creation": "manual"}, updated_by="orchestrator"
+        {"ideation_creation": "manual"}, updated_by="admin"
     )
     stop = StopFlag()
     iterations = [0]
@@ -295,7 +308,7 @@ def test_loop_never_exits_on_quiescence_when_max_is_zero(
         integrator=_NoopIntegrator(),  # type: ignore[arg-type]
         ideation_policy=policy,
         termination_policy=never_terminate,
-        terminated_by="orchestrator",
+        terminated_by="admin",
         ideation_task_prefix="ideation-",
         execution_task_prefix="execution-",
         evaluation_task_prefix="evaluate-",
