@@ -13,6 +13,7 @@ from typing import Any
 
 from eden_contracts import (
     REGISTERED_EVENT_TYPES,
+    ArtifactMetadata,
     EvaluationSchema,
     Event,
     Experiment,
@@ -60,6 +61,9 @@ _MODEL_DUMPERS = {
     ),
     "worker": lambda d: Worker.model_validate(d).model_dump(mode="json", exclude_none=True),
     "group": lambda d: Group.model_validate(d).model_dump(mode="json", exclude_none=True),
+    "artifact-metadata": lambda d: ArtifactMetadata.model_validate(d).model_dump(
+        mode="json", exclude_none=True
+    ),
 }
 
 

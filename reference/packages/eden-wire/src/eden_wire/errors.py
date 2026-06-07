@@ -46,6 +46,7 @@ __all__ = [
     "ExperimentIdMismatch",
     "Forbidden",
     "InvalidPath",
+    "PayloadTooLarge",
     "ProblemJson",
     "Unauthorized",
     "WireError",
@@ -86,7 +87,20 @@ class Forbidden(WireError):
     Used for principal-class mismatches per
     [`spec/v0/07-wire-protocol.md`](../../../../spec/v0/07-wire-protocol.md)
     §13.3 (e.g. a worker bearer hitting an admin-gated route, or
-    vice versa). Returns HTTP 403.
+    vice versa), and for the §16.2 row-scoped `fetch_artifact` ACL miss
+    (a worker that is neither the artifact's depositor nor admin-class).
+    Returns HTTP 403.
+    """
+
+
+class PayloadTooLarge(WireError):
+    """A `deposit_artifact` upload exceeded the configured size cap.
+
+    Raised by the §16.1 deposit handler when the streamed multipart read
+    crosses ``--max-artifact-bytes``. Normative (closed §9 vocabulary),
+    distinct from the reference-only ``ArtifactTooLarge`` (the 1 MiB
+    inline-render cap on the retired ``_reference`` serve route). Maps to
+    HTTP 413 ``eden://error/payload-too-large``.
     """
 
 
@@ -217,6 +231,11 @@ _TYPE_BY_EXC: dict[type[Exception], tuple[str, int, str]] = {
     ),
     Unauthorized: ("eden://error/unauthorized", 401, "Unauthorized"),
     Forbidden: ("eden://error/forbidden", 403, "Forbidden"),
+    PayloadTooLarge: (
+        "eden://error/payload-too-large",
+        413,
+        "Payload Too Large",
+    ),
     # Portable-checkpoint errors per spec/v0/07-wire-protocol.md §9 and
     # spec/v0/10-checkpoints.md. The eden-checkpoint
     # ExperimentIdMismatch is NOT registered here — the import-endpoint

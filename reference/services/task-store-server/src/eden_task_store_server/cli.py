@@ -133,6 +133,31 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--artifact-blob-dir",
+        default=None,
+        help=(
+            "Server-PRIVATE, writable directory for the §16 artifact blob "
+            "backend (07-wire-protocol.md §16; issue #166). Distinct from "
+            "--artifacts-dir (which backs the read-only legacy /_reference "
+            "serve route). When set, deposits persist durably here; when "
+            "unset, the deposit endpoint falls back to a NON-DURABLE "
+            "in-memory backend (a warning is logged). Issue #166."
+        ),
+    )
+    parser.add_argument(
+        "--max-artifact-bytes",
+        type=int,
+        default=None,
+        help=(
+            "Maximum size (bytes) of a single artifact deposited via "
+            "POST /v0/experiments/<id>/artifacts (07-wire-protocol.md "
+            "§16.1). Enforced during the multipart stream; over-cap "
+            "uploads get 413 eden://error/payload-too-large. Distinct "
+            "from the 1 MiB inline-render cap. Defaults to 100 MiB when "
+            "unset. Issue #166."
+        ),
+    )
+    parser.add_argument(
         "--readonly-password",
         default=None,
         help=(
@@ -220,6 +245,30 @@ def _resolve_store_url(args: argparse.Namespace, log: Any) -> str:
     return str(args.store_url)
 
 
+def _resolve_artifact_blob_dir(raw: str | None, log: Any) -> Path | None:
+    """Resolve the §16 artifact blob dir, warning loudly when absent (issue #166).
+
+    Without ``--artifact-blob-dir`` the deposit endpoint falls back to a
+    non-durable in-memory backend: deposited bytes are lost on restart while
+    their metadata row persists, so a previously-returned ``artifacts_uri``
+    then fetches as 404. Acceptable only for tests / ``:memory:`` stores; a
+    durable deployment MUST set the flag (a server-private writable dir,
+    distinct from ``--artifacts-dir``).
+    """
+    if raw:
+        return Path(raw)
+    log.warning(
+        "no --artifact-blob-dir set: the §16 artifact deposit endpoint will "
+        "use a NON-DURABLE in-memory backend — deposited bytes are lost on "
+        "restart while their metadata row persists, so a previously-returned "
+        "artifacts_uri then fetches as 404. A durable deployment MUST pass "
+        "--artifact-blob-dir. The reference Compose stack wires this as part "
+        "of the #290 cutover, since no writer deposits over the wire yet "
+        "(issue #166)."
+    )
+    return None
+
+
 def main(argv: list[str] | None = None) -> int:
     """Entry point for ``python -m eden_task_store_server``."""
     args = parse_args(argv)
@@ -265,11 +314,14 @@ def main(argv: list[str] | None = None) -> int:
             if args.checkpoint_import_credentials_dir
             else None
         )
+        artifact_blob_dir = _resolve_artifact_blob_dir(args.artifact_blob_dir, log)
         app = build_app(
             store=store,
             admin_token=args.admin_token,
             subscribe_timeout=args.subscribe_timeout,
             artifacts_dir=artifacts_dir,
+            artifact_blob_dir=artifact_blob_dir,
+            max_artifact_bytes=args.max_artifact_bytes,
             checkpoint_experiment_config=experiment_config_text,
             checkpoint_repo_path=args.repo_path,
             checkpoint_import_credentials_dir=credentials_dir,

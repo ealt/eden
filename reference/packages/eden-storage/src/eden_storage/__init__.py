@@ -10,6 +10,11 @@ live in [`errors.py`](errors.py) and [`submissions.py`](submissions.py).
 from ._base import RESERVED_GROUP_NAMES, RESERVED_WORKER_NAMES
 from ._checkpoint import ImportResult
 from ._ops.events import iter_events_by_type
+from .artifact_backend import (
+    ArtifactBackend,
+    FileArtifactBackend,
+    InMemoryArtifactBackend,
+)
 from .errors import (
     AlreadyExists,
     ConflictingResubmission,
@@ -30,7 +35,7 @@ from .errors import (
 )
 from .memory import InMemoryStore
 from .postgres import PostgresStore, ensure_readonly_role
-from .protocol import Store
+from .protocol import ArtifactStore, Store
 from .sqlite import SqliteStore
 from .submissions import (
     EvaluationSubmission,
@@ -42,12 +47,16 @@ from .submissions import (
 
 __all__ = [
     "AlreadyExists",
+    "ArtifactBackend",
+    "ArtifactStore",
     "ConflictingResubmission",
     "CycleDetected",
     "DispatchError",
     "EvaluationSubmission",
+    "FileArtifactBackend",
     "IllegalTransition",
     "VariantSubmission",
+    "InMemoryArtifactBackend",
     "InMemoryStore",
     "InvalidName",
     "InvalidPrecondition",

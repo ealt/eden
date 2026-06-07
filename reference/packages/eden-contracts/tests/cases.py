@@ -3116,6 +3116,110 @@ EXPERIMENT_CASES: list[Case] = [
 ]
 
 
+_HEX32 = "0" * 32
+
+ARTIFACT_METADATA_CASES: list[Case] = [
+    Case(
+        "minimal",
+        {
+            "opaque_id": _HEX32,
+            "created_by": "eric",
+            "size_bytes": 1024,
+            "content_type": "application/gzip",
+            "created_at": _DT,
+        },
+        True,
+    ),
+    Case(
+        "admin_depositor",
+        {
+            "opaque_id": "a1b2c3d4" * 4,
+            "created_by": "admin",
+            "size_bytes": 0,
+            "content_type": "text/markdown",
+            "created_at": _DT2,
+        },
+        True,
+    ),
+    Case(
+        "opaque_id_too_short",
+        {
+            "opaque_id": "0" * 31,
+            "created_by": "eric",
+            "size_bytes": 1,
+            "content_type": "text/plain",
+            "created_at": _DT,
+        },
+        False,
+    ),
+    Case(
+        "opaque_id_uppercase_hex",
+        {
+            "opaque_id": "A" * 32,
+            "created_by": "eric",
+            "size_bytes": 1,
+            "content_type": "text/plain",
+            "created_at": _DT,
+        },
+        False,
+    ),
+    Case(
+        "opaque_id_with_path_separator",
+        {
+            "opaque_id": "0" * 30 + "/0",
+            "created_by": "eric",
+            "size_bytes": 1,
+            "content_type": "text/plain",
+            "created_at": _DT,
+        },
+        False,
+    ),
+    Case(
+        "created_by_empty",
+        {
+            "opaque_id": _HEX32,
+            "created_by": "",
+            "size_bytes": 1,
+            "content_type": "text/plain",
+            "created_at": _DT,
+        },
+        False,
+    ),
+    Case(
+        "size_bytes_negative",
+        {
+            "opaque_id": _HEX32,
+            "created_by": "eric",
+            "size_bytes": -1,
+            "content_type": "text/plain",
+            "created_at": _DT,
+        },
+        False,
+    ),
+    Case(
+        "content_type_empty",
+        {
+            "opaque_id": _HEX32,
+            "created_by": "eric",
+            "size_bytes": 1,
+            "content_type": "",
+            "created_at": _DT,
+        },
+        False,
+    ),
+    Case(
+        "missing_created_at",
+        {
+            "opaque_id": _HEX32,
+            "created_by": "eric",
+            "size_bytes": 1,
+            "content_type": "text/plain",
+        },
+        False,
+    ),
+]
+
+
 ALL_CASES: dict[str, list[Case]] = {
     "experiment-config": EXPERIMENT_CONFIG_CASES,
     "experiment": EXPERIMENT_CASES,
@@ -3126,4 +3230,5 @@ ALL_CASES: dict[str, list[Case]] = {
     "evaluation-schema": EVALUATION_SCHEMA_CASES,
     "worker": WORKER_CASES,
     "group": GROUP_CASES,
+    "artifact-metadata": ARTIFACT_METADATA_CASES,
 }

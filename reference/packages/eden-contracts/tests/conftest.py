@@ -20,6 +20,7 @@ from typing import Any
 
 from eden_contracts import (
     REGISTERED_EVENT_TYPES,
+    ArtifactMetadata,
     EvaluationSchema,
     Event,
     Experiment,
@@ -53,6 +54,7 @@ MODEL_NAMES: tuple[str, ...] = (
     "evaluation-schema",
     "worker",
     "group",
+    "artifact-metadata",
 )
 
 
@@ -165,6 +167,7 @@ _MODEL_VALIDATORS: dict[str, Callable[[Any], object]] = {
     "evaluation-schema": EvaluationSchema.model_validate,
     "worker": Worker.model_validate,
     "group": Group.model_validate,
+    "artifact-metadata": ArtifactMetadata.model_validate,
 }
 
 

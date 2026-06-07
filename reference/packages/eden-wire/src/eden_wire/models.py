@@ -22,6 +22,7 @@ from eden_contracts._common import (
     ExperimentId,
     MemberId,
     NotNone,
+    UriStr,
     WorkerId,
 )
 from pydantic import (
@@ -163,6 +164,19 @@ class WhoamiResponse(_WireBase):
 
     worker_id: WorkerId
     name: Annotated[DisplayName | None, NotNone] = None
+
+
+class DepositArtifactResponse(_WireBase):
+    """Body for a successful ``POST /v0/experiments/{E}/artifacts`` (§16.1).
+
+    Carries the opaque, server-issued ``artifacts_uri`` the depositor
+    stamps onto the idea / variant / submission it then creates, plus the
+    recorded byte size and content type.
+    """
+
+    artifacts_uri: UriStr
+    size_bytes: Annotated[int, Field(ge=0)]
+    content_type: Annotated[str, Field(min_length=1)]
 
 
 # ---------------------------------------------------------------------
@@ -325,6 +339,7 @@ __all__ = [
     "AddGroupMemberRequest",
     "ClaimRequest",
     "ClaimResponse",
+    "DepositArtifactResponse",
     "DispatchModeResponse",
     "DispatchModeUpdateRequest",
     "EventsResponse",

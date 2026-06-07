@@ -40,6 +40,7 @@ from pathlib import Path
 from typing import Any
 
 from eden_contracts import (
+    ArtifactMetadata,
     EvaluationSchema,
     Event,
     Experiment,
@@ -415,6 +416,14 @@ class SqliteStore(_StoreBase):
         )
         return [Group.model_validate_json(row[0]) for row in rows]
 
+    def _get_artifact(self, opaque_id: str) -> ArtifactMetadata | None:
+        row = self._conn.execute(
+            "SELECT data FROM artifact WHERE opaque_id = ?", (opaque_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        return ArtifactMetadata.model_validate_json(row[0])
+
     def _get_dispatch_mode(self) -> dict[str, str]:
         row = self._conn.execute(
             "SELECT dispatch_mode FROM experiment WHERE experiment_id = ?",
@@ -500,6 +509,8 @@ class SqliteStore(_StoreBase):
             self._conn.execute(
                 "DELETE FROM worker_group WHERE group_id = ?", (group_id,)
             )
+        for opaque_id, metadata in tx.artifacts.items():
+            self._upsert_artifact(opaque_id, metadata)
         if tx.dispatch_mode is not None:
             self._conn.execute(
                 "UPDATE experiment SET dispatch_mode = ? WHERE experiment_id = ?",
@@ -584,6 +595,15 @@ class SqliteStore(_StoreBase):
                 data = excluded.data
             """,
             (task_id, kind, data),
+        )
+
+    def _upsert_artifact(self, opaque_id: str, metadata: ArtifactMetadata) -> None:
+        self._conn.execute(
+            """
+            INSERT INTO artifact(opaque_id, data) VALUES(?, ?)
+            ON CONFLICT(opaque_id) DO UPDATE SET data = excluded.data
+            """,
+            (opaque_id, _serialize_model(metadata)),
         )
 
     def _insert_event(self, event: Event) -> None:

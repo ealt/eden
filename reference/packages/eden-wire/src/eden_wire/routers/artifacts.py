@@ -1,0 +1,266 @@
+"""Artifact deposit / fetch endpoints (chapter 7 §16, issue #166).
+
+Two normative ``/v0/`` endpoints hosted by the task-store-server:
+
+- ``POST /v0/experiments/{E}/artifacts`` — deposit: a single multipart
+  ``file`` part is streamed under a configurable size cap, persisted to
+  the :class:`~eden_storage.ArtifactBackend`, and recorded in the Store
+  with the depositing principal as ``created_by``. Returns an opaque
+  ``eden://artifacts/<id>`` URI.
+- ``GET /v0/experiments/{E}/artifacts/{A}`` — fetch: resolves the opaque
+  id, enforces the §13.3 per-row ACL (depositor or admin-class), and
+  returns the exact deposited bytes with safe-delivery headers.
+
+The size cap is enforced **during** the multipart stream via Starlette's
+``request.form(max_part_size=…)`` — over-cap parts raise
+``MultiPartException`` before the whole body is buffered, satisfying the
+§16.1 "MUST NOT require buffering the entire upload in memory" rule.
+"""
+
+from __future__ import annotations
+
+import re
+import secrets
+from collections.abc import Awaitable, Callable
+from typing import Any, cast
+
+from eden_storage import ArtifactStore
+from eden_storage.errors import NotFound
+from fastapi import APIRouter, Header, Request
+from fastapi.responses import Response
+from starlette.datastructures import UploadFile
+
+from .._artifact_fd import artifact_response_headers
+from .._dependencies import RouterDeps, check_experiment
+from ..auth import get_principal
+from ..errors import BadRequest, Forbidden, PayloadTooLarge
+from ..models import DepositArtifactResponse
+
+# Multipart framing overhead (boundary lines, the part's Content-
+# Disposition / Content-Type headers) above the artifact bytes. The raw
+# request body is streamed under ``cap + _MULTIPART_SLACK`` so a hostile
+# over-cap upload is rejected before it can exhaust memory or disk; the
+# exact artifact cap is then re-checked against the parsed part's bytes.
+_MULTIPART_SLACK = 64 * 1024
+
+
+_ARTIFACT_URI_PREFIX = "eden://artifacts/"
+_OPAQUE_ID_RE = re.compile(r"^[0-9a-f]{32}$")
+
+
+def build_router(deps: RouterDeps) -> APIRouter:
+    """Build the artifact deposit / fetch router (§16)."""
+    router = APIRouter(prefix="/v0/experiments/{experiment_id}/artifacts")
+    router.post("", status_code=201)(_deposit_artifact(deps))
+    router.get("")(_fetch_artifact(deps))
+    return router
+
+
+def _opaque_id_from_uri(uri: str) -> str:
+    """Map a full reference ``artifacts_uri`` back to its opaque id (§16.2).
+
+    The client presents the whole opaque URI; the *issuing* server (this
+    one) parses ITS OWN scheme — opacity (§1.5) binds clients, not the
+    issuer. A URI that is not a well-formed ``eden://artifacts/<32hex>`` is
+    treated as unrecognized → ``NotFound`` (404), exactly like an
+    absent id.
+    """
+    if not uri.startswith(_ARTIFACT_URI_PREFIX):
+        raise NotFound(f"unrecognized artifact uri {uri!r}")
+    rest = uri[len(_ARTIFACT_URI_PREFIX) :]
+    if not _OPAQUE_ID_RE.fullmatch(rest):
+        raise NotFound(f"unrecognized artifact uri {uri!r}")
+    return rest
+
+
+def _depositor_id(deps: RouterDeps, request: Request) -> str:
+    """Return the ``created_by`` stamp for a deposit (§13.3).
+
+    Worker bearer → its ``worker_id``; admin bearer → the literal
+    ``admin`` principal. When auth is disabled (test / in-process
+    posture) every caller collapses onto the ``anonymous`` sentinel.
+    """
+    if deps.admin_token is None:
+        return "anonymous"
+    principal = get_principal(request)
+    if principal.is_worker():
+        assert principal.worker_id is not None
+        return principal.worker_id
+    return "admin"
+
+
+def _authorize_fetch(deps: RouterDeps, request: Request, created_by: str) -> None:
+    """Enforce the §16.2 per-row fetch ACL (depositor or admin-class).
+
+    A no-op when auth is disabled. Otherwise the principal must be the
+    artifact's depositor, the literal ``admin`` bearer, or a member of
+    the ``admins`` group; anyone else — including a *different* worker —
+    gets 403 ``eden://error/forbidden``.
+    """
+    if deps.admin_token is None:
+        return
+    principal = get_principal(request)
+    if principal.is_admin():
+        return
+    assert principal.worker_id is not None
+    if principal.worker_id == created_by:
+        return
+    # Since the #128 identity rename, group ids are minted `grp_*`; the
+    # `admins` authority group is identified by its reserved display NAME.
+    # Resolve the name to its minted group_id (mirrors
+    # `_dependencies.enforce_in_any_group`) before the membership check.
+    for group in deps.store.list_groups(name="admins"):
+        if deps.store.resolve_worker_in_group(principal.worker_id, group.group_id):
+            return
+    raise Forbidden(
+        f"worker {principal.worker_id!r} may not fetch an artifact deposited "
+        f"by {created_by!r} (§16.2: depositor or admin-class only)"
+    )
+
+
+def _sanitize_content_type(declared: str | None) -> str:
+    """Reduce a declared content type to a header-safe single line.
+
+    Strips CR/LF and other control characters (header-injection defense)
+    and falls back to ``application/octet-stream`` when absent or empty.
+    """
+    if not declared:
+        return "application/octet-stream"
+    cleaned = "".join(ch for ch in declared if 32 <= ord(ch) < 127).strip()
+    return cleaned or "application/octet-stream"
+
+
+async def _read_body_capped(request: Request, limit: int) -> bytes:
+    """Stream the raw request body, aborting once it crosses ``limit``.
+
+    Enforces the §16.1 "MUST NOT buffer the entire upload before the size
+    check" rule: a hostile over-cap upload is rejected mid-stream before
+    it can exhaust memory or spill unbounded to disk. Starlette's
+    ``request.form(max_part_size=…)`` does NOT cover file parts (it caps
+    only non-file fields), so the cap is enforced here instead.
+    """
+    body = bytearray()
+    async for chunk in request.stream():
+        # Check BEFORE appending so a single over-limit chunk is never
+        # buffered — the streamed cap must bound memory, not just detect
+        # the overage after the fact.
+        if len(body) + len(chunk) > limit:
+            raise PayloadTooLarge(
+                f"artifact upload exceeds the {limit}-byte streamed cap"
+            )
+        body.extend(chunk)
+    return bytes(body)
+
+
+def _replay_receive(body: bytes) -> Callable[[], Awaitable[dict[str, Any]]]:
+    """Build an ASGI ``receive`` that replays an already-read body once.
+
+    Lets the handler re-run Starlette's multipart parser over the
+    capped-in-memory body without re-reading the (already-consumed)
+    network stream.
+    """
+    sent = False
+
+    async def receive() -> dict[str, Any]:
+        nonlocal sent
+        if sent:
+            return {"type": "http.disconnect"}
+        sent = True
+        return {"type": "http.request", "body": body, "more_body": False}
+
+    return receive
+
+
+def _deposit_artifact(deps: RouterDeps):  # noqa: ANN202 — FastAPI handler factory
+    async def deposit_artifact(
+        request: Request,
+        experiment_id: str,
+        x_eden_experiment_id: str | None = Header(None),
+    ) -> dict[str, object]:
+        check_experiment(deps, experiment_id, x_eden_experiment_id)
+        created_by = _depositor_id(deps, request)
+        cap = deps.max_artifact_bytes
+        raw = await _read_body_capped(request, cap + _MULTIPART_SLACK)
+        # Re-parse the capped body through Starlette's multipart machinery
+        # (a fresh Request over a replay receive — the network stream is
+        # already consumed). A malformed multipart body (e.g. no boundary)
+        # raises a Starlette parser error that is NOT in the wire exception
+        # map; catch it and re-raise BadRequest so §9 problem+json holds.
+        reparsed = Request(request.scope, _replay_receive(raw))
+        try:
+            form = await reparsed.form()
+        except BadRequest:
+            raise
+        except Exception as exc:  # noqa: BLE001 — untrusted multipart body
+            raise BadRequest(f"malformed multipart deposit body: {exc}") from exc
+        try:
+            # §16.1: the body is EXACTLY one part named `file`. Reject
+            # ambiguous bodies (multiple parts, extra fields, a different
+            # key) rather than silently picking one — otherwise the server
+            # could persist bytes the caller did not intend.
+            items = form.multi_items()
+            if len(items) != 1 or items[0][0] != "file":
+                raise BadRequest(
+                    "deposit body must be multipart/form-data with exactly "
+                    "one 'file' part"
+                )
+            upload = items[0][1]
+            if not isinstance(upload, UploadFile):
+                raise BadRequest("the 'file' part must be a file upload")
+            data = await upload.read()
+            content_type = _sanitize_content_type(upload.content_type)
+        finally:
+            await form.close()
+        if len(data) > cap:
+            raise PayloadTooLarge(
+                f"artifact ({len(data)} bytes) exceeds the {cap}-byte deposit cap"
+            )
+        opaque_id = secrets.token_hex(16)
+        deps.artifact_backend.store(opaque_id, data)
+        cast(ArtifactStore, deps.store).create_artifact(
+            opaque_id=opaque_id,
+            created_by=created_by,
+            size_bytes=len(data),
+            content_type=content_type,
+        )
+        return DepositArtifactResponse(
+            artifacts_uri=f"eden://artifacts/{opaque_id}",
+            size_bytes=len(data),
+            content_type=content_type,
+        ).model_dump(mode="json")
+
+    return deposit_artifact
+
+
+def _fetch_artifact(deps: RouterDeps):  # noqa: ANN202 — FastAPI handler factory
+    async def fetch_artifact(
+        request: Request,
+        experiment_id: str,
+        uri: str | None = None,
+        x_eden_experiment_id: str | None = Header(None),
+    ) -> Response:
+        check_experiment(deps, experiment_id, x_eden_experiment_id)
+        # §16.2: the client presents the full opaque artifacts_uri verbatim
+        # (never parsing it); the issuing server maps it back to the id.
+        if uri is None:
+            raise BadRequest("fetch requires the 'uri' query parameter (§16.2)")
+        opaque_id = _opaque_id_from_uri(uri)
+        # read_artifact raises NotFound (→ 404) for an absent id, BEFORE
+        # the ACL check so a different worker cannot use 403-vs-404 to
+        # probe which ids exist beyond their own — the reference posture
+        # returns 404 for absent, 403 for present-but-unauthorized (§16.2).
+        metadata = cast(ArtifactStore, deps.store).read_artifact(opaque_id)
+        _authorize_fetch(deps, request, metadata.created_by)
+        data = deps.artifact_backend.load(opaque_id)
+        headers = artifact_response_headers(opaque_id)
+        # Set Content-Type via the raw header (NOT Response(media_type=…)):
+        # Starlette appends "; charset=utf-8" to a text/* media_type, which
+        # would mutate the recorded content_type. §16.2 requires returning
+        # the content_type exactly as recorded at deposit.
+        headers["Content-Type"] = metadata.content_type
+        return Response(content=data, headers=headers)
+
+    return fetch_artifact
+
+
+__all__ = ["build_router"]

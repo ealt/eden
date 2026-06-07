@@ -27,6 +27,7 @@ from eden_wire.models import (
     AddGroupMemberRequest,
     ClaimRequest,
     ClaimResponse,
+    DepositArtifactResponse,
     DispatchModeResponse,
     DispatchModeUpdateRequest,
     EventsResponse,
@@ -501,6 +502,34 @@ class TestPolicyErrorRequestParity:
                     "error_message": "y",
                     "extra": "field",
                 },
+            )
+
+
+class TestDepositArtifactResponseParity:
+    def test_accept(self) -> None:
+        model = DepositArtifactResponse(
+            artifacts_uri="eden://artifacts/" + "0" * 32,
+            size_bytes=2048,
+            content_type="application/gzip",
+        )
+        _validate_against(
+            "deposit-artifact-response.schema.json",
+            model.model_dump(mode="json", exclude_none=True),
+        )
+
+    def test_model_rejects_negative_size(self) -> None:
+        with pytest.raises(ValidationError):
+            DepositArtifactResponse(
+                artifacts_uri="eden://artifacts/" + "0" * 32,
+                size_bytes=-1,
+                content_type="text/plain",
+            )
+
+    def test_schema_rejects_missing_field(self) -> None:
+        with pytest.raises(jsonschema.ValidationError):
+            _validate_against(
+                "deposit-artifact-response.schema.json",
+                {"artifacts_uri": "eden://artifacts/" + "0" * 32, "size_bytes": 1},
             )
 
 

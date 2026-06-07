@@ -120,6 +120,15 @@ resulting `file://` URI as the idea's `artifacts_uri` (the
 entity-hierarchical layout — see §10). If `content` is absent,
 the subprocess MUST set `artifacts_uri` explicitly.
 
+> *Wire-transfer migration (issue #166).* Issue #166 added the
+> wire-level `deposit_artifact` / `fetch_artifact` endpoints
+> ([chapter 7 §16](../07-wire-protocol.md)); under the deferred hard
+> cutover ([#290](https://github.com/ealt/eden/issues/290)) the host
+> will instead **deposit** the content bytes over the wire and stamp
+> the returned opaque `eden://artifacts/<id>` URI. The `file://`
+> layout described here is the current reference-host behavior until
+> that cutover lands.
+
 An `ideation-error` terminator submits a chapter-3 `IdeaSubmission`
 with `status="error"`.
 
@@ -216,7 +225,10 @@ no free-form field; see §5).
     "artifacts_uri": "file:///…"}
    ```
 
-   or `{"status": "error" | "evaluation_error"}`.
+   or `{"status": "error" | "evaluation_error"}`. (Under the deferred
+   #166 cutover the host stages the subprocess's artifact bytes and
+   deposits them over the wire, stamping an `eden://artifacts/<id>`
+   URI — see §10.)
 5. Validate evaluation against `evaluation_schema` via
    `Store.validate_evaluation`. Validation failures route to
    `evaluation_error`.
@@ -643,3 +655,14 @@ requirement: chapter 8 §5.1 keeps the artifact-store naming scheme
 "implementation-defined" and chapter 2 §1.5 keeps `artifacts_uri` an
 opaque deployment-local URI. Conforming alternative implementations may
 lay out artifacts however they like.
+
+> *Wire-transfer migration (issue #166).* Issue #166 added the
+> wire-level `deposit_artifact` / `fetch_artifact` endpoints
+> ([chapter 7 §16](../07-wire-protocol.md)) + a server-private blob
+> backend keyed by an opaque `eden://artifacts/<opaque-id>` URI. Under
+> the deferred hard cutover ([#290](https://github.com/ealt/eden/issues/290))
+> the reference hosts + web-UI **build the artifact blob in memory and
+> deposit it over the wire** instead of writing this `file://` layout,
+> the bundle viewer reads entries from a fetched blob in memory, and the
+> physical layout becomes server-internal. The `file://` layout above is
+> the current reference-host behavior until that cutover lands.

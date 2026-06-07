@@ -13,6 +13,7 @@ from ._common import (
     mint_opaque_id,
     mint_ulid,
 )
+from .artifact import ArtifactMetadata
 from .config import (
     AutoCheckpointConfig,
     BaselineConfig,
@@ -85,6 +86,7 @@ from .worker import Worker, WorkerLabels
 __all__ = [
     "REGISTERED_EVENT_TYPES",
     "ActorId",
+    "ArtifactMetadata",
     "CommitSha",
     "DateTimeStr",
     "DisplayName",

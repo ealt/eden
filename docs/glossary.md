@@ -97,7 +97,7 @@ workers may claim the same kind of task.
 | **slug** | An idea's short kebab-case label; matches `^[a-z0-9][a-z0-9-]*$`. Used in branch naming. |
 | **priority** | Per-idea ordering hint (number; "higher dispatches earlier" — currently SHOULD-level, not enforced). |
 | **parent_commits** | One or more commit SHAs an idea/variant is based on. |
-| **artifacts_uri** | URI pointing at idea-content or evaluator artifacts (typically `file://` in the reference impl). |
+| **artifacts_uri** | Opaque URI pointing at idea-content or evaluator artifacts. The reference deployment issues `eden://artifacts/<opaque-id>` from a wire-level deposit (see §5); opaque to clients per `02-data-model.md` §1.5. (Pre-#166 the reference impl stamped `file://` paths against a shared mount.) |
 | **task kind** | A task's role-routing label (`ideation` / `execution` / `evaluation`); discriminates which role contract claims it (§3.2). The bare term "kind" on a `Task` means this. |
 | **variant kind** | A variant's optional classifier on `Variant.kind`. Absent (the default) for ordinary executor-produced variants; `"baseline"` marks the seed baseline variant (`02-data-model.md` §9.4). Distinct from *task kind* — same field name, different entity. |
 | **payload** | A task's role-specific inner content. |
@@ -184,13 +184,15 @@ error.
 |---|---|---|
 | **task store** | Durable store of tasks, ideas, variants, submissions; provides atomic claim and idempotent submit | [`08-storage.md`](../spec/v0/08-storage.md) |
 | **event log** | Append-only ordered log of events; provides replay and subscribe | [`05-event-protocol.md`](../spec/v0/05-event-protocol.md) |
-| **artifact store** | Holds content documents, evaluator artifacts, etc., addressed by URI | [`08-storage.md`](../spec/v0/08-storage.md) §5 (deferred) |
-| **artifact layout** | The reference deployment's on-disk grouping of artifacts: `ideas/<idea_id>/` (ideator) and `variants/<variant_id>/{executor,evaluator}/` (executor / evaluator), under `artifacts/`. Top-level dirs use the artifact noun (`ideas` / `variants`); variant sub-dirs use the producing-role noun. A reference-binding detail, not a normative scheme — `08-storage.md` §5.1 keeps the naming "implementation-defined". | [worker-host-subprocess](../spec/v0/reference-bindings/worker-host-subprocess.md) §10 |
+| **artifact store** | Holds content documents, evaluator artifacts, etc., addressed by URI. Exposed on the wire as the `deposit_artifact` / `fetch_artifact` endpoints (issue #166); the bytes live behind an `ArtifactBackend` (local-file today; S3/GCS deferred to [#174](https://github.com/ealt/eden/issues/174)) keyed by an opaque id, with attribution / size / content-type in a `Store` metadata row. | [`08-storage.md`](../spec/v0/08-storage.md) §5, [`07-wire-protocol.md`](../spec/v0/07-wire-protocol.md) §16 |
+| **`eden://artifacts/<opaque-id>`** | The opaque, server-issued `artifacts_uri` the reference deployment mints from a wire-level artifact deposit ([`07-wire-protocol.md`](../spec/v0/07-wire-protocol.md) §16.1). **Opaque to clients** — never parsed for structure; resolved only by presenting it to `fetch_artifact`. Reuses the `eden://` authority but is **role-disjoint** from `eden://error/<name>`: artifact URIs are *resolvable locators* (the GET endpoint returns bytes), whereas error URIs are *non-resolvable type codes* (§9 closed vocabulary). | [`02-data-model.md`](../spec/v0/02-data-model.md) §1.5, [`07-wire-protocol.md`](../spec/v0/07-wire-protocol.md) §16 |
+| **`ArtifactBackend`** | The reference blob store behind the artifact endpoints: bytes-in (`store`) / bytes-out (`load`), metadata-free by design so an S3/GCS backend ([#174](https://github.com/ealt/eden/issues/174)) drops in without wire changes. `FileArtifactBackend` (exclusive-create blobs under `--artifacts-dir`) + `InMemoryArtifactBackend` ship today. | [`08-storage.md`](../spec/v0/08-storage.md) §5.5 |
 
 In the reference impl, all three are backed by Postgres + the
 deployment filesystem; the protocol abstracts over the choice. The
-**artifact layout** above is the reference deployment's concrete naming
-scheme, pinned in the worker-host-subprocess binding §10.
+artifact store's physical layout is **server-internal** (behind the
+opaque `eden://artifacts/<opaque-id>` URI); clients deposit and fetch
+bytes over the wire and never name a storage path.
 
 ## 6. Git topology
 

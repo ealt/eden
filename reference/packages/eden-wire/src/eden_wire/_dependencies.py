@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from eden_storage import Store
+from eden_storage import ArtifactBackend, Store
 from fastapi import Request
 
 from .auth import require_worker
@@ -48,6 +48,10 @@ class RouterDeps:
     checkpoint_repo_root: Path | None
     checkpoint_config_text: str
     credentials_dir_root: Path | None
+    # Issue #166: the blob backend behind the §16 deposit / fetch
+    # endpoints, plus the §16.1 deposit size cap (bytes).
+    artifact_backend: ArtifactBackend
+    max_artifact_bytes: int
 
 
 def check_experiment(

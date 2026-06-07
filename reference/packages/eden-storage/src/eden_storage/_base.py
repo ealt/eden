@@ -60,6 +60,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from eden_contracts import (
+    ArtifactMetadata,
     EvaluationSchema,
     Event,
     ExecutionTask,
@@ -197,6 +198,11 @@ class _Tx:
     # value to write (the inner value MAY be ``None``). Staged on
     # checkpoint import so the field round-trips (`10-checkpoints.md` §5).
     base_commit_sha_update: tuple[str | None] | None = None
+    # Artifact metadata rows (issue #166). Keyed by opaque_id. Not bound
+    # to any task/idea/variant transition and carry no event — the
+    # artifact store is a separate store (`08-storage.md` §5) and a
+    # deposit precedes the object that references its URI.
+    artifacts: dict[str, ArtifactMetadata] = field(default_factory=dict)
 
 
 
@@ -399,6 +405,10 @@ class _StoreCore:
         """Return the stored group, or ``None`` if absent."""
         raise NotImplementedError
 
+    def _get_artifact(self, opaque_id: str) -> ArtifactMetadata | None:
+        """Return the artifact metadata row, or ``None`` if absent (issue #166)."""
+        raise NotImplementedError
+
     def _iter_groups(self) -> Iterable[Group]:
         """Iterate registered groups (any order; backends sort by ``group_id``)."""
         raise NotImplementedError
@@ -594,6 +604,7 @@ class _StoreCore:
         raise NotImplementedError
 
 
+from ._ops.artifacts import _ArtifactOpsMixin  # noqa: E402
 from ._ops.events import _EventOpsMixin  # noqa: E402
 from ._ops.experiment import _ExperimentOpsMixin  # noqa: E402
 from ._ops.groups import _GroupOpsMixin  # noqa: E402
@@ -609,6 +620,7 @@ class _StoreBase(
     _TaskLifecycleOpsMixin,
     _IdeaOpsMixin,
     _VariantOpsMixin,
+    _ArtifactOpsMixin,
     _EventOpsMixin,
     _ExperimentOpsMixin,
     _WorkerOpsMixin,
@@ -632,11 +644,12 @@ class _StoreBase(
 
 # Module-load-time MRO guard (plan §6 / §8.1): a future bases reorder
 # fails loud on first import rather than as a subtle dispatch bug.
-assert _StoreBase.__mro__[1:10] == (
+assert _StoreBase.__mro__[1:11] == (
     _TaskCreateOpsMixin,
     _TaskLifecycleOpsMixin,
     _IdeaOpsMixin,
     _VariantOpsMixin,
+    _ArtifactOpsMixin,
     _EventOpsMixin,
     _ExperimentOpsMixin,
     _WorkerOpsMixin,

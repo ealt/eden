@@ -37,6 +37,8 @@ Commit SHAs are lowercase hexadecimal strings of one of the two lengths git supp
 
 Artifact locations are URIs. The protocol does not mandate a scheme; file URLs, S3 URLs, or custom schemes are permitted. A conforming artifact store MUST document which schemes it issues.
 
+An `artifacts_uri` is **opaque** from the client's perspective: a client MUST NOT parse it for structure, MUST NOT assume it maps to a filesystem path or any other storage layout, and resolves it only through whatever fetch operation the issuing store exposes. The reference deployment issues `eden://artifacts/<opaque-id>` from a wire-level deposit and resolves it server-side through the chapter-7 artifact endpoints ([`07-wire-protocol.md`](07-wire-protocol.md) §16); this satisfies the "MUST document which schemes it issues" requirement above. (The `eden://` authority is role-disjoint here from the non-resolvable `eden://error/...` type URIs of [`07-wire-protocol.md`](07-wire-protocol.md) §9 — see [`docs/glossary.md`](../../docs/glossary.md).)
+
 The deployment-issued `artifacts_uri` on an idea or variant ([§5.1](#51-fields), [§9.1](#91-fields)) is **deployment-local**: a URI issued by deployment A is not expected to resolve in deployment B. Portable export/import normalizes references to the content-addressed `checkpoint:sha256:<hex>` form defined in [`10-checkpoints.md`](10-checkpoints.md) §7; consumers rewriting URIs across deployments MUST use that scheme rather than carrying deployment-local URIs across the wire.
 
 ### 1.6 Opaque entity identifiers

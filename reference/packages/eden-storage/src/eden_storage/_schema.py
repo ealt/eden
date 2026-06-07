@@ -263,6 +263,26 @@ def _apply_v8(conn: sqlite3.Connection) -> None:
         conn.execute(stmt)
 
 
+# Issue #166: the artifact-metadata store. `data` carries the canonical
+# ArtifactMetadata JSON (`spec/v0/schemas/artifact-metadata.schema.json`);
+# the bytes themselves live in a separate ArtifactBackend, not here. No
+# event accompanies an artifact row (the artifact store is distinct from
+# the event log — `08-storage.md` §5).
+_V9_STATEMENTS: list[str] = [
+    """
+    CREATE TABLE artifact (
+        opaque_id TEXT NOT NULL PRIMARY KEY,
+        data TEXT NOT NULL
+    )
+    """,
+]
+
+
+def _apply_v9(conn: sqlite3.Connection) -> None:
+    for stmt in _V9_STATEMENTS:
+        conn.execute(stmt)
+
+
 _MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _apply_v1,
     _apply_v2,
@@ -272,6 +292,7 @@ _MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _apply_v6,
     _apply_v7,
     _apply_v8,
+    _apply_v9,
 ]
 
 

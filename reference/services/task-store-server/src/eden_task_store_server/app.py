@@ -9,11 +9,13 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 from eden_contracts import ExperimentConfig
 from eden_git import GitError, GitRepo
 from eden_service_common import load_experiment_config
 from eden_storage import (
+    FileArtifactBackend,
     InMemoryStore,
     PostgresStore,
     SqliteStore,
@@ -128,12 +130,38 @@ def build_store(
     )
 
 
+def _reject_blob_dir_overlap(
+    blob_dir: Path | str, artifacts_dir: Path | str | None
+) -> None:
+    """Reject a §16 blob dir that overlaps the legacy ``--artifacts-dir``.
+
+    The legacy ``--artifacts-dir`` is served by the unauthenticated
+    ``/_reference/.../artifacts/{path}`` route. If the server-private §16
+    blob dir is equal to / nested in / a parent of it, a worker who learns
+    an opaque id could fetch deposited bytes through the reference path,
+    bypassing the §16.2 depositor/admin ACL. Fail fast at startup.
+    """
+    if artifacts_dir is None:
+        return
+    blob = Path(blob_dir).resolve()
+    arts = Path(artifacts_dir).resolve()
+    if blob == arts or blob.is_relative_to(arts) or arts.is_relative_to(blob):
+        raise SystemExit(
+            f"--artifact-blob-dir ({blob}) must not overlap --artifacts-dir "
+            f"({arts}): the legacy /_reference artifact route serves the "
+            "latter unauthenticated, which would bypass the §16.2 fetch ACL "
+            "(issue #166)."
+        )
+
+
 def build_app(
     *,
     store: Store,
     admin_token: str | None = None,
     subscribe_timeout: float = 30.0,
     artifacts_dir: Path | str | None = None,
+    artifact_blob_dir: Path | str | None = None,
+    max_artifact_bytes: int | None = None,
     checkpoint_experiment_config: str | None = None,
     checkpoint_repo_path: Path | str | None = None,
     checkpoint_import_credentials_dir: Path | str | None = None,
@@ -174,6 +202,19 @@ def build_app(
     minted by the import (§8 is normative) but the wire surface only
     warns; operators must reissue manually via the admin endpoint.
     """
+    make_app_kwargs: dict[str, Any] = {}
+    if max_artifact_bytes is not None:
+        # Issue #166: the §16.1 deposit size cap. When unset, make_app's
+        # DEFAULT_MAX_ARTIFACT_BYTES applies.
+        make_app_kwargs["max_artifact_bytes"] = max_artifact_bytes
+    if artifact_blob_dir is not None:
+        # Issue #166: the §16 blob backend's server-PRIVATE writable root,
+        # distinct from --artifacts-dir (which backs the read-only legacy
+        # /_reference serve route). Without it the deposit endpoint falls
+        # back to a non-durable in-memory backend — see the warning the
+        # CLI logs.
+        _reject_blob_dir_overlap(artifact_blob_dir, artifacts_dir)
+        make_app_kwargs["artifact_backend"] = FileArtifactBackend(artifact_blob_dir)
     return make_app(
         store,
         admin_token=admin_token,
@@ -182,6 +223,7 @@ def build_app(
         checkpoint_experiment_config=checkpoint_experiment_config,
         checkpoint_repo_path=checkpoint_repo_path,
         checkpoint_import_credentials_dir=checkpoint_import_credentials_dir,
+        **make_app_kwargs,
     )
 
 
