@@ -28,7 +28,15 @@ CLUSTER="${EDEN_KIND_CLUSTER:-eden-helm-smoke}"
 NAMESPACE="eden-ci"
 RELEASE="eden"
 IMAGE="eden-reference:ci"
-EXPERIMENT_ID="exp-1"
+# Mint a valid opaque exp_* id (#128 grammar ^exp_[0-9a-hjkmnp-tv-z]{26}$). An
+# operator-typed mnemonic like "exp-1" is rejected by the event model at runtime,
+# so the smoke must drive a real opaque id end-to-end.
+EXPERIMENT_ID="$(python3 -c '
+import secrets, time
+alphabet = "0123456789abcdefghjkmnpqrstvwxyz"
+value = ((int(time.time() * 1000) & ((1 << 48) - 1)) << 80) | secrets.randbits(80)
+print("exp_" + "".join(alphabet[(value >> (5 * i)) & 31] for i in range(26))[::-1])
+')"
 # Quiescence budget: the orchestrator runs forever (maxQuiescentIterations=0),
 # so we poll for the integration end-state rather than for a clean exit.
 DEADLINE_SECONDS="${EDEN_HELM_SMOKE_DEADLINE:-240}"

@@ -347,6 +347,51 @@ def test_quiescent_iterations_rejects_one_and_non_int() -> None:
 
 
 # ----------------------------------------------------------------------
+# _resolve_single_experiment_max_quiescent (Phase 13a Decision 9 + #157)
+# ----------------------------------------------------------------------
+
+
+def test_single_experiment_max_quiescent_cli_zero_overrides_config() -> None:
+    """CLI 0 (substrate never-exit override) wins over the experiment-config.
+
+    The Kubernetes chart passes ``--max-quiescent-iterations 0`` so the
+    orchestrator never quiesce-exits (restartPolicy: Always would restart-loop
+    a clean exit). #157 otherwise makes the experiment-config field the source
+    of truth, but the never-exit sentinel is a substrate property and must
+    override it — even when the config sets a concrete budget.
+    """
+    from eden_orchestrator.cli import _resolve_single_experiment_max_quiescent
+
+    assert (
+        _resolve_single_experiment_max_quiescent(cli_value=0, config_value=30)
+        == 0
+    )
+    assert (
+        _resolve_single_experiment_max_quiescent(cli_value=0, config_value=None)
+        == 0
+    )
+
+
+def test_single_experiment_max_quiescent_nonzero_cli_defers_to_config() -> None:
+    """A non-zero CLI value still defers to the config field (#157 preserved)."""
+    from eden_orchestrator.cli import (
+        _MAX_QUIESCENT_ITERATIONS_FLAG_DEFAULT,
+        _resolve_single_experiment_max_quiescent,
+    )
+
+    # Config value wins over the (non-zero) CLI flag.
+    assert (
+        _resolve_single_experiment_max_quiescent(cli_value=3, config_value=30)
+        == 30
+    )
+    # Config omitted → reference default, NOT the CLI value.
+    assert (
+        _resolve_single_experiment_max_quiescent(cli_value=99, config_value=None)
+        == _MAX_QUIESCENT_ITERATIONS_FLAG_DEFAULT
+    )
+
+
+# ----------------------------------------------------------------------
 # _ensure_orchestrators_membership
 # ----------------------------------------------------------------------
 

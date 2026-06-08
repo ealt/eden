@@ -6,10 +6,15 @@ the Kubernetes analogue of the Compose deployment documented in
 [`reference/compose/README.md`](../../reference/compose/README.md).
 
 The Helm deployment is **parallel** to Compose, not a replacement. Both are
-first-class v0 substrates running the full Phase-12 protocol (workers + groups +
-leases + control plane + portable checkpoints). Compose is the
-local-development path; Helm is the production-ish path. The two are independent
-deployments — you cannot "upgrade" a Compose stack to Helm without exporting via
+first-class v0 substrates. The chart's **default** is the single-experiment path
+(one orchestrator drives one experiment directly; no control plane), mirroring
+the Compose default stack that `compose-smoke` validates. Lease-driven HA (a
+control plane plus multiple contending orchestrator replicas) is an opt-in
+toggle, `orchestrator.leaseMode.enabled`, that is **deferred + unvalidated behind
+[#281](https://github.com/ealt/eden/issues/281)** — leave it off until #281
+reconciles the #128 opaque-id minting with #147's lease-mode orchestrator. The
+two substrates are independent deployments — you cannot "upgrade" a Compose stack
+to Helm without exporting via
 [12b portable checkpoints](../../reference/compose/healthcheck/smoke-checkpoint.sh)
 and re-importing.
 
@@ -39,29 +44,37 @@ template time (not at pod-pull time) if either is empty.
 
 The canonical bootstrap is
 [`setup-experiment-helm.sh`](../../reference/scripts/setup-experiment-helm.sh).
-It runs the install in two phases (see §3) and registers the experiment:
+It runs the install in three phases (see §3), minting the experiment's opaque
+worker identities. Omit `--experiment-id` to mint a fresh `exp_*` id:
 
 ```sh
 bash reference/scripts/setup-experiment-helm.sh \
   --namespace eden-prod \
   --release eden \
   --image <registry>/eden-reference:<tag> \
-  --experiment-config tests/fixtures/experiment/.eden/config.yaml \
-  --experiment-id exp-1
+  --experiment-config tests/fixtures/experiment/.eden/config.yaml
 ```
 
 What it does:
 
 1. `helm upgrade --install` with `experiment.baseCommitSha` empty → the infra
-   tier (Postgres, Forgejo, control-plane) comes up.
+   tier (Postgres, Forgejo) comes up.
 2. Provisions the Forgejo `eden` user (idempotent) and seeds the bare repo via
-   a one-shot Job; the push auto-creates the experiment repo on Forgejo.
-3. `helm upgrade --set experiment.baseCommitSha=<seed-sha>` → the app tier
-   (task-store-server, orchestrator, worker hosts, web-ui) comes up.
-4. Registers the experiment with the control plane and bootstraps the reserved
-   `orchestrators` / `admins` groups + the initial admin and web-ui workers.
+   a one-shot Job; the push auto-creates the experiment repo on Forgejo. Then
+   `helm upgrade --set experiment.baseCommitSha=<seed-sha>` → the
+   **task-store-server** comes up.
+3. Mints the reserved `admins` / `orchestrators` groups + one worker per service
+   against the task-store-server (`POST {"name": ...}`, under #128 the server
+   mints the opaque `worker_id` and returns a one-time `registration_token`),
+   then `helm upgrade` with the minted `identity.*` values → the **app tier**
+   (orchestrator, worker hosts, web-ui) comes up with pre-provisioned
+   credentials. With `orchestrator.leaseMode.enabled=true` (deferred #281) it
+   additionally deploys the control plane and registers the experiment with it.
 
-When no `--values` file is supplied, the script generates fresh dev secrets
+The experiment id must be an opaque `exp_*` id (the event model rejects any id
+not matching `^exp_[0-9a-hjkmnp-tv-z]{26}$`); the script mints one when
+`--experiment-id` is omitted. When no `--values` file is supplied, the script
+generates fresh dev secrets
 (read back from the cluster Secret on re-run, so re-running is idempotent) and
 requires `--image`. Supply `--values <file>` (e.g. for production secrets via
 `existingSecret`) to drive secrets yourself.
@@ -69,11 +82,10 @@ requires `--image`. Supply `--values <file>` (e.g. for production secrets via
 **One experiment per release in v0.** The reference task-store-server is
 single-experiment per process, and the release-wide `experiment.id` value points
 the whole stack at one experiment. Do **not** re-run the script with a different
-`--experiment-id` against the same release — that rewrites `experiment.id`,
-re-points the single task-store/worker stack at the new experiment, and orphans
-the first (it stays registered with the control plane but is no longer served).
-To run a **second** experiment, install a **separate release in a separate
-namespace** (e.g. `--release eden-b --namespace eden-b`). True
+`--experiment-id` against the same release — that rewrites `experiment.id` and
+re-points the single task-store/worker stack at the new experiment, orphaning
+the first. To run a **second** experiment, install a **separate release in a
+separate namespace** (e.g. `--release eden-b --namespace eden-b`). True
 multiple-experiments-per-release hosting is tracked in
 [#254](https://github.com/ealt/eden/issues/254).
 
@@ -86,41 +98,40 @@ open http://localhost:18090/
 
 ### Plain `helm install` (chart resources only — NOT a complete bootstrap)
 
-A bare `helm install` brings up the chart's pods but does **none** of the
-script's bootstrap steps (steps 2–4 above): the Forgejo `eden` user is not
-created, the bare repo is not seeded, the experiment is not registered with the
-control plane (so the orchestrator has no lease target to acquire), and the
-reserved `admins`/`orchestrators` task-store groups are not seeded (so the
-orchestrator's task ops would 403 and the Web UI has no admin authority). It is
-useful only to an operator who will perform the equivalent registration + group
-bootstrap manually, or who has already seeded Forgejo and knows the seed SHA:
+A bare `helm install` cannot produce a functional deployment: under the #128
+opaque-id model the task-store-server **mints** every worker id, so the chart
+cannot know the orchestrator / worker-host / web-ui `worker_id`s (and their
+tokens) until the script has minted them — and the app-tier templates render
+only once `identity.<svc>.workerId` is set. A bare install also skips the
+Forgejo `eden` user, the bare-repo seed, and the reserved `admins` /
+`orchestrators` group bootstrap. There is no hand-set values incantation that
+substitutes for the minting round-trip; use `setup-experiment-helm.sh`, which is
+the canonical, supported bootstrap. (An operator wiring the chart by hand would
+have to mint the workers against a running task-store-server themselves and feed
+the returned ids + tokens back as `identity.*` values — exactly what the script
+automates.)
 
-```sh
-helm install eden reference/helm/eden \
-  --namespace eden-prod --create-namespace \
-  -f my-values.yaml \
-  --set image.repository=<registry>/eden-reference \
-  --set image.tag=<tag> \
-  --set experiment.id=exp-1 \
-  --set experiment.baseCommitSha=<seed-sha>
-```
+## 3. The three-phase bootstrap (why)
 
-For a functional deployment, use `setup-experiment-helm.sh` (above) — it is the
-canonical, supported bootstrap. The manual registration + group-seed steps it
-performs are non-trivial; reproducing them by hand is error-prone.
+Two facts force the multi-phase shape:
 
-## 3. The two-phase bootstrap (why)
+1. **Seed gate.** The reference task-store-server is single-experiment per
+   process and records the experiment's **seed commit** at first experiment-row
+   creation — a row created without a seed never acquires a baseline
+   (02-data-model.md §9.4). So the task-store-server must not start before the
+   seed SHA is known. `experiment.baseCommitSha` is its render gate
+   (`{{ include "eden.appEnabled" . }}`).
+2. **Identity gate.** Under #128 the task-store-server mints each service's
+   opaque `worker_id`; the orchestrator, worker hosts, and web-ui cannot start
+   before their id exists. Each renders only once its `identity.<svc>.workerId`
+   value is set (`{{ include "eden.identityEnabled" ... }}`).
 
-The reference task-store-server is single-experiment per process and records the
-experiment's **seed commit** at first experiment-row creation — a row created
-without a seed never acquires a baseline (02-data-model.md §9.4), and the seed is
-ignored on a later reopen. So the app tier must not start before the seed SHA is
-known.
-
-`experiment.baseCommitSha` is the gate: the app-tier templates render only when
-it is non-empty (`{{ include "eden.appEnabled" . }}`). This is deliberate
-bootstrap gating, distinct from scaling a service to zero (§5) — during phase 1
-nothing references the app-tier Services, so their absence is harmless.
+So phase 1 brings up infra (Postgres, Forgejo), phase 2 seeds the repo and
+starts the task-store-server (`baseCommitSha` set), and phase 3 mints the
+identities and starts the app tier (`identity.*` set). This is deliberate
+bootstrap gating, distinct from scaling a service to zero (§5) — during the
+earlier phases nothing references the not-yet-rendered Services, so their
+absence is harmless.
 
 ## 4. Values reference
 
@@ -130,8 +141,15 @@ for the fully-annotated surface and the
 groups:
 
 - **`image`** — required repository + tag; `pullPolicy`; `pullSecrets`.
-- **`experiment`** — `id`, inline `config` (→ ConfigMap), `baseCommitSha`.
-- **`replicas`** — per-service counts; orchestrator defaults to 2 (HA).
+- **`experiment`** — `id` (opaque `exp_*`), inline `config` (→ ConfigMap), `baseCommitSha`.
+- **`identity`** — per-service minted `workerId` + `token`; set by the setup
+  script (the app-tier gate). Leave empty for hand-wired installs to mint
+  yourself.
+- **`orchestrator.leaseMode.enabled`** — opt-in lease-driven HA + control plane;
+  default `false`, deferred + unvalidated behind #281.
+- **`replicas`** — per-service counts; orchestrator defaults to 1
+  (single-experiment). Multi-replica HA needs lease mode + per-replica
+  identities (#281).
 - **`secrets`** — dev inline or `existingSecret` (§4.1).
 - **`storage`** — `className` + per-PVC sizes.
 - **`ingress`** — Web UI Ingress, off by default (§4.2).
@@ -200,21 +218,18 @@ helm upgrade eden reference/helm/eden -n eden-prod --reuse-values \
   Deployment/StatefulSet only supports `restartPolicy: Always` and a clean
   quiescence exit would CrashLoopBackOff. The orchestrator ends only on SIGTERM
   (pod termination).
-- **Rolling restarts vs leases.** `kubectl rollout restart
-  statefulset/eden-orchestrator` terminates pods one at a time; each terminating
-  pod's lease expires, leaving a sub-`leaseDurationSeconds` window where the
-  experiment is un-leased. `replicas.orchestrator=2` keeps a standby available
-  to re-acquire during the restart.
-- **Scaling the orchestrator up.** `setup-experiment-helm.sh` seeds the
-  task-store `orchestrators` group with exactly the orchestrator pod ids present
-  at bootstrap (`<release>-orchestrator-0 … -<N-1>`). If you later raise
-  `replicas.orchestrator`, the **new** pods self-join only the *control-plane*
-  `orchestrators` group (so they can acquire the lease) but are not yet in the
-  *task-store* group — their task ops would 403 while holding the lease,
-  stalling the experiment. Until the in-orchestrator self-join lands
-  ([#254](https://github.com/ealt/eden/issues/254)), **re-run
-  `setup-experiment-helm.sh` after scaling the orchestrator up** (it is
-  idempotent and seeds the new pod ids). Scaling down needs no action.
+- **Orchestrator restarts (single-experiment default).** There is one
+  orchestrator; while its pod restarts (a StatefulSet rollout, sub-second to a
+  few seconds) no dispatch happens, then it resumes. The orchestrator verifies
+  its provisioned credential via `/whoami` and self-joins the `orchestrators`
+  group under the admin token on each start, so a restart is self-healing.
+- **Scaling the orchestrator beyond one replica.** Not supported on the default
+  path: a second replica sharing the single minted `worker_id` would contend for
+  the same identity with no lease coordinator to arbitrate. Multi-replica HA is
+  the job of lease mode (`orchestrator.leaseMode.enabled`), which is **deferred +
+  unvalidated behind [#281](https://github.com/ealt/eden/issues/281)** — that
+  issue covers reconciling the #128 per-replica opaque-id minting with #147's
+  lease-mode orchestrator self-registration. Keep `replicas.orchestrator=1`.
 
 ## 6. Coexistence
 
@@ -244,10 +259,13 @@ clones) are retained across upgrades, so experiment state survives. The
 - **task-store-server `CrashLoopBackOff`** — usually a Postgres connectivity or
   DSN issue. Check the `eden-postgres-0` pod is `Ready` and that
   `EDEN_STORE_URL` (in the Secret) matches the Postgres credentials.
-- **No `variant.integrated` events** — confirm the orchestrator holds the lease
-  (`kubectl logs statefulset/eden-orchestrator -n <ns>`) and the worker hosts
-  registered (they self-register via the admin token on startup). The Forgejo
-  `eden` user + repo must exist — re-run `setup-experiment-helm.sh`.
+- **No `variant.integrated` events** — confirm the orchestrator is running
+  (`kubectl logs statefulset/eden-orchestrator -n <ns>`) and that each
+  identity-consuming pod's `provision-credential` initContainer succeeded
+  (`kubectl get pod -n <ns>`; a pod stuck in `Init:` means its identity Secret
+  or token is missing). The worker hosts verify their provisioned `worker_id`
+  via `/whoami` at startup (no self-registration under #128). The Forgejo `eden`
+  user + repo must exist — re-run `setup-experiment-helm.sh`.
 - **Reproduce the CI smoke locally** — with kind + helm + kubectl + docker + jq +
   python3 installed, run `bash reference/helm/eden/ci-smoke.sh`.
 

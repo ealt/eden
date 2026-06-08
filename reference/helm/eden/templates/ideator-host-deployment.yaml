@@ -1,5 +1,6 @@
-{{- if eq (include "eden.appEnabled" .) "true" }}
+{{- if eq (include "eden.identityEnabled" (dict "ctx" . "key" "ideatorHost")) "true" }}
 {{- $fullName := include "eden.fullname" . }}
+{{- $id := .Values.identity.ideatorHost }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -8,10 +9,9 @@ metadata:
     {{- include "eden.componentLabels" (dict "ctx" . "component" "ideator-host") | nindent 4 }}
 spec:
   replicas: {{ .Values.replicas.ideatorHost }}
-  # Recreate (not RollingUpdate): the ideator uses a single fixed --worker-id,
+  # Recreate (not RollingUpdate): the ideator uses a single minted --worker-id,
   # so a rolling update's overlapping old+new pods would race on the same
-  # worker credential (the new pod reissues while the old is still polling).
-  # Recreate terminates the old pod before starting the new one.
+  # worker credential. Recreate terminates the old pod before starting the new.
   strategy:
     type: Recreate
   selector:
@@ -21,10 +21,15 @@ spec:
     metadata:
       annotations:
         {{- include "eden.rolloutChecksums" . | nindent 8 }}
+        checksum/identity: {{ $id.token | sha256sum }}
       labels:
         {{- include "eden.componentLabels" (dict "ctx" . "component" "ideator-host") | nindent 8 }}
     spec:
       {{- include "eden.imagePullSecrets" . | nindent 6 }}
+      # fsGroup makes the credentials emptyDir group-writable for the rootless
+      # (uid/gid 1000) image's credential-bootstrap writes.
+      securityContext:
+        fsGroup: 1000
       {{- with .Values.nodeSelector }}
       nodeSelector: {{- toYaml . | nindent 8 }}
       {{- end }}
@@ -34,6 +39,8 @@ spec:
       {{- with .Values.affinity }}
       affinity: {{- toYaml . | nindent 8 }}
       {{- end }}
+      initContainers:
+        {{- include "eden.identityInitContainer" (dict "ctx" . "workerId" $id.workerId "component" "ideator-host") | nindent 8 }}
       containers:
         - name: ideator-host
           image: {{ include "eden.image" . | quote }}
@@ -52,7 +59,7 @@ spec:
             - --admin-token
             - $(EDEN_ADMIN_TOKEN)
             - --worker-id
-            - {{ .Values.config.ideatorWorkerId | quote }}
+            - {{ $id.workerId | quote }}
             - --mode
             - {{ .Values.config.workerMode | quote }}
             - --base-commit-sha
@@ -61,7 +68,12 @@ spec:
             - {{ .Values.config.pollIntervalSeconds | quote }}
             - --log-level
             - info
+          volumeMounts:
+            - name: credentials
+              mountPath: /var/lib/eden/credentials
           {{- with .Values.resources }}
           resources: {{- toYaml . | nindent 12 }}
           {{- end }}
+      volumes:
+        {{- include "eden.identityVolumes" (dict "ctx" . "component" "ideator-host") | nindent 8 }}
 {{- end }}

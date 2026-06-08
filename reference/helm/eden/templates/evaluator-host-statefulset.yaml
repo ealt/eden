@@ -1,5 +1,6 @@
-{{- if eq (include "eden.appEnabled" .) "true" }}
+{{- if eq (include "eden.identityEnabled" (dict "ctx" . "key" "evaluatorHost")) "true" }}
 {{- $fullName := include "eden.fullname" . }}
+{{- $id := .Values.identity.evaluatorHost }}
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -16,12 +17,14 @@ spec:
     metadata:
       annotations:
         {{- include "eden.rolloutChecksums" . | nindent 8 }}
+        checksum/identity: {{ $id.token | sha256sum }}
       labels:
         {{- include "eden.componentLabels" (dict "ctx" . "component" "evaluator-host") | nindent 8 }}
     spec:
       {{- include "eden.imagePullSecrets" . | nindent 6 }}
       # The image runs as uid/gid 1000 (eden); fsGroup makes the (reserved)
-      # clone PVC group-writable for forward-compat with subprocess mode.
+      # clone PVC + credentials emptyDir group-writable (clone PVC is forward-
+      # compat with subprocess mode; credentials for the bootstrap writes).
       securityContext:
         fsGroup: 1000
       {{- with .Values.nodeSelector }}
@@ -33,6 +36,8 @@ spec:
       {{- with .Values.affinity }}
       affinity: {{- toYaml . | nindent 8 }}
       {{- end }}
+      initContainers:
+        {{- include "eden.identityInitContainer" (dict "ctx" . "workerId" $id.workerId "component" "evaluator-host") | nindent 8 }}
       containers:
         - name: evaluator-host
           image: {{ include "eden.image" . | quote }}
@@ -40,11 +45,6 @@ spec:
           envFrom:
             - secretRef:
                 name: {{ include "eden.secretName" . }}
-          env:
-            - name: POD_NAME
-              valueFrom:
-                fieldRef:
-                  fieldPath: metadata.name
           args:
             - python
             - -m
@@ -56,7 +56,7 @@ spec:
             - --admin-token
             - $(EDEN_ADMIN_TOKEN)
             - --worker-id
-            - $(POD_NAME)
+            - {{ $id.workerId | quote }}
             - --mode
             - {{ .Values.config.workerMode | quote }}
             - --experiment-config
@@ -73,6 +73,8 @@ spec:
             # fsGroup ownership — see orchestrator-statefulset.yaml.
             - name: repo
               mountPath: /var/lib/eden/clone
+            - name: credentials
+              mountPath: /var/lib/eden/credentials
             - name: experiment-config
               mountPath: /etc/eden/experiment-config.yaml
               subPath: experiment-config.yaml
@@ -80,6 +82,7 @@ spec:
           resources: {{- toYaml . | nindent 12 }}
           {{- end }}
       volumes:
+        {{- include "eden.identityVolumes" (dict "ctx" . "component" "evaluator-host") | nindent 8 }}
         - name: experiment-config
           configMap:
             name: {{ $fullName }}-experiment-config

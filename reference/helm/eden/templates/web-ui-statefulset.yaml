@@ -1,5 +1,6 @@
-{{- if eq (include "eden.appEnabled" .) "true" }}
+{{- if eq (include "eden.identityEnabled" (dict "ctx" . "key" "webUi")) "true" }}
 {{- $fullName := include "eden.fullname" . }}
+{{- $id := .Values.identity.webUi }}
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -19,12 +20,14 @@ spec:
     metadata:
       annotations:
         {{- include "eden.rolloutChecksums" . | nindent 8 }}
+        checksum/identity: {{ $id.token | sha256sum }}
       labels:
         {{- include "eden.componentLabels" (dict "ctx" . "component" "web-ui") | nindent 8 }}
     spec:
       {{- include "eden.imagePullSecrets" . | nindent 6 }}
       # The image runs as uid/gid 1000 (eden); fsGroup makes the clone +
-      # artifacts PVCs group-writable so git + artifact writes succeed.
+      # artifacts PVCs and the credentials emptyDir group-writable so git,
+      # artifact, and credential-bootstrap writes succeed.
       securityContext:
         fsGroup: 1000
       {{- with .Values.nodeSelector }}
@@ -36,6 +39,8 @@ spec:
       {{- with .Values.affinity }}
       affinity: {{- toYaml . | nindent 8 }}
       {{- end }}
+      initContainers:
+        {{- include "eden.identityInitContainer" (dict "ctx" . "workerId" $id.workerId "component" "web-ui") | nindent 8 }}
       containers:
         - name: web-ui
           image: {{ include "eden.image" . | quote }}
@@ -43,11 +48,13 @@ spec:
           envFrom:
             - secretRef:
                 name: {{ include "eden.secretName" . }}
+          {{- if eq (include "eden.leaseModeEnabled" .) "true" }}
           env:
-            # When set, the web-ui CLI mounts the cross-experiment
-            # /admin/experiments/ dashboard (chapter 11). Empty → 404 dashboard.
+            # Lease mode (opt-in, deferred #281): when set, the web-ui mounts the
+            # cross-experiment /admin/experiments/ dashboard (chapter 11).
             - name: EDEN_CONTROL_PLANE_URL
               value: {{ include "eden.controlPlaneUrl" . | quote }}
+          {{- end }}
           ports:
             - name: http
               containerPort: 8090
@@ -76,7 +83,7 @@ spec:
             - --base-commit-sha
             - {{ .Values.experiment.baseCommitSha | quote }}
             - --worker-id
-            - {{ .Values.config.webUiWorkerId | quote }}
+            - {{ $id.workerId | quote }}
             - --host
             - 0.0.0.0
             - --port
@@ -109,6 +116,8 @@ spec:
             # to the artifact-serving route.
             - name: artifacts
               mountPath: /var/lib/eden/artifacts
+            - name: credentials
+              mountPath: /var/lib/eden/credentials
             - name: experiment-config
               mountPath: /etc/eden/experiment-config.yaml
               subPath: experiment-config.yaml
@@ -119,6 +128,7 @@ spec:
           resources: {{- toYaml . | nindent 12 }}
           {{- end }}
       volumes:
+        {{- include "eden.identityVolumes" (dict "ctx" . "component" "web-ui") | nindent 8 }}
         - name: experiment-config
           configMap:
             name: {{ $fullName }}-experiment-config

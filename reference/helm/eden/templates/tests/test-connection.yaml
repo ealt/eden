@@ -20,12 +20,16 @@ spec:
         - -c
         - |
           set -eu
+          {{- if eq (include "eden.leaseModeEnabled" .) "true" }}
           echo "checking control-plane /healthz"
           curl -fsS "{{ include "eden.controlPlaneUrl" . }}/healthz" >/dev/null
+          {{- end }}
           {{- if eq (include "eden.appEnabled" .) "true" }}
-          echo "checking web-ui /healthz"
-          curl -fsS "http://{{ $fullName }}-web-ui:8090/healthz" >/dev/null
           echo "checking task-store-server TCP :8080"
           curl -fsS -o /dev/null "{{ include "eden.taskStoreUrl" . }}/" || true
+          {{- end }}
+          {{- if eq (include "eden.identityEnabled" (dict "ctx" . "key" "webUi")) "true" }}
+          echo "checking web-ui /healthz"
+          curl -fsS "http://{{ $fullName }}-web-ui:8090/healthz" >/dev/null
           {{- end }}
           echo "ok"

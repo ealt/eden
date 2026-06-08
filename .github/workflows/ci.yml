@@ -795,12 +795,36 @@ jobs:
       - name: helm lint (infra tier)
         run: helm lint reference/helm/eden -f reference/helm/eden/ci-values.yaml
 
-      - name: helm template renders the full stack
+      - name: helm template renders the full single-experiment stack
+        # baseCommitSha enables the store tier; the identity.* values enable the
+        # identity-consuming app tier (orchestrator, worker hosts, web-ui) the
+        # way setup-experiment-helm.sh's phase 3 does. Default lease mode off →
+        # no control-plane.
         run: |
           helm template eden reference/helm/eden \
             -f reference/helm/eden/ci-values.yaml \
             --set experiment.baseCommitSha=0123456789abcdef0123456789abcdef01234567 \
+            --set-string identity.orchestrator.workerId=wkr_template,identity.orchestrator.token=t \
+            --set-string identity.webUi.workerId=wkr_template,identity.webUi.token=t \
+            --set-string identity.ideatorHost.workerId=wkr_template,identity.ideatorHost.token=t \
+            --set-string identity.executorHost.workerId=wkr_template,identity.executorHost.token=t \
+            --set-string identity.evaluatorHost.workerId=wkr_template,identity.evaluatorHost.token=t \
             > /dev/null
+
+      - name: helm template renders the lease-mode stack (control-plane on)
+        # Opt-in lease mode (deferred #281) must still render cleanly: it adds the
+        # control-plane Deployment, which the default single-experiment path omits.
+        run: |
+          helm template eden reference/helm/eden \
+            -f reference/helm/eden/ci-values.yaml \
+            --set experiment.baseCommitSha=0123456789abcdef0123456789abcdef01234567 \
+            --set orchestrator.leaseMode.enabled=true \
+            --set-string identity.orchestrator.workerId=wkr_template,identity.orchestrator.token=t \
+            --set-string identity.webUi.workerId=wkr_template,identity.webUi.token=t \
+            --set-string identity.ideatorHost.workerId=wkr_template,identity.ideatorHost.token=t \
+            --set-string identity.executorHost.workerId=wkr_template,identity.executorHost.token=t \
+            --set-string identity.evaluatorHost.workerId=wkr_template,identity.evaluatorHost.token=t \
+            | grep -q 'eden-control-plane'
 
       - name: helm template fails closed without a required image
         run: |

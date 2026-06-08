@@ -1,5 +1,6 @@
-{{- if eq (include "eden.appEnabled" .) "true" }}
+{{- if eq (include "eden.identityEnabled" (dict "ctx" . "key" "orchestrator")) "true" }}
 {{- $fullName := include "eden.fullname" . }}
+{{- $id := .Values.identity.orchestrator }}
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -8,8 +9,10 @@ metadata:
     {{- include "eden.componentLabels" (dict "ctx" . "component" "orchestrator") | nindent 4 }}
 spec:
   serviceName: {{ $fullName }}-orchestrator
-  # HA per the chapter 11 lease model: N replicas contend for the single
-  # experiment's lease; exactly one drives at a time, the rest stand by.
+  # Default single-experiment path: ONE replica drives the experiment under the
+  # setup-minted opaque worker_id. Multi-replica lease-driven HA (N replicas
+  # contend for one lease) requires orchestrator.leaseMode.enabled AND
+  # per-replica opaque identities — deferred behind #281.
   replicas: {{ .Values.replicas.orchestrator }}
   selector:
     matchLabels:
@@ -18,12 +21,14 @@ spec:
     metadata:
       annotations:
         {{- include "eden.rolloutChecksums" . | nindent 8 }}
+        checksum/identity: {{ $id.token | sha256sum }}
       labels:
         {{- include "eden.componentLabels" (dict "ctx" . "component" "orchestrator") | nindent 8 }}
     spec:
       {{- include "eden.imagePullSecrets" . | nindent 6 }}
-      # The image runs as uid/gid 1000 (eden); fsGroup makes the clone PVC
-      # group-writable so the integrator's git writes succeed.
+      # The image runs as uid/gid 1000 (eden); fsGroup makes the clone PVC +
+      # credentials emptyDir group-writable so the integrator's git writes and
+      # the credential-bootstrap lock/token writes succeed.
       securityContext:
         fsGroup: 1000
       {{- with .Values.nodeSelector }}
@@ -35,6 +40,8 @@ spec:
       {{- with .Values.affinity }}
       affinity: {{- toYaml . | nindent 8 }}
       {{- end }}
+      initContainers:
+        {{- include "eden.identityInitContainer" (dict "ctx" . "workerId" $id.workerId "component" "orchestrator") | nindent 8 }}
       containers:
         - name: orchestrator
           image: {{ include "eden.image" . | quote }}
@@ -42,17 +49,13 @@ spec:
           envFrom:
             - secretRef:
                 name: {{ include "eden.secretName" . }}
+          {{- if eq (include "eden.leaseModeEnabled" .) "true" }}
           env:
-            # The pod name (eden-orchestrator-0, -1, …) is a unique, stable
-            # --worker-id per replica, matching 12a-1's worker_id grammar.
-            - name: POD_NAME
-              valueFrom:
-                fieldRef:
-                  fieldPath: metadata.name
-            # Non-empty control-plane URL flips the orchestrator into the
-            # chapter 11 §5 lease-driven multi-experiment loop (HA).
+            # Lease mode (opt-in, deferred #281): a non-empty control-plane URL
+            # flips the orchestrator into the chapter 11 §5 lease-driven loop.
             - name: EDEN_CONTROL_PLANE_URL
               value: {{ include "eden.controlPlaneUrl" . | quote }}
+          {{- end }}
           args:
             - python
             - -m
@@ -63,8 +66,11 @@ spec:
             - {{ required "experiment.id is required" .Values.experiment.id | quote }}
             - --admin-token
             - $(EDEN_ADMIN_TOKEN)
+            # The setup-minted opaque worker_id (wkr_*). The orchestrator
+            # verifies/reissues this credential (never fresh-registers) and
+            # self-joins the `orchestrators` group under the admin token.
             - --worker-id
-            - $(POD_NAME)
+            - {{ $id.workerId | quote }}
             - --repo-path
             - /var/lib/eden/clone/repo
             - --forgejo-url
@@ -90,6 +96,8 @@ spec:
             # the root and the subPath ownership gap.
             - name: repo
               mountPath: /var/lib/eden/clone
+            - name: credentials
+              mountPath: /var/lib/eden/credentials
             - name: experiment-config
               mountPath: /etc/eden/experiment-config.yaml
               subPath: experiment-config.yaml
@@ -100,6 +108,7 @@ spec:
           resources: {{- toYaml . | nindent 12 }}
           {{- end }}
       volumes:
+        {{- include "eden.identityVolumes" (dict "ctx" . "component" "orchestrator") | nindent 8 }}
         - name: experiment-config
           configMap:
             name: {{ $fullName }}-experiment-config

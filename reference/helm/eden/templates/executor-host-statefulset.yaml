@@ -1,5 +1,6 @@
-{{- if eq (include "eden.appEnabled" .) "true" }}
+{{- if eq (include "eden.identityEnabled" (dict "ctx" . "key" "executorHost")) "true" }}
 {{- $fullName := include "eden.fullname" . }}
+{{- $id := .Values.identity.executorHost }}
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -16,12 +17,14 @@ spec:
     metadata:
       annotations:
         {{- include "eden.rolloutChecksums" . | nindent 8 }}
+        checksum/identity: {{ $id.token | sha256sum }}
       labels:
         {{- include "eden.componentLabels" (dict "ctx" . "component" "executor-host") | nindent 8 }}
     spec:
       {{- include "eden.imagePullSecrets" . | nindent 6 }}
-      # The image runs as uid/gid 1000 (eden); fsGroup makes the clone PVC
-      # group-writable so the executor's git writes succeed.
+      # The image runs as uid/gid 1000 (eden); fsGroup makes the clone PVC +
+      # credentials emptyDir group-writable so the executor's git writes and the
+      # credential-bootstrap writes succeed.
       securityContext:
         fsGroup: 1000
       {{- with .Values.nodeSelector }}
@@ -33,6 +36,8 @@ spec:
       {{- with .Values.affinity }}
       affinity: {{- toYaml . | nindent 8 }}
       {{- end }}
+      initContainers:
+        {{- include "eden.identityInitContainer" (dict "ctx" . "workerId" $id.workerId "component" "executor-host") | nindent 8 }}
       containers:
         - name: executor-host
           image: {{ include "eden.image" . | quote }}
@@ -40,13 +45,6 @@ spec:
           envFrom:
             - secretRef:
                 name: {{ include "eden.secretName" . }}
-          env:
-            # Stable pod name (eden-executor-host-0, …) → unique --worker-id
-            # per replica that survives restart (reattaches to its clone PVC).
-            - name: POD_NAME
-              valueFrom:
-                fieldRef:
-                  fieldPath: metadata.name
           args:
             - python
             - -m
@@ -58,7 +56,7 @@ spec:
             - --admin-token
             - $(EDEN_ADMIN_TOKEN)
             - --worker-id
-            - $(POD_NAME)
+            - {{ $id.workerId | quote }}
             - --mode
             - {{ .Values.config.workerMode | quote }}
             - --repo-path
@@ -77,6 +75,8 @@ spec:
             # repo dir — see orchestrator-statefulset.yaml for the rationale.
             - name: repo
               mountPath: /var/lib/eden/clone
+            - name: credentials
+              mountPath: /var/lib/eden/credentials
             - name: git-credential-helper
               mountPath: {{ include "eden.credentialHelperPath" . }}
               subPath: git-credential-helper
@@ -84,6 +84,7 @@ spec:
           resources: {{- toYaml . | nindent 12 }}
           {{- end }}
       volumes:
+        {{- include "eden.identityVolumes" (dict "ctx" . "component" "executor-host") | nindent 8 }}
         - name: git-credential-helper
           configMap:
             name: {{ $fullName }}-git-credential-helper

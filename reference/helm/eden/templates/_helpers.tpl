@@ -103,12 +103,81 @@ when set, else the chart-managed "<fullname>-secrets".
 {{- end -}}
 
 {{/*
-Whether the app tier renders. The app tier (task-store-server, orchestrator,
-worker hosts, web-ui) needs a seeded base commit; see values.yaml
-"experiment.baseCommitSha".
+Whether the store tier renders. The task-store-server needs a seeded base
+commit (it stamps the seed onto the experiment row at first creation); see
+values.yaml "experiment.baseCommitSha".
 */}}
 {{- define "eden.appEnabled" -}}
 {{- if .Values.experiment.baseCommitSha -}}true{{- else -}}false{{- end -}}
+{{- end -}}
+
+{{/*
+Whether lease-driven HA mode is enabled (opt-in, default false). When true the
+control-plane Deployment renders, the orchestrator + web-ui get
+EDEN_CONTROL_PLANE_URL, and setup-experiment-helm.sh registers the experiment
+with the control plane. DEFERRED + unvalidated behind #281.
+*/}}
+{{- define "eden.leaseModeEnabled" -}}
+{{- if (((.Values.orchestrator).leaseMode).enabled) -}}true{{- else -}}false{{- end -}}
+{{- end -}}
+
+{{/*
+Whether an identity-consuming service should render. An identity service
+(orchestrator, web-ui, worker hosts) renders only once BOTH the store tier is
+enabled AND its minted worker_id is set (so the app tier holds back until
+setup-experiment-helm.sh has provisioned identities). Call with
+(dict "ctx" . "key" "orchestrator").
+*/}}
+{{- define "eden.identityEnabled" -}}
+{{- $id := index .ctx.Values.identity .key -}}
+{{- if and (eq (include "eden.appEnabled" .ctx) "true") $id.workerId -}}true{{- else -}}false{{- end -}}
+{{- end -}}
+
+{{/*
+Per-service identity Secret name. Call with (dict "ctx" . "component" "orchestrator").
+*/}}
+{{- define "eden.identitySecretName" -}}
+{{- printf "%s-%s-identity" (include "eden.fullname" .ctx) .component -}}
+{{- end -}}
+
+{{/*
+The per-service credential-provisioning initContainer: installs the minted
+worker's token (from its identity Secret) into the writable credentials emptyDir
+at /var/lib/eden/credentials/<workerId>.token (mode 0600), so the service's
+startup credential-bootstrap verifies it via /whoami without an admin reissue.
+Call with (dict "ctx" . "workerId" <id> "component" <component>).
+*/}}
+{{- define "eden.identityInitContainer" -}}
+- name: provision-credential
+  image: {{ include "eden.image" .ctx | quote }}
+  imagePullPolicy: {{ .ctx.Values.image.pullPolicy }}
+  command:
+    - sh
+    - -c
+    - |
+      set -e
+      umask 077
+      cp /etc/eden/identity/token "/var/lib/eden/credentials/{{ .workerId }}.token"
+  volumeMounts:
+    - name: identity-token
+      mountPath: /etc/eden/identity
+      readOnly: true
+    - name: credentials
+      mountPath: /var/lib/eden/credentials
+{{- end -}}
+
+{{/*
+The volumes backing the identity flow: the read-only token Secret + the writable
+credentials emptyDir the initContainer copies it into (and the service's
+bootstrap lock/reissue path writes to). Call with
+(dict "ctx" . "component" <component>).
+*/}}
+{{- define "eden.identityVolumes" -}}
+- name: identity-token
+  secret:
+    secretName: {{ include "eden.identitySecretName" (dict "ctx" .ctx "component" .component) }}
+- name: credentials
+  emptyDir: {}
 {{- end -}}
 
 {{/*

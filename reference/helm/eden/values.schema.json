@@ -48,7 +48,7 @@
         "controlPlane": { "type": "integer", "minimum": 0 },
         "orchestrator": { "type": "integer", "minimum": 0 },
         "ideatorHost": {
-          "description": "Operator-singleton in v0: the ideator Deployment uses a fixed config.ideatorWorkerId, so >1 replica would race on one worker credential. Capped at 1 until unique worker ids are generated.",
+          "description": "Operator-singleton in v0: the ideator Deployment uses one minted worker_id, so >1 replica would race on one worker credential. Capped at 1 until unique worker ids are generated per replica.",
           "type": "integer",
           "minimum": 0,
           "maximum": 1
@@ -113,14 +113,45 @@
           ]
         },
         "pollIntervalSeconds": { "type": "number", "exclusiveMinimum": 0 },
-        "adminsInitialMember": { "type": "string", "minLength": 1 },
-        "webUiWorkerId": { "type": "string", "minLength": 1 },
-        "ideatorWorkerId": { "type": "string", "minLength": 1, "maxLength": 64 },
         "workerMode": {
           "description": "Only 'scripted' is supported in 13a (Decision 10).",
           "type": "string",
           "enum": ["scripted"]
         }
+      }
+    },
+    "orchestrator": {
+      "type": "object",
+      "properties": {
+        "leaseMode": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "description": "Lease-driven HA toggle. false (default) = single-experiment, control plane idle/not-rendered. true = lease-driven mode (control plane rendered, EDEN_CONTROL_PLANE_URL set, experiment registered). DEFERRED + unvalidated behind #281.",
+              "type": "boolean"
+            }
+          }
+        }
+      }
+    },
+    "identity": {
+      "description": "Per-service minted opaque worker identities (#128). Filled by setup-experiment-helm.sh after the task-store-server mints them. Each service renders only once its workerId is set.",
+      "type": "object",
+      "properties": {
+        "orchestrator": { "$ref": "#/definitions/serviceIdentity" },
+        "webUi": { "$ref": "#/definitions/serviceIdentity" },
+        "ideatorHost": { "$ref": "#/definitions/serviceIdentity" },
+        "executorHost": { "$ref": "#/definitions/serviceIdentity" },
+        "evaluatorHost": { "$ref": "#/definitions/serviceIdentity" }
+      }
+    }
+  },
+  "definitions": {
+    "serviceIdentity": {
+      "type": "object",
+      "properties": {
+        "workerId": { "type": "string" },
+        "token": { "type": "string" }
       }
     }
   }

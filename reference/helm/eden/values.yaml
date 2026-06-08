@@ -32,22 +32,34 @@ image:
 # Experiment identity.
 #
 # The reference task-store-server is single-experiment per process (#254 cross-
-# experiment isolation is deferred); the orchestrator runs lease-driven against
-# the control plane for HA (multiple replicas, ONE experiment), mirroring the
-# Compose multi-experiment smoke. `id` + `config` identify the experiment;
-# `baseCommitSha` is the seed commit recorded on the experiment object.
+# experiment isolation is deferred). The DEFAULT deployment runs the
+# single-experiment path: ONE orchestrator, the control plane present but idle
+# (lease mode off), mirroring the Compose default stack that `compose-smoke`
+# validates. Lease-driven HA (multiple orchestrator replicas contending for one
+# lease) is an opt-in toggle (orchestrator.leaseMode.enabled, default false),
+# deferred behind #281 — see that block below. `id` + `config` identify the
+# experiment; `baseCommitSha` is the seed commit recorded on the experiment
+# object.
 #
-# baseCommitSha is the bootstrap gate: the APP TIER (task-store-server,
-# orchestrator, worker hosts, web-ui) renders only when it is non-empty,
-# because the task-store-server records the seed commit at first experiment-row
-# creation and a row created without a seed never acquires a baseline. The
-# INFRA TIER (Postgres, Forgejo, control-plane, Secret, ConfigMaps) always
-# renders. setup-experiment-helm.sh installs infra first, seeds Forgejo to
-# obtain the SHA, then `helm upgrade --set experiment.baseCommitSha=<sha>` to
-# bring the app tier up. Operators who pre-seeded supply baseCommitSha directly
-# and get all nine services from one `helm install`.
+# Two render gates stage the bring-up (see docs/deployment/helm.md §3):
+#   * baseCommitSha gates the STORE TIER (task-store-server) — it records the
+#     seed commit at first experiment-row creation, so it must not start before
+#     the seed SHA is known.
+#   * identity.<svc>.workerId gates each IDENTITY-CONSUMING service (orchestrator,
+#     worker hosts, web-ui) — under #128 the task-store-server mints those ids,
+#     so the pods cannot start before their minted worker_id exists.
+# The INFRA TIER (Postgres, Forgejo, Secret, ConfigMaps) always renders;
+# the control plane renders only under orchestrator.leaseMode.enabled.
+# setup-experiment-helm.sh stages these: infra → seed → task-store-server →
+# mint identities → app tier.
 experiment:
-  id: ""                  # required, e.g. exp-1
+  # Required. An opaque, system-minted experiment id matching the #128 grammar
+  # ^exp_[0-9a-hjkmnp-tv-z]{26}$ (spec/v0/02-data-model.md §1.6). The
+  # task-store-server stamps this id onto every event, and the event model
+  # rejects a non-opaque id — so an operator-typed mnemonic like "exp-1" fails
+  # at runtime. setup-experiment-helm.sh mints a fresh exp_* when --experiment-id
+  # is omitted; pass --experiment-id <exp_*> to reuse one.
+  id: ""
   # Raw experiment-config YAML as a string. When non-empty it takes precedence
   # over `config` below — used by setup-experiment-helm.sh, which passes the
   # operator's config file verbatim via `helm --set-file experiment.configRaw`
@@ -72,12 +84,36 @@ experiment:
 # ---------------------------------------------------------------------------
 replicas:
   taskStoreServer: 1      # singleton in v0 (clustered Postgres is 13c)
-  controlPlane: 1         # singleton SPOF per chapter 11 §3.9
-  orchestrator: 2         # HA per the chapter 11 lease model
+  controlPlane: 1         # singleton SPOF per chapter 11 §3.9 (only deployed when
+                          # orchestrator.leaseMode.enabled — see below)
+  # Default 1: the single-experiment path runs ONE orchestrator under a minted
+  # opaque worker_id. Multi-replica HA requires lease mode AND per-replica opaque
+  # identities, which is deferred behind #281 — DO NOT raise this above 1 unless
+  # orchestrator.leaseMode.enabled is true (and even then #281 is unresolved).
+  orchestrator: 1
   ideatorHost: 1
   executorHost: 1
   evaluatorHost: 1
   webUi: 1
+
+# ---------------------------------------------------------------------------
+# Orchestrator deployment mode.
+#
+# leaseMode.enabled (default false) selects between:
+#   * false (DEFAULT, single-experiment): the orchestrator drives the one
+#     --experiment-id directly, ignores the control plane, and runs under the
+#     setup-minted opaque worker_id. The control-plane Deployment is NOT
+#     rendered. This is the path `helm-smoke` / `compose-smoke` validate.
+#   * true (lease-driven HA): the control-plane Deployment renders, the
+#     orchestrator + web-ui receive EDEN_CONTROL_PLANE_URL, and
+#     setup-experiment-helm.sh registers the experiment with the control plane.
+#     DEFERRED + UNVALIDATED behind #281 (reconcile #128 opaque-id minting with
+#     #147's lease-mode orchestrator self-registration). Do not rely on this in
+#     production until #281 lands.
+# ---------------------------------------------------------------------------
+orchestrator:
+  leaseMode:
+    enabled: false
 
 # ---------------------------------------------------------------------------
 # Secrets.
@@ -150,21 +186,46 @@ config:
   # Requires the orchestrator CLI/loop change bundled in this chunk.
   maxQuiescentIterations: 0
   pollIntervalSeconds: 1.0
-  # The initial admin worker seeded into the `admins` group + the web-ui's
-  # worker_id (an admins member). Mirror the Compose EDEN_ADMINS_INITIAL_MEMBER
-  # / EDEN_WEB_UI_WORKER_ID defaults.
-  adminsInitialMember: operator
-  webUiWorkerId: web-ui-1
-  # The ideator host runs as a Deployment, whose pod names
-  # (<fullname>-ideator-host-<rs-hash>-<suffix>) can exceed the store's 64-char
-  # worker_id grammar for long release names — so it uses this fixed id rather
-  # than $(POD_NAME). Operator-singleton in v0 (replicas.ideatorHost: 1); the
-  # executor/evaluator StatefulSets keep stable bounded POD_NAME worker ids.
-  ideatorWorkerId: ideator-1
   # --mode for the worker hosts. Only "scripted" is supported in 13a
   # (Decision 10); user-supplied LLM workers via subprocess + DooD need a
   # Kubernetes-native per-task packaging mechanism (13b "executor as k8s Job").
   workerMode: scripted
+
+# ---------------------------------------------------------------------------
+# Per-service worker identities (#128 opaque-id model).
+#
+# Under the post-#128 identity model the task-store-server MINTS every worker
+# id (opaque wkr_*) — operators no longer type them. setup-experiment-helm.sh
+# brings the task-store-server up, POSTs {"name": "<role>"} to mint one worker
+# per service (capturing the minted worker_id + one-time registration_token),
+# and re-runs `helm upgrade` to fill these values. The chart then:
+#   * passes <workerId> as each service's --worker-id, and
+#   * renders a per-service Secret carrying <token>, which an initContainer
+#     installs at /var/lib/eden/credentials/<workerId>.token so the service's
+#     startup credential-bootstrap verifies it via /whoami (no admin reissue).
+#
+# Each identity-consuming service (orchestrator, web-ui, ideator/executor/
+# evaluator hosts) renders ONLY once its workerId is set — that is the gate that
+# holds the app tier back until identities are provisioned. Leave these empty;
+# the setup script fills them. Operators wiring the chart by hand mint the
+# workers themselves and supply the ids + tokens here (or via --set).
+# ---------------------------------------------------------------------------
+identity:
+  orchestrator:
+    workerId: ""
+    token: ""
+  webUi:
+    workerId: ""
+    token: ""
+  ideatorHost:
+    workerId: ""
+    token: ""
+  executorHost:
+    workerId: ""
+    token: ""
+  evaluatorHost:
+    workerId: ""
+    token: ""
 
 # ---------------------------------------------------------------------------
 # Postgres (embedded StatefulSet; managed external Postgres is 13c).

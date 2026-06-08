@@ -10,7 +10,11 @@ image:
   pullPolicy: Never
 
 experiment:
-  id: exp-1
+  # A valid opaque exp_* placeholder (lint/template only). setup-experiment-helm.sh
+  # overrides this with --set-string experiment.id=<minted exp_*> at install time.
+  # An operator-typed mnemonic (e.g. "exp-1") is invalid post-#128 — the event
+  # model rejects any id not matching ^exp_[0-9a-hjkmnp-tv-z]{26}$.
+  id: exp_0123456789abcdefghjkmnpqrs
   # baseCommitSha is left empty: setup-experiment-helm.sh seeds Forgejo, then
   # `helm upgrade --set experiment.baseCommitSha=<sha>` brings the app tier up.
   baseCommitSha: ""
@@ -25,10 +29,9 @@ experiment:
       kind: fixed_total
       total: 3
 
-# Single orchestrator replica keeps the kind footprint small; the lease model
-# still applies (one replica, one lease).
-replicas:
-  orchestrator: 1
+# replicas.orchestrator defaults to 1 (single-experiment); no override needed.
+# Lease-driven HA is opt-in (orchestrator.leaseMode.enabled) and deferred (#281),
+# so the smoke runs the default single-experiment path that compose-smoke validates.
 
 secrets:
   adminToken: ci-admin-token
@@ -49,7 +52,5 @@ storage:
   artifactsSize: 1Gi
 
 config:
-  # Lower lease duration for a faster HA hand-off drill; quiescence stays 0
-  # (run forever) per Decision 9.
-  leaseDurationSeconds: 15
+  # Run-forever quiescence per Decision 9 (Kubernetes restartPolicy: Always).
   maxQuiescentIterations: 0

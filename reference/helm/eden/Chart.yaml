@@ -1,11 +1,11 @@
 apiVersion: v2
 name: eden
 description: >-
-  EDEN reference deployment as a Helm chart — the same nine services the
-  Compose stack runs (task-store-server, control-plane, orchestrator,
-  ideator/executor/evaluator hosts, web-ui, Forgejo, Postgres), packaged for
-  any conforming Kubernetes cluster (1.27+). Phase 13a base chart; cloud-
-  specific extensions land in 13b–13e.
+  EDEN reference deployment as a Helm chart — the EDEN services the Compose
+  stack runs (task-store-server, orchestrator, ideator/executor/evaluator hosts,
+  web-ui, Forgejo, Postgres; plus an opt-in control plane for lease mode),
+  packaged for any conforming Kubernetes cluster (1.27+). Phase 13a base chart;
+  cloud-specific extensions land in 13b–13e.
 type: application
 # Chart version follows the EDEN repo's tagged versions (0.x for v0).
 version: 0.1.0
