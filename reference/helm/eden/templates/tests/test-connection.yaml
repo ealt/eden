@@ -1,0 +1,35 @@
+{{- $fullName := include "eden.fullname" . }}
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ $fullName }}-test-connection
+  labels:
+    {{- include "eden.componentLabels" (dict "ctx" . "component" "test") | nindent 4 }}
+  annotations:
+    "helm.sh/hook": test
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  {{- include "eden.imagePullSecrets" . | nindent 2 }}
+  restartPolicy: Never
+  containers:
+    - name: test-connection
+      image: {{ include "eden.image" . | quote }}
+      imagePullPolicy: {{ .Values.image.pullPolicy }}
+      command:
+        - /bin/sh
+        - -c
+        - |
+          set -eu
+          {{- if eq (include "eden.leaseModeEnabled" .) "true" }}
+          echo "checking control-plane /healthz"
+          curl -fsS "{{ include "eden.controlPlaneUrl" . }}/healthz" >/dev/null
+          {{- end }}
+          {{- if eq (include "eden.appEnabled" .) "true" }}
+          echo "checking task-store-server TCP :8080"
+          curl -fsS -o /dev/null "{{ include "eden.taskStoreUrl" . }}/" || true
+          {{- end }}
+          {{- if eq (include "eden.identityEnabled" (dict "ctx" . "key" "webUi")) "true" }}
+          echo "checking web-ui /healthz"
+          curl -fsS "http://{{ $fullName }}-web-ui:8090/healthz" >/dev/null
+          {{- end }}
+          echo "ok"

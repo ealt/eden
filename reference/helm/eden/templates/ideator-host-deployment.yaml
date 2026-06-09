@@ -1,0 +1,79 @@
+{{- if eq (include "eden.identityEnabled" (dict "ctx" . "key" "ideatorHost")) "true" }}
+{{- $fullName := include "eden.fullname" . }}
+{{- $id := .Values.identity.ideatorHost }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $fullName }}-ideator-host
+  labels:
+    {{- include "eden.componentLabels" (dict "ctx" . "component" "ideator-host") | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicas.ideatorHost }}
+  # Recreate (not RollingUpdate): the ideator uses a single minted --worker-id,
+  # so a rolling update's overlapping old+new pods would race on the same
+  # worker credential. Recreate terminates the old pod before starting the new.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "eden.componentSelectorLabels" (dict "ctx" . "component" "ideator-host") | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        {{- include "eden.rolloutChecksums" . | nindent 8 }}
+        checksum/identity: {{ $id.token | sha256sum }}
+      labels:
+        {{- include "eden.componentLabels" (dict "ctx" . "component" "ideator-host") | nindent 8 }}
+    spec:
+      {{- include "eden.imagePullSecrets" . | nindent 6 }}
+      # fsGroup makes the credentials emptyDir group-writable for the rootless
+      # (uid/gid 1000) image's credential-bootstrap writes.
+      securityContext:
+        fsGroup: 1000
+      {{- with .Values.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      initContainers:
+        {{- include "eden.identityInitContainer" (dict "ctx" . "workerId" $id.workerId "key" "ideatorHost") | nindent 8 }}
+      containers:
+        - name: ideator-host
+          image: {{ include "eden.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          envFrom:
+            - secretRef:
+                name: {{ include "eden.secretName" . }}
+          args:
+            - python
+            - -m
+            - eden_ideator_host
+            - --task-store-url
+            - {{ include "eden.taskStoreUrl" . | quote }}
+            - --experiment-id
+            - {{ required "experiment.id is required" .Values.experiment.id | quote }}
+            - --admin-token
+            - $(EDEN_ADMIN_TOKEN)
+            - --worker-id
+            - {{ $id.workerId | quote }}
+            - --mode
+            - {{ .Values.config.workerMode | quote }}
+            - --base-commit-sha
+            - {{ .Values.experiment.baseCommitSha | quote }}
+            - --poll-interval
+            - {{ .Values.config.pollIntervalSeconds | quote }}
+            - --log-level
+            - info
+          volumeMounts:
+            - name: credentials
+              mountPath: /var/lib/eden/credentials
+          {{- with .Values.resources }}
+          resources: {{- toYaml . | nindent 12 }}
+          {{- end }}
+      volumes:
+        {{- include "eden.identityVolumes" (dict "ctx" . "component" "ideator-host") | nindent 8 }}
+{{- end }}

@@ -1,0 +1,182 @@
+{{- if eq (include "eden.identityEnabled" (dict "ctx" . "key" "webUi")) "true" }}
+{{- $fullName := include "eden.fullname" . }}
+{{- $id := .Values.identity.webUi }}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ $fullName }}-web-ui
+  labels:
+    {{- include "eden.componentLabels" (dict "ctx" . "component" "web-ui") | nindent 4 }}
+spec:
+  serviceName: {{ $fullName }}-web-ui
+  # Operator-singleton in v0: the web-ui's executor module holds a local clone
+  # and serves artifacts from a RWO PVC. Horizontal scaling needs sticky-session
+  # ingress + a RWX artifacts mount or an external blob backend (13d).
+  replicas: {{ .Values.replicas.webUi }}
+  selector:
+    matchLabels:
+      {{- include "eden.componentSelectorLabels" (dict "ctx" . "component" "web-ui") | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        {{- include "eden.rolloutChecksums" . | nindent 8 }}
+        checksum/identity: {{ $id.token | sha256sum }}
+      labels:
+        {{- include "eden.componentLabels" (dict "ctx" . "component" "web-ui") | nindent 8 }}
+    spec:
+      {{- include "eden.imagePullSecrets" . | nindent 6 }}
+      # The image runs as uid/gid 1000 (eden); fsGroup makes the clone +
+      # artifacts PVCs and the credentials emptyDir group-writable so git,
+      # artifact, and credential-bootstrap writes succeed.
+      securityContext:
+        fsGroup: 1000
+      {{- with .Values.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      initContainers:
+        {{- include "eden.identityInitContainer" (dict "ctx" . "workerId" $id.workerId "key" "webUi") | nindent 8 }}
+      containers:
+        - name: web-ui
+          image: {{ include "eden.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          envFrom:
+            - secretRef:
+                name: {{ include "eden.secretName" . }}
+          {{- if eq (include "eden.leaseModeEnabled" .) "true" }}
+          env:
+            # Lease mode (opt-in, deferred #281): when set, the web-ui mounts the
+            # cross-experiment /admin/experiments/ dashboard (chapter 11).
+            - name: EDEN_CONTROL_PLANE_URL
+              value: {{ include "eden.controlPlaneUrl" . | quote }}
+          {{- end }}
+          ports:
+            - name: http
+              containerPort: 8090
+          args:
+            - python
+            - -m
+            - eden_web_ui
+            - --task-store-url
+            - {{ include "eden.taskStoreUrl" . | quote }}
+            - --experiment-id
+            - {{ required "experiment.id is required" .Values.experiment.id | quote }}
+            - --admin-token
+            - $(EDEN_ADMIN_TOKEN)
+            - --experiment-config
+            - /etc/eden/experiment-config.yaml
+            # The web-ui resolves per-experiment worker tokens under
+            # <credential-dir>/<experiment_id>/<worker_id>.token (its BearerCache,
+            # distinct from the worker-host flat layout). Point it at the mounted
+            # credentials emptyDir where the initContainer installs the token, so
+            # the provisioned identity is used instead of an admin reissue.
+            - --credential-dir
+            - /var/lib/eden/credentials
+            - --session-secret
+            - $(EDEN_SESSION_SECRET)
+            - --artifacts-dir
+            - /var/lib/eden/artifacts
+            - --repo-path
+            - /var/lib/eden/clone/repo
+            - --forgejo-url
+            - {{ include "eden.forgejoRemoteUrl" . | quote }}
+            - --credential-helper
+            - {{ include "eden.credentialHelperPath" . | quote }}
+            - --base-commit-sha
+            - {{ .Values.experiment.baseCommitSha | quote }}
+            - --worker-id
+            - {{ $id.workerId | quote }}
+            - --host
+            - 0.0.0.0
+            - --port
+            - "8090"
+            - --log-level
+            - info
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 30
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          volumeMounts:
+            # Clone into the .../clone/repo child (see orchestrator-statefulset
+            # for the fsGroup/subPath/lost+found rationale).
+            - name: repo
+              mountPath: /var/lib/eden/clone
+            # Artifacts: mounted at the volume root (no subPath) so fsGroup makes
+            # it writable by the rootless web-ui; a stray lost+found is harmless
+            # to the artifact-serving route.
+            - name: artifacts
+              mountPath: /var/lib/eden/artifacts
+            - name: credentials
+              mountPath: /var/lib/eden/credentials
+            - name: experiment-config
+              mountPath: /etc/eden/experiment-config.yaml
+              subPath: experiment-config.yaml
+            - name: git-credential-helper
+              mountPath: {{ include "eden.credentialHelperPath" . }}
+              subPath: git-credential-helper
+          {{- with .Values.resources }}
+          resources: {{- toYaml . | nindent 12 }}
+          {{- end }}
+      volumes:
+        {{- include "eden.identityVolumes" (dict "ctx" . "component" "web-ui") | nindent 8 }}
+        - name: experiment-config
+          configMap:
+            name: {{ $fullName }}-experiment-config
+        - name: git-credential-helper
+          configMap:
+            name: {{ $fullName }}-git-credential-helper
+            defaultMode: 0555
+  volumeClaimTemplates:
+    - metadata:
+        name: repo
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- if .Values.storage.className }}
+        storageClassName: {{ .Values.storage.className | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.storage.webUiRepoSize | quote }}
+    - metadata:
+        name: artifacts
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- if .Values.storage.className }}
+        storageClassName: {{ .Values.storage.className | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.storage.artifactsSize | quote }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $fullName }}-web-ui
+  labels:
+    {{- include "eden.componentLabels" (dict "ctx" . "component" "web-ui") | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "eden.componentSelectorLabels" (dict "ctx" . "component" "web-ui") | nindent 4 }}
+  ports:
+    - name: http
+      port: 8090
+      targetPort: http
+{{- end }}

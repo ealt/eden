@@ -63,18 +63,29 @@ _MAX_QUIESCENT_ITERATIONS_FLAG_DEFAULT = 3
 
 
 def _quiescent_iterations(raw: str) -> int:
-    """Argparse type for ``--max-quiescent-iterations`` (>=2)."""
+    """Argparse type for ``--max-quiescent-iterations`` (0 or >=2).
+
+    ``0`` is a sentinel meaning "never exit on quiescence; run until
+    SIGTERM" (Decision 9 of the Phase 13a Helm-base-chart plan). It
+    exists for substrates — chiefly a Kubernetes ``Deployment`` /
+    ``StatefulSet`` whose only valid ``restartPolicy`` is ``Always`` —
+    where a clean quiescence exit would be treated as a crash and
+    restarted in a tight loop. ``1`` stays rejected: a single
+    zero-progress iteration risks exiting while a worker is mid-submit.
+    """
     try:
         value = int(raw)
     except ValueError as exc:
         raise argparse.ArgumentTypeError(
             f"--max-quiescent-iterations must be an integer, not {raw!r}"
         ) from exc
+    if value == 0:
+        return 0
     if value < 2:
         raise argparse.ArgumentTypeError(
-            f"--max-quiescent-iterations must be >= 2 (got {value}); a value "
-            "of 0 or 1 risks the orchestrator exiting while a worker is "
-            "mid-submit."
+            f"--max-quiescent-iterations must be 0 or >= 2 (got {value}); a "
+            "value of 1 risks the orchestrator exiting while a worker is "
+            "mid-submit, and 0 is the 'never exit on quiescence' sentinel."
         )
     return value
 
@@ -215,7 +226,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=_MAX_QUIESCENT_ITERATIONS_FLAG_DEFAULT,
         help=(
             "Exit after N consecutive no-progress iterations (default: 3). "
-            "Must be >=2 — N=1 risks exiting while a worker is mid-submit. "
+            "Must be 0 or >=2 — N=1 risks exiting while a worker is "
+            "mid-submit. N=0 is the 'never exit on quiescence; run until "
+            "SIGTERM' sentinel for restartPolicy=Always substrates "
+            "(Kubernetes Deployments / StatefulSets; see the Phase 13a "
+            "Helm chart Decision 9). "
             "In single-experiment mode the experiment-config "
             "``max_quiescent_iterations`` field takes precedence; a "
             "non-default CLI value triggers a startup-warning and is "
@@ -425,8 +440,9 @@ def main(argv: list[str] | None = None) -> int:
     # Warn (not silently) on any ignored non-default flag.
     _warn_ignored_single_experiment_flags(args, log)
     termination_policy = build_termination_policy(config.termination_policy)
-    max_quiescent_iterations = (
-        config.max_quiescent_iterations or _MAX_QUIESCENT_ITERATIONS_FLAG_DEFAULT
+    max_quiescent_iterations = _resolve_single_experiment_max_quiescent(
+        cli_value=args.max_quiescent_iterations,
+        config_value=config.max_quiescent_iterations,
     )
     return _run_single_experiment(
         args=args,
@@ -438,6 +454,28 @@ def main(argv: list[str] | None = None) -> int:
         stop=stop,
         log=log,
     )
+
+
+def _resolve_single_experiment_max_quiescent(
+    *, cli_value: int, config_value: int | None
+) -> int:
+    """Resolve the single-experiment quiescence budget (CLI 0 wins as override).
+
+    #157 makes the experiment-config ``max_quiescent_iterations`` the portable
+    source of truth in single-experiment mode, with the CLI flag deferring to
+    it. Decision 9 (Phase 13a Helm) layers ONE exception: the
+    ``--max-quiescent-iterations 0`` "never exit on quiescence; run until
+    SIGTERM" sentinel is a *substrate* property (a Kubernetes Deployment /
+    StatefulSet only supports ``restartPolicy: Always``, which would
+    restart-loop a quiescence exit) — NOT an experiment property — so it
+    OVERRIDES the config. Any non-zero CLI value still defers to the config
+    field (falling back to the reference default when the config omits it),
+    preserving #157. The config field itself cannot be 0 (schema ``minimum: 2``);
+    0 is reachable only via the deployment's CLI flag.
+    """
+    if cli_value == 0:
+        return 0
+    return config_value or _MAX_QUIESCENT_ITERATIONS_FLAG_DEFAULT
 
 
 def _warn_ignored_single_experiment_flags(
@@ -462,7 +500,13 @@ def _warn_ignored_single_experiment_flags(
                 "in single-experiment mode"
             ),
         )
-    if args.max_quiescent_iterations != _MAX_QUIESCENT_ITERATIONS_FLAG_DEFAULT:
+    # 0 is the never-exit substrate override (Decision 9) — it is HONORED in
+    # single-experiment mode, not ignored, so it must not warn. Only a non-zero,
+    # non-default value is superseded by the experiment-config field.
+    if args.max_quiescent_iterations not in (
+        _MAX_QUIESCENT_ITERATIONS_FLAG_DEFAULT,
+        0,
+    ):
         log.warning(
             "orchestrator_cli_flag_ignored",
             flag="--max-quiescent-iterations",

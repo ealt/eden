@@ -1,0 +1,103 @@
+{{- /*
+The control plane is only deployed in lease-driven HA mode (opt-in, deferred
+behind #281). The default single-experiment path runs without it — the
+orchestrator drives its one experiment directly and never talks to a control
+plane. See values.yaml "orchestrator.leaseMode".
+*/ -}}
+{{- if eq (include "eden.leaseModeEnabled" .) "true" }}
+{{- $fullName := include "eden.fullname" . }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $fullName }}-control-plane
+  labels:
+    {{- include "eden.componentLabels" (dict "ctx" . "component" "control-plane") | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicas.controlPlane }}
+  selector:
+    matchLabels:
+      {{- include "eden.componentSelectorLabels" (dict "ctx" . "component" "control-plane") | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        {{- include "eden.rolloutChecksums" . | nindent 8 }}
+      labels:
+        {{- include "eden.componentLabels" (dict "ctx" . "component" "control-plane") | nindent 8 }}
+    spec:
+      {{- include "eden.imagePullSecrets" . | nindent 6 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: control-plane
+          image: {{ include "eden.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          envFrom:
+            - secretRef:
+                name: {{ include "eden.secretName" . }}
+          ports:
+            - name: http
+              containerPort: 8081
+          args:
+            - python
+            - -m
+            - eden_control_plane_server
+            - --store-url
+            - $(EDEN_CONTROL_PLANE_STORE_URL)
+            - --host
+            - 0.0.0.0
+            - --port
+            - "8081"
+            - --admin-token
+            - $(EDEN_ADMIN_TOKEN)
+            - --task-store-url
+            - {{ include "eden.taskStoreUrl" . | quote }}
+            - --lease-duration-seconds
+            - {{ .Values.config.leaseDurationSeconds | quote }}
+            - --state-sync-interval-seconds
+            - {{ .Values.config.stateSyncIntervalSeconds | quote }}
+            - --state-sync-failure-threshold
+            - {{ .Values.config.stateSyncFailureThreshold | quote }}
+            - --log-level
+            - info
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 20
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          {{- with .Values.resources }}
+          resources: {{- toYaml . | nindent 12 }}
+          {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $fullName }}-control-plane
+  labels:
+    {{- include "eden.componentLabels" (dict "ctx" . "component" "control-plane") | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "eden.componentSelectorLabels" (dict "ctx" . "component" "control-plane") | nindent 4 }}
+  ports:
+    - name: http
+      port: 8081
+      targetPort: http
+{{- end }}

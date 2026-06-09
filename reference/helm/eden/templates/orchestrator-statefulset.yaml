@@ -1,0 +1,130 @@
+{{- if eq (include "eden.identityEnabled" (dict "ctx" . "key" "orchestrator")) "true" }}
+{{- $fullName := include "eden.fullname" . }}
+{{- $id := .Values.identity.orchestrator }}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ $fullName }}-orchestrator
+  labels:
+    {{- include "eden.componentLabels" (dict "ctx" . "component" "orchestrator") | nindent 4 }}
+spec:
+  serviceName: {{ $fullName }}-orchestrator
+  # Default single-experiment path: ONE replica drives the experiment under the
+  # setup-minted opaque worker_id. Multi-replica lease-driven HA (N replicas
+  # contend for one lease) requires orchestrator.leaseMode.enabled AND
+  # per-replica opaque identities — deferred behind #281.
+  replicas: {{ .Values.replicas.orchestrator }}
+  selector:
+    matchLabels:
+      {{- include "eden.componentSelectorLabels" (dict "ctx" . "component" "orchestrator") | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        {{- include "eden.rolloutChecksums" . | nindent 8 }}
+        checksum/identity: {{ $id.token | sha256sum }}
+      labels:
+        {{- include "eden.componentLabels" (dict "ctx" . "component" "orchestrator") | nindent 8 }}
+    spec:
+      {{- include "eden.imagePullSecrets" . | nindent 6 }}
+      # The image runs as uid/gid 1000 (eden); fsGroup makes the clone PVC +
+      # credentials emptyDir group-writable so the integrator's git writes and
+      # the credential-bootstrap lock/token writes succeed.
+      securityContext:
+        fsGroup: 1000
+      {{- with .Values.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      initContainers:
+        {{- include "eden.identityInitContainer" (dict "ctx" . "workerId" $id.workerId "key" "orchestrator") | nindent 8 }}
+      containers:
+        - name: orchestrator
+          image: {{ include "eden.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          envFrom:
+            - secretRef:
+                name: {{ include "eden.secretName" . }}
+          {{- if eq (include "eden.leaseModeEnabled" .) "true" }}
+          env:
+            # Lease mode (opt-in, deferred #281): a non-empty control-plane URL
+            # flips the orchestrator into the chapter 11 §5 lease-driven loop.
+            - name: EDEN_CONTROL_PLANE_URL
+              value: {{ include "eden.controlPlaneUrl" . | quote }}
+          {{- end }}
+          args:
+            - python
+            - -m
+            - eden_orchestrator
+            - --task-store-url
+            - {{ include "eden.taskStoreUrl" . | quote }}
+            - --experiment-id
+            - {{ required "experiment.id is required" .Values.experiment.id | quote }}
+            - --admin-token
+            - $(EDEN_ADMIN_TOKEN)
+            # The setup-minted opaque worker_id (wkr_*). The orchestrator
+            # verifies/reissues this credential (never fresh-registers) and
+            # self-joins the `orchestrators` group under the admin token.
+            - --worker-id
+            - {{ $id.workerId | quote }}
+            - --repo-path
+            - /var/lib/eden/clone/repo
+            - --forgejo-url
+            - {{ include "eden.forgejoRemoteUrl" . | quote }}
+            - --credential-helper
+            - {{ include "eden.credentialHelperPath" . | quote }}
+            - --experiment-config
+            - /etc/eden/experiment-config.yaml
+            - --poll-interval
+            - {{ .Values.config.pollIntervalSeconds | quote }}
+            - --max-quiescent-iterations
+            - {{ .Values.config.maxQuiescentIterations | quote }}
+            - --lease-duration-seconds
+            - {{ .Values.config.leaseDurationSeconds | quote }}
+            - --log-level
+            - info
+          volumeMounts:
+            # Mount the PVC at a dedicated parent and clone into a CHILD dir
+            # (--repo-path .../clone/repo). fsGroup makes the volume ROOT
+            # group-writable (subPath dirs are created root-owned AFTER the
+            # fsGroup pass, so a rootless pod can't write them), and git creates
+            # the empty repo/ child — sidestepping both the ext4 lost+found at
+            # the root and the subPath ownership gap.
+            - name: repo
+              mountPath: /var/lib/eden/clone
+            - name: credentials
+              mountPath: /var/lib/eden/credentials
+            - name: experiment-config
+              mountPath: /etc/eden/experiment-config.yaml
+              subPath: experiment-config.yaml
+            - name: git-credential-helper
+              mountPath: {{ include "eden.credentialHelperPath" . }}
+              subPath: git-credential-helper
+          {{- with .Values.resources }}
+          resources: {{- toYaml . | nindent 12 }}
+          {{- end }}
+      volumes:
+        {{- include "eden.identityVolumes" (dict "ctx" . "component" "orchestrator") | nindent 8 }}
+        - name: experiment-config
+          configMap:
+            name: {{ $fullName }}-experiment-config
+        - name: git-credential-helper
+          configMap:
+            name: {{ $fullName }}-git-credential-helper
+            defaultMode: 0555
+  volumeClaimTemplates:
+    - metadata:
+        name: repo
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- if .Values.storage.className }}
+        storageClassName: {{ .Values.storage.className | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.storage.orchestratorRepoSize | quote }}
+{{- end }}

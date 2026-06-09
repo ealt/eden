@@ -1,0 +1,201 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "EDEN Helm chart values",
+  "type": "object",
+  "required": ["image", "experiment", "replicas", "storage", "config"],
+  "properties": {
+    "image": {
+      "type": "object",
+      "required": ["repository", "tag"],
+      "properties": {
+        "repository": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Container image repository. REQUIRED — build + push the eden-reference image to a registry the cluster can pull from."
+        },
+        "tag": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Image tag. REQUIRED."
+        },
+        "pullPolicy": {
+          "type": "string",
+          "enum": ["Always", "IfNotPresent", "Never"]
+        },
+        "pullSecrets": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["name"],
+            "properties": { "name": { "type": "string", "minLength": 1 } }
+          }
+        }
+      }
+    },
+    "experiment": {
+      "type": "object",
+      "required": ["id"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "config": { "type": "object" },
+        "configRaw": {
+          "type": "string",
+          "description": "Raw experiment-config YAML as a string (takes precedence over `config` when non-empty). Set by setup-experiment-helm.sh via --set-file."
+        },
+        "baseCommitSha": { "type": "string" }
+      }
+    },
+    "replicas": {
+      "type": "object",
+      "properties": {
+        "taskStoreServer": { "type": "integer", "minimum": 0 },
+        "controlPlane": { "type": "integer", "minimum": 0 },
+        "orchestrator": { "type": "integer", "minimum": 0 },
+        "ideatorHost": {
+          "description": "Operator-singleton in v0: the ideator Deployment uses one minted worker_id, so >1 replica would race on one worker credential. Capped at 1 until unique worker ids are generated per replica.",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "executorHost": { "type": "integer", "minimum": 0 },
+        "evaluatorHost": { "type": "integer", "minimum": 0 },
+        "webUi": {
+          "description": "Operator-singleton in v0: a fixed --worker-id + RWO clone/artifacts PVCs make >1 replica incoherent (credential reissue races, split artifacts). Capped at 1 until horizontal scaling lands.",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1
+        }
+      }
+    },
+    "secrets": {
+      "type": "object",
+      "properties": {
+        "adminToken": { "type": "string" },
+        "sessionSecret": { "type": "string" },
+        "postgresPassword": { "type": "string" },
+        "readonlyPassword": { "type": "string" },
+        "forgejoRemotePassword": { "type": "string" },
+        "forgejoSecretKey": { "type": "string" },
+        "forgejoInternalToken": { "type": "string" },
+        "existingSecret": { "type": "string" }
+      }
+    },
+    "storage": {
+      "type": "object",
+      "properties": {
+        "className": { "type": "string" },
+        "postgresSize": { "type": "string", "pattern": "^[0-9]+(Mi|Gi|Ti)$" },
+        "forgejoSize": { "type": "string", "pattern": "^[0-9]+(Mi|Gi|Ti)$" },
+        "orchestratorRepoSize": { "type": "string", "pattern": "^[0-9]+(Mi|Gi|Ti)$" },
+        "executorRepoSize": { "type": "string", "pattern": "^[0-9]+(Mi|Gi|Ti)$" },
+        "evaluatorRepoSize": { "type": "string", "pattern": "^[0-9]+(Mi|Gi|Ti)$" },
+        "webUiRepoSize": { "type": "string", "pattern": "^[0-9]+(Mi|Gi|Ti)$" },
+        "artifactsSize": { "type": "string", "pattern": "^[0-9]+(Mi|Gi|Ti)$" }
+      }
+    },
+    "ingress": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "className": { "type": "string" },
+        "annotations": { "type": "object" },
+        "hosts": { "type": "object" },
+        "tls": { "type": "array" }
+      }
+    },
+    "config": {
+      "type": "object",
+      "properties": {
+        "leaseDurationSeconds": { "type": "integer", "minimum": 1 },
+        "stateSyncIntervalSeconds": { "type": "integer", "minimum": 1 },
+        "stateSyncFailureThreshold": { "type": "integer", "minimum": 1 },
+        "maxQuiescentIterations": {
+          "description": "0 = never exit on quiescence (Kubernetes default); otherwise >= 2.",
+          "anyOf": [
+            { "type": "integer", "const": 0 },
+            { "type": "integer", "minimum": 2 }
+          ]
+        },
+        "pollIntervalSeconds": { "type": "number", "exclusiveMinimum": 0 },
+        "workerMode": {
+          "description": "Only 'scripted' is supported in 13a (Decision 10).",
+          "type": "string",
+          "enum": ["scripted"]
+        }
+      }
+    },
+    "orchestrator": {
+      "type": "object",
+      "properties": {
+        "leaseMode": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "description": "Lease-driven HA toggle. false (default) = single-experiment, control plane idle/not-rendered. true = lease-driven mode (control plane rendered, EDEN_CONTROL_PLANE_URL set, experiment registered). DEFERRED + unvalidated behind #281.",
+              "type": "boolean"
+            }
+          }
+        }
+      }
+    },
+    "identity": {
+      "description": "Per-service minted opaque worker identities (#128). Filled by setup-experiment-helm.sh after the task-store-server mints them. Each service renders only once BOTH its workerId and token are set (they must be supplied together).",
+      "type": "object",
+      "properties": {
+        "orchestrator": { "$ref": "#/definitions/serviceIdentity" },
+        "webUi": { "$ref": "#/definitions/serviceIdentity" },
+        "ideatorHost": { "$ref": "#/definitions/serviceIdentity" },
+        "executorHost": { "$ref": "#/definitions/serviceIdentity" },
+        "evaluatorHost": { "$ref": "#/definitions/serviceIdentity" }
+      }
+    },
+    "postgres": {
+      "type": "object",
+      "properties": {
+        "image": { "type": "string", "minLength": 1 },
+        "pullPolicy": { "type": "string", "enum": ["Always", "IfNotPresent", "Never"] },
+        "database": { "type": "string", "minLength": 1 },
+        "controlPlaneDatabase": { "type": "string", "minLength": 1 },
+        "user": { "type": "string", "minLength": 1 },
+        "resources": { "type": "object" }
+      }
+    },
+    "forgejo": {
+      "type": "object",
+      "properties": {
+        "image": { "type": "string", "minLength": 1 },
+        "pullPolicy": { "type": "string", "enum": ["Always", "IfNotPresent", "Never"] },
+        "resources": { "type": "object" }
+      }
+    },
+    "resources": { "type": "object" },
+    "nodeSelector": { "type": "object" },
+    "tolerations": { "type": "array" },
+    "affinity": { "type": "object" }
+  },
+  "definitions": {
+    "serviceIdentity": {
+      "type": "object",
+      "description": "A minted worker identity. workerId and token MUST be supplied together — set both (provisioned) or leave both empty (not yet provisioned). A half-set state renders neither the identity Secret nor the workload.",
+      "properties": {
+        "workerId": { "type": "string" },
+        "token": { "type": "string" }
+      },
+      "oneOf": [
+        {
+          "properties": {
+            "workerId": { "const": "" },
+            "token": { "const": "" }
+          }
+        },
+        {
+          "required": ["workerId", "token"],
+          "properties": {
+            "workerId": { "minLength": 1 },
+            "token": { "minLength": 1 }
+          }
+        }
+      ]
+    }
+  }
+}

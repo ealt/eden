@@ -1,0 +1,115 @@
+{{- if eq (include "eden.identityEnabled" (dict "ctx" . "key" "evaluatorHost")) "true" }}
+{{- $fullName := include "eden.fullname" . }}
+{{- $id := .Values.identity.evaluatorHost }}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ $fullName }}-evaluator-host
+  labels:
+    {{- include "eden.componentLabels" (dict "ctx" . "component" "evaluator-host") | nindent 4 }}
+spec:
+  serviceName: {{ $fullName }}-evaluator-host
+  replicas: {{ .Values.replicas.evaluatorHost }}
+  selector:
+    matchLabels:
+      {{- include "eden.componentSelectorLabels" (dict "ctx" . "component" "evaluator-host") | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        {{- include "eden.rolloutChecksums" . | nindent 8 }}
+        checksum/identity: {{ $id.token | sha256sum }}
+      labels:
+        {{- include "eden.componentLabels" (dict "ctx" . "component" "evaluator-host") | nindent 8 }}
+    spec:
+      {{- include "eden.imagePullSecrets" . | nindent 6 }}
+      # The image runs as uid/gid 1000 (eden); fsGroup makes the (reserved)
+      # clone PVC + credentials emptyDir group-writable (clone PVC is forward-
+      # compat with subprocess mode; credentials for the bootstrap writes).
+      securityContext:
+        fsGroup: 1000
+      {{- with .Values.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      initContainers:
+        {{- include "eden.identityInitContainer" (dict "ctx" . "workerId" $id.workerId "key" "evaluatorHost") | nindent 8 }}
+      containers:
+        - name: evaluator-host
+          image: {{ include "eden.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          envFrom:
+            - secretRef:
+                name: {{ include "eden.secretName" . }}
+          args:
+            - python
+            - -m
+            - eden_evaluator_host
+            - --task-store-url
+            - {{ include "eden.taskStoreUrl" . | quote }}
+            - --experiment-id
+            - {{ required "experiment.id is required" .Values.experiment.id | quote }}
+            - --admin-token
+            - $(EDEN_ADMIN_TOKEN)
+            - --worker-id
+            - {{ $id.workerId | quote }}
+            - --mode
+            - {{ .Values.config.workerMode | quote }}
+            - --experiment-config
+            - /etc/eden/experiment-config.yaml
+            - --poll-interval
+            - {{ .Values.config.pollIntervalSeconds | quote }}
+            - --log-level
+            - info
+          volumeMounts:
+            # In scripted mode the evaluator does not clone (it scores from the
+            # task store); the clone PVC + mount are reserved for subprocess
+            # mode (13b), per Decision 3's StatefulSet-with-clone shape. Mounted
+            # at the parent (no subPath) so a future clone target child gets
+            # fsGroup ownership — see orchestrator-statefulset.yaml.
+            - name: repo
+              mountPath: /var/lib/eden/clone
+            - name: credentials
+              mountPath: /var/lib/eden/credentials
+            - name: experiment-config
+              mountPath: /etc/eden/experiment-config.yaml
+              subPath: experiment-config.yaml
+          {{- with .Values.resources }}
+          resources: {{- toYaml . | nindent 12 }}
+          {{- end }}
+      volumes:
+        {{- include "eden.identityVolumes" (dict "ctx" . "component" "evaluator-host") | nindent 8 }}
+        - name: experiment-config
+          configMap:
+            name: {{ $fullName }}-experiment-config
+  volumeClaimTemplates:
+    - metadata:
+        name: repo
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- if .Values.storage.className }}
+        storageClassName: {{ .Values.storage.className | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.storage.evaluatorRepoSize | quote }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $fullName }}-evaluator-host
+  labels:
+    {{- include "eden.componentLabels" (dict "ctx" . "component" "evaluator-host") | nindent 4 }}
+spec:
+  clusterIP: None
+  selector:
+    {{- include "eden.componentSelectorLabels" (dict "ctx" . "component" "evaluator-host") | nindent 4 }}
+  ports:
+    - name: placeholder
+      port: 8080
+      targetPort: 8080
+{{- end }}

@@ -66,6 +66,7 @@ jobs:
       contracts: ${{ steps.filter.outputs.contracts }}
       compose: ${{ steps.filter.outputs.compose }}
       conformance: ${{ steps.filter.outputs.conformance }}
+      helm: ${{ steps.filter.outputs.helm }}
       run_all: ${{ steps.gate.outputs.run_all }}
     steps:
       # No checkout needed: on pull_request, dorny/paths-filter lists changed
@@ -112,6 +113,21 @@ jobs:
               - 'reference/packages/**'
               - 'reference/services/**'
               - 'spec/**'
+            # helm-smoke builds the reference image and drives it through the
+            # chart, so it must run on chart changes AND on any reference
+            # package/service change (the image + orchestrator code it embeds).
+            helm:
+              - 'reference/helm/**'
+              - 'reference/scripts/setup-experiment-helm.sh'
+              - 'reference/packages/**'
+              - 'reference/services/**'
+              # helm-smoke builds the image from this Dockerfile (context = repo
+              # root), so the build inputs gate the job too.
+              - 'reference/compose/Dockerfile'
+              - '.dockerignore'
+              # helm-smoke drives the fixture experiment; a fixture change can
+              # alter bootstrap behavior or the expected event counts.
+              - 'tests/fixtures/**'
             # rootcfg = workspace-global build config. The workflow file
             # (any job definition) and the root pyproject.toml / uv.lock
             # (consumed by every `uv sync --frozen` job: python-lint,
@@ -754,3 +770,108 @@ jobs:
 
       - name: Verify scenario citations
         run: uv run python conformance/src/conformance/tools/check_citations.py
+
+  # Fast structural gate for the Helm chart: lint + render + offline validate.
+  # Runs on every push (seconds); the heavier helm-smoke (below) spins up kind.
+  helm-lint:
+    name: helm-lint
+    runs-on: ubuntu-latest
+    needs: changes
+    if: >-
+      !cancelled() && (
+      needs.changes.result != 'success' ||
+      needs.changes.outputs.run_all == 'true' ||
+      needs.changes.outputs.helm == 'true' )
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: 'v3.16.2'
+
+      # helm lint + helm template both run the chart through values.schema.json
+      # and the template engine, failing on schema violations or render errors.
+      - name: helm lint (infra tier)
+        run: helm lint reference/helm/eden -f reference/helm/eden/ci-values.yaml
+
+      - name: helm template renders the full single-experiment stack
+        # baseCommitSha enables the store tier; the identity.* values enable the
+        # identity-consuming app tier (orchestrator, worker hosts, web-ui) the
+        # way setup-experiment-helm.sh's phase 3 does. Default lease mode off →
+        # no control-plane.
+        run: |
+          helm template eden reference/helm/eden \
+            -f reference/helm/eden/ci-values.yaml \
+            --set experiment.baseCommitSha=0123456789abcdef0123456789abcdef01234567 \
+            --set-string identity.orchestrator.workerId=wkr_template,identity.orchestrator.token=t \
+            --set-string identity.webUi.workerId=wkr_template,identity.webUi.token=t \
+            --set-string identity.ideatorHost.workerId=wkr_template,identity.ideatorHost.token=t \
+            --set-string identity.executorHost.workerId=wkr_template,identity.executorHost.token=t \
+            --set-string identity.evaluatorHost.workerId=wkr_template,identity.evaluatorHost.token=t \
+            > /dev/null
+
+      - name: helm template renders the lease-mode stack (control-plane on)
+        # Opt-in lease mode (deferred #281) must still render cleanly: it adds the
+        # control-plane Deployment, which the default single-experiment path omits.
+        run: |
+          helm template eden reference/helm/eden \
+            -f reference/helm/eden/ci-values.yaml \
+            --set experiment.baseCommitSha=0123456789abcdef0123456789abcdef01234567 \
+            --set orchestrator.leaseMode.enabled=true \
+            --set-string identity.orchestrator.workerId=wkr_template,identity.orchestrator.token=t \
+            --set-string identity.webUi.workerId=wkr_template,identity.webUi.token=t \
+            --set-string identity.ideatorHost.workerId=wkr_template,identity.ideatorHost.token=t \
+            --set-string identity.executorHost.workerId=wkr_template,identity.executorHost.token=t \
+            --set-string identity.evaluatorHost.workerId=wkr_template,identity.evaluatorHost.token=t \
+            | grep -q 'eden-control-plane'
+
+      - name: helm template fails closed without a required image
+        run: |
+          if helm template eden reference/helm/eden \
+               --set image.repository="" --set image.tag=x \
+               --set experiment.id=e >/dev/null 2>&1; then
+            echo "expected helm template to fail with empty image.repository" >&2
+            exit 1
+          fi
+
+  # helm-smoke: the Helm analogue of compose-smoke. Spins up kind, builds +
+  # loads the reference image, runs setup-experiment-helm.sh against the
+  # fixture, and asserts the same integration end-state. Not required by branch
+  # protection in this PR (same posture newly-added smoke jobs took in 10c/10d);
+  # bump to required after it stays clean on main for ~2 weeks.
+  helm-smoke:
+    name: helm-smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: changes
+    if: >-
+      !cancelled() && (
+      needs.changes.result != 'success' ||
+      needs.changes.outputs.run_all == 'true' ||
+      needs.changes.outputs.helm == 'true' )
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: 'v3.16.2'
+
+      - name: Set up kind
+        uses: helm/kind-action@v1
+        with:
+          install_only: true
+
+      # The setup script + ci-smoke.sh use only stdlib python3 (json, string)
+      # plus jq — no pip install needed.
+      - name: Verify tooling
+        run: |
+          kind version
+          kubectl version --client
+          helm version
+          jq --version
+          python3 --version
+
+      - name: Run helm smoke
+        run: bash reference/helm/eden/ci-smoke.sh

@@ -1,0 +1,17 @@
+{{- $fullName := include "eden.fullname" . }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $fullName }}-postgres
+  labels:
+    {{- include "eden.componentLabels" (dict "ctx" . "component" "postgres") | nindent 4 }}
+spec:
+  # Headless: governs the StatefulSet's stable network identity and resolves
+  # `<fullname>-postgres` to the pod IP for the task-store / control-plane DSNs.
+  clusterIP: None
+  selector:
+    {{- include "eden.componentSelectorLabels" (dict "ctx" . "component" "postgres") | nindent 4 }}
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres

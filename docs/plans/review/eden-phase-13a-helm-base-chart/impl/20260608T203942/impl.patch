@@ -1,0 +1,3931 @@
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+index 9432d43..3b3bc0b 100644
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -66,6 +66,7 @@ jobs:
+       contracts: ${{ steps.filter.outputs.contracts }}
+       compose: ${{ steps.filter.outputs.compose }}
+       conformance: ${{ steps.filter.outputs.conformance }}
++      helm: ${{ steps.filter.outputs.helm }}
+       run_all: ${{ steps.gate.outputs.run_all }}
+     steps:
+       # No checkout needed: on pull_request, dorny/paths-filter lists changed
+@@ -112,6 +113,21 @@ jobs:
+               - 'reference/packages/**'
+               - 'reference/services/**'
+               - 'spec/**'
++            # helm-smoke builds the reference image and drives it through the
++            # chart, so it must run on chart changes AND on any reference
++            # package/service change (the image + orchestrator code it embeds).
++            helm:
++              - 'reference/helm/**'
++              - 'reference/scripts/setup-experiment-helm.sh'
++              - 'reference/packages/**'
++              - 'reference/services/**'
++              # helm-smoke builds the image from this Dockerfile (context = repo
++              # root), so the build inputs gate the job too.
++              - 'reference/compose/Dockerfile'
++              - '.dockerignore'
++              # helm-smoke drives the fixture experiment; a fixture change can
++              # alter bootstrap behavior or the expected event counts.
++              - 'tests/fixtures/**'
+             # rootcfg = workspace-global build config. The workflow file
+             # (any job definition) and the root pyproject.toml / uv.lock
+             # (consumed by every `uv sync --frozen` job: python-lint,
+@@ -754,3 +770,108 @@ jobs:
+ 
+       - name: Verify scenario citations
+         run: uv run python conformance/src/conformance/tools/check_citations.py
++
++  # Fast structural gate for the Helm chart: lint + render + offline validate.
++  # Runs on every push (seconds); the heavier helm-smoke (below) spins up kind.
++  helm-lint:
++    name: helm-lint
++    runs-on: ubuntu-latest
++    needs: changes
++    if: >-
++      !cancelled() && (
++      needs.changes.result != 'success' ||
++      needs.changes.outputs.run_all == 'true' ||
++      needs.changes.outputs.helm == 'true' )
++    steps:
++      - uses: actions/checkout@v4
++
++      - name: Set up Helm
++        uses: azure/setup-helm@v4
++        with:
++          version: 'v3.16.2'
++
++      # helm lint + helm template both run the chart through values.schema.json
++      # and the template engine, failing on schema violations or render errors.
++      - name: helm lint (infra tier)
++        run: helm lint reference/helm/eden -f reference/helm/eden/ci-values.yaml
++
++      - name: helm template renders the full single-experiment stack
++        # baseCommitSha enables the store tier; the identity.* values enable the
++        # identity-consuming app tier (orchestrator, worker hosts, web-ui) the
++        # way setup-experiment-helm.sh's phase 3 does. Default lease mode off →
++        # no control-plane.
++        run: |
++          helm template eden reference/helm/eden \
++            -f reference/helm/eden/ci-values.yaml \
++            --set experiment.baseCommitSha=0123456789abcdef0123456789abcdef01234567 \
++            --set-string identity.orchestrator.workerId=wkr_template,identity.orchestrator.token=t \
++            --set-string identity.webUi.workerId=wkr_template,identity.webUi.token=t \
++            --set-string identity.ideatorHost.workerId=wkr_template,identity.ideatorHost.token=t \
++            --set-string identity.executorHost.workerId=wkr_template,identity.executorHost.token=t \
++            --set-string identity.evaluatorHost.workerId=wkr_template,identity.evaluatorHost.token=t \
++            > /dev/null
++
++      - name: helm template renders the lease-mode stack (control-plane on)
++        # Opt-in lease mode (deferred #281) must still render cleanly: it adds the
++        # control-plane Deployment, which the default single-experiment path omits.
++        run: |
++          helm template eden reference/helm/eden \
++            -f reference/helm/eden/ci-values.yaml \
++            --set experiment.baseCommitSha=0123456789abcdef0123456789abcdef01234567 \
++            --set orchestrator.leaseMode.enabled=true \
++            --set-string identity.orchestrator.workerId=wkr_template,identity.orchestrator.token=t \
++            --set-string identity.webUi.workerId=wkr_template,identity.webUi.token=t \
++            --set-string identity.ideatorHost.workerId=wkr_template,identity.ideatorHost.token=t \
++            --set-string identity.executorHost.workerId=wkr_template,identity.executorHost.token=t \
++            --set-string identity.evaluatorHost.workerId=wkr_template,identity.evaluatorHost.token=t \
++            | grep -q 'eden-control-plane'
++
++      - name: helm template fails closed without a required image
++        run: |
++          if helm template eden reference/helm/eden \
++               --set image.repository="" --set image.tag=x \
++               --set experiment.id=e >/dev/null 2>&1; then
++            echo "expected helm template to fail with empty image.repository" >&2
++            exit 1
++          fi
++
++  # helm-smoke: the Helm analogue of compose-smoke. Spins up kind, builds +
++  # loads the reference image, runs setup-experiment-helm.sh against the
++  # fixture, and asserts the same integration end-state. Not required by branch
++  # protection in this PR (same posture newly-added smoke jobs took in 10c/10d);
++  # bump to required after it stays clean on main for ~2 weeks.
++  helm-smoke:
++    name: helm-smoke
++    runs-on: ubuntu-latest
++    timeout-minutes: 30
++    needs: changes
++    if: >-
++      !cancelled() && (
++      needs.changes.result != 'success' ||
++      needs.changes.outputs.run_all == 'true' ||
++      needs.changes.outputs.helm == 'true' )
++    steps:
++      - uses: actions/checkout@v4
++
++      - name: Set up Helm
++        uses: azure/setup-helm@v4
++        with:
++          version: 'v3.16.2'
++
++      - name: Set up kind
++        uses: helm/kind-action@v1
++        with:
++          install_only: true
++
++      # The setup script + ci-smoke.sh use only stdlib python3 (json, string)
++      # plus jq — no pip install needed.
++      - name: Verify tooling
++        run: |
++          kind version
++          kubectl version --client
++          helm version
++          jq --version
++          python3 --version
++
++      - name: Run helm smoke
++        run: bash reference/helm/eden/ci-smoke.sh
+diff --git a/AGENTS.md b/AGENTS.md
+index 31d2d83..7e5690d 100644
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -76,6 +76,9 @@ At Phase 10 chunk 10d follow-up A, markdown linting, JSON Schema validation, and
+ | `eden_ideator_host --mode subprocess --experiment-config <path> --experiment-dir <path> --artifacts-dir <path>` | Run the ideator host with a user-supplied long-running `ideation_command` (read from the experiment-config YAML; subprocess exchanges JSON-line messages per [`spec/v0/reference-bindings/worker-host-subprocess.md`](spec/v0/reference-bindings/worker-host-subprocess.md)). |
+ | `eden_executor_host --mode subprocess --experiment-config <path> --experiment-dir <path> --repo-path <path>` | Per-task subprocess executor; cwd = freshly-created git worktree at `parent_commits[0]`; reads outcome JSON from `EDEN_OUTPUT`. |
+ | `eden_evaluator_host --mode subprocess --experiment-config <path> --experiment-dir <path> --repo-path <path>` | Per-task subprocess evaluator; cwd = git worktree at `variant.commit_sha`; metrics validated against `evaluation_schema` before submit. |
++| `helm lint reference/helm/eden -f reference/helm/eden/ci-values.yaml` | Lint the Phase 13a Helm chart (mirrors the `helm-lint` CI job; `helm template … --set experiment.baseCommitSha=<sha>` renders the full nine-service stack). |
++| `bash reference/scripts/setup-experiment-helm.sh --namespace <ns> --image <repo:tag> --experiment-config tests/fixtures/experiment/.eden/config.yaml --experiment-id <id>` | Bootstrap a Kubernetes/Helm deployment: two-phase `helm upgrade --install` (infra → seed bare repo via a one-shot Job → app tier with the seed SHA), then register the experiment + bootstrap reserved groups/workers. The Helm analogue of `setup-experiment.sh`; requires `kubectl` + `helm` access. |
++| `bash reference/helm/eden/ci-smoke.sh` | Phase 13a Helm smoke (mirrors the `helm-smoke` CI job — spins up a kind cluster, builds + loads the reference image, runs `setup-experiment-helm.sh` against the fixture, waits for the integration end-state, and asserts ≥3 `variant.integrated`, ≥9 `task.completed`, ≥3 ideation-task `task.completed` events; tears the cluster down on exit). Requires `kind` + `helm` + `kubectl` + `docker` + `jq` + `python3`. |
+ 
+ ### Commands that will exist in later phases
+ 
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 99c5795..ff80fe2 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -8,6 +8,32 @@ Per-chunk entries preserve the full implementation record: contract amendments,
+ 
+ ## [Unreleased]
+ 
++### Phase 13a — Helm base chart for the reference deployment (issue #171)
++
++The first Phase 13 chunk: a Helm chart at [`reference/helm/eden/`](reference/helm/eden/) that deploys the EDEN reference services the Compose stack runs (task-store-server, orchestrator, ideator/executor/evaluator hosts, web-ui, Forgejo, Postgres; plus an opt-in control plane) on any conforming Kubernetes cluster (1.27+). The chart is **parallel** to Compose, not a replacement — both are first-class v0 substrates. The **default** is the single-experiment path (one orchestrator drives one experiment directly; no control plane), mirroring the Compose default stack that `compose-smoke` validates. See [`docs/plans/eden-phase-13a-helm-base-chart.md`](docs/plans/eden-phase-13a-helm-base-chart.md) for the plan and [`docs/deployment/helm.md`](docs/deployment/helm.md) for the operator guide.
++
++**Post-#128 opaque-id identity model.** The chart and [`setup-experiment-helm.sh`](reference/scripts/setup-experiment-helm.sh) implement the [#128](https://github.com/ealt/eden/issues/128) identity model, mirroring the canonical Compose `setup-experiment.sh`: the experiment id is an opaque, system-minted `exp_*` (the event model rejects any id not matching `^exp_[0-9a-hjkmnp-tv-z]{26}$`, so the script mints one when `--experiment-id` is omitted), and every per-service worker id is a server-minted `wkr_*`. The script brings the task-store-server up, then `POST {"name": ...}`s to mint the reserved `admins`/`orchestrators` groups and one worker per service (orchestrator, web-ui, ideator/executor/evaluator hosts, plus the `operator` admin actor), capturing each minted `worker_id` + one-time `registration_token`. It hands each worker_id + token to the chart as `identity.<svc>.*` values; the chart passes the worker_id as `--worker-id` and renders a per-service Secret carrying the token, which an `initContainer` installs at `/var/lib/eden/credentials/<worker_id>.token` so the pod's startup credential bootstrap verifies it via `/whoami` (no admin reissue). The minted ids + tokens are stored in the release values, so re-running the script reuses them rather than minting duplicates.
++
++**Workload-kind split (Decision 3).** StatefulSets for services that hold a per-replica local git clone (orchestrator, executor-host, evaluator-host, web-ui) plus the stateful stores (Postgres, Forgejo); Deployments for the stateless services (task-store-server, ideator-host, and — in lease mode — control-plane). StatefulSet `volumeClaimTemplates` mint one PVC per replica. Unlike the pre-port draft, the `--worker-id` is the setup-minted opaque `wkr_*` (NOT the `POD_NAME`), which is the post-#128 requirement.
++
++**Three-phase bootstrap (two render gates).** `experiment.baseCommitSha` gates the **store tier** (the task-store-server records the seed commit at first experiment-row creation); `identity.<svc>.workerId` gates each **identity-consuming service** (under #128 the pods cannot start before their minted worker_id exists). So [`setup-experiment-helm.sh`](reference/scripts/setup-experiment-helm.sh): (1) `helm upgrade --install` with the SHA empty → infra tier (Postgres, Forgejo); (2) provision the Forgejo `eden` user + seed the bare repo via a one-shot out-of-tree Job ([`bootstrap/repo-init-job.yaml.tmpl`](reference/helm/eden/bootstrap/repo-init-job.yaml.tmpl), `kubectl apply`-ed per-experiment so its lifecycle is per-experiment not per-release — the AGENTS.md multi-tenant-lifecycle pitfall), then `helm upgrade --set experiment.baseCommitSha=<sha>` → task-store-server; (3) mint the groups + per-service workers, then `helm upgrade` with the `identity.*` values → app tier (orchestrator, worker hosts, web-ui). The orchestrator self-joins the `orchestrators` group at startup under the admin token.
++
++**Lease-driven HA is opt-in and deferred behind [#281](https://github.com/ealt/eden/issues/281).** `orchestrator.leaseMode.enabled` (default `false`) selects between the single-experiment default and a lease-driven HA mode where the control-plane Deployment renders, the orchestrator + web-ui receive `EDEN_CONTROL_PLANE_URL`, and the script registers the experiment with the control plane. Multi-replica HA (orchestrators contending for one lease) requires reconciling the #128 per-replica opaque-id minting with #147's lease-mode orchestrator self-registration; that reconciliation is **deferred and unvalidated** behind [#281](https://github.com/ealt/eden/issues/281). Only the default single-experiment path is exercised by `helm-smoke`; `replicas.orchestrator` defaults to 1. Re-enable lease mode once #281 lands.
++
++**Bundled orchestrator code change (Decision 9).** Kubernetes Deployments/StatefulSets only support `restartPolicy: Always`, so the orchestrator's quiescence-exit (exit 0 when no work remains) would CrashLoopBackOff. The orchestrator CLI/loop accept `--max-quiescent-iterations 0` as a "never exit on quiescence; run until SIGTERM" sentinel ([`cli.py`](reference/services/orchestrator/src/eden_orchestrator/cli.py) `_quiescent_iterations` accepts 0; `1` stays rejected — [`loop.py`](reference/services/orchestrator/src/eden_orchestrator/loop.py) skips the quiescence-exit branch when 0). The chart defaults `config.maxQuiescentIterations: 0`; Compose keeps its quiescence-exit lifecycle. New unit tests in [`test_loop_unit.py`](reference/services/orchestrator/tests/test_loop_unit.py) cover the 100-zero-progress-iteration never-exit path and the validator's accept-0 / reject-1 contract.
++
++**Image is the operator's responsibility (Decision 7).** The chart pulls a published image; `image.repository` + `image.tag` are required and enforced by [`values.schema.json`](reference/helm/eden/values.schema.json) (`minLength: 1`) so `helm install` fails loud at template time rather than at pod-pull time with `ErrImagePull`. The existing `reference/compose/Dockerfile` stays the single canonical image build.
++
++**Secrets + auth posture.** A single chart-managed `<release>-secrets` Secret (dev) or `secrets.existingSecret` (prod: Sealed Secrets / External Secrets / Vault), plus the per-service identity Secrets carrying the minted worker tokens. The Forgejo HTTP-Basic + git-credential-helper posture mirrors Compose byte-for-byte via a ConfigMap-mounted helper script that reads `FORGEJO_REMOTE_PASSWORD` from the pod env; 13e replaces it with per-branch ACLs + native PR review.
++
++**CI.** A fast [`helm-lint`](.github/workflows/ci.yml) job (lint + render the full single-experiment stack + render the lease-mode stack + schema fail-closed check, runs on every push) and a heavier [`helm-smoke`](.github/workflows/ci.yml) job (kind cluster + image build/load + `setup-experiment-helm.sh` against the single-experiment default + the same end-state assertions as `compose-smoke`: ≥3 `variant.integrated`, ≥9 `task.completed`, ≥3 ideation-task `task.completed`). Both are gated on a new `helm` changes-filter bucket. Per the newly-added-smoke-job convention they are not yet required by branch protection — [#286](https://github.com/ealt/eden/issues/286) tracks the bump after ~2 weeks clean on `main`. The local equivalent is [`reference/helm/eden/ci-smoke.sh`](reference/helm/eden/ci-smoke.sh).
++
++**Scope (13a).** Base chart + `--mode scripted` worker hosts (Decision 10) + embedded Postgres/Forgejo StatefulSets (stopgaps replaced in 13c/13e — embedding chosen over upstream subchart dependencies per plan §3.8). The artifact store is a web-ui-owned `ReadWriteOnce` PVC; the task-store-server's artifact-serving route is unwired in 13a.
++
++**Deferrals (each filed as a tracking issue at the moment of deferral).** Lease-driven HA — reconciling #128 opaque-id minting with #147's lease-mode orchestrator self-registration — → [#281](https://github.com/ealt/eden/issues/281). A `helm-upgrade-smoke` CI job (plan §6.3) → [#284](https://github.com/ealt/eden/issues/284). Cross-service artifact serving on Kubernetes (needs a `ReadWriteMany` or external blob backend) → [#285](https://github.com/ealt/eden/issues/285). The `helm-lint`/`helm-smoke` required-status bump → [#286](https://github.com/ealt/eden/issues/286). Kubernetes-native `--mode subprocess` + DooD worker hosts (Decision 10; 13a ships only `--mode scripted`) → [#291](https://github.com/ealt/eden/issues/291).
++
++**Subsequent Phase 13 substrate work** is pre-planned roadmap scope, tracked in [`docs/roadmap.md`](docs/roadmap.md) §"Phase 13 — Kubernetes reference deployment": GPU executor as a k8s Job (13b), managed external Postgres (13c), S3/GCS blob backend (13d), and Forgejo auth + per-branch ACLs + native PR review (13e). These are separate planned phases, not gaps left by 13a.
++
+ ### Automatic checkpointing — cadence + on-terminate (issue #131)
+ 
+ Makes the Phase 12b portable-checkpoint wire surface ([#152](https://github.com/ealt/eden/issues/152)) *happen automatically* so the operator's "I can accept interruptions / teardown / redeployment / imperfect checkpoints" posture is viable **without operator action**. A pure **consumer** of 12b: adds nothing to the checkpoint format and nothing normative to the protocol. The one `spec/`-tree edit is the `experiment-config.schema.json` `auto_checkpoint` block — an implementation-defined config knob like `max_quiescent_iterations`, kept in lockstep with the Pydantic model by the `schema-parity` job — not a protocol-prose or wire authority-table change.
+diff --git a/docs/deployment/helm.md b/docs/deployment/helm.md
+new file mode 100644
+index 0000000..80caad4
+--- /dev/null
++++ b/docs/deployment/helm.md
+@@ -0,0 +1,280 @@
++# Deploying EDEN on Kubernetes with Helm
++
++This guide covers deploying the EDEN reference services on a Kubernetes cluster
++via the Helm chart at [`reference/helm/eden/`](../../reference/helm/eden/). It is
++the Kubernetes analogue of the Compose deployment documented in
++[`reference/compose/README.md`](../../reference/compose/README.md).
++
++The Helm deployment is **parallel** to Compose, not a replacement. Both are
++first-class v0 substrates. The chart's **default** is the single-experiment path
++(one orchestrator drives one experiment directly; no control plane), mirroring
++the Compose default stack that `compose-smoke` validates. Lease-driven HA (a
++control plane plus multiple contending orchestrator replicas) is an opt-in
++toggle, `orchestrator.leaseMode.enabled`, that is **deferred + unvalidated behind
++[#281](https://github.com/ealt/eden/issues/281)** — leave it off until #281
++reconciles the #128 opaque-id minting with #147's lease-mode orchestrator. The
++two substrates are independent deployments — you cannot "upgrade" a Compose stack
++to Helm without exporting via
++[12b portable checkpoints](../../reference/compose/healthcheck/smoke-checkpoint.sh)
++and re-importing.
++
++## 1. Prerequisites
++
++- **A cluster (Kubernetes 1.27+)** — kind, k3s, EKS, GKE, or AKS. The chart is
++  Kubernetes-vanilla: no CRDs, no cloud-provider assumptions baked in.
++- **A default `StorageClass`** that provisions `ReadWriteOnce` PVCs. Confirm
++  with `kubectl get storageclass`; pin a specific class via `storage.className`
++  if there is no default.
++- **`kubectl` and `helm` (3.x)** configured against the cluster.
++- **The `eden-reference` image, built and pushed** to a registry the cluster
++  can pull from. The chart does not build images — the Compose stack builds
++  `eden-reference:dev` as a local Dockerfile target, which a cluster cannot
++  pull. Build + push it (or wire it into your CI):
++
++  ```sh
++  docker build -t <registry>/eden-reference:<tag> \
++    -f reference/compose/Dockerfile .
++  docker push <registry>/eden-reference:<tag>
++  ```
++
++`image.repository` and `image.tag` are **required**; the chart fails at
++template time (not at pod-pull time) if either is empty.
++
++## 2. Install walkthrough
++
++The canonical bootstrap is
++[`setup-experiment-helm.sh`](../../reference/scripts/setup-experiment-helm.sh).
++It runs the install in three phases (see §3), minting the experiment's opaque
++worker identities. Omit `--experiment-id` to mint a fresh `exp_*` id:
++
++```sh
++bash reference/scripts/setup-experiment-helm.sh \
++  --namespace eden-prod \
++  --release eden \
++  --image <registry>/eden-reference:<tag> \
++  --experiment-config tests/fixtures/experiment/.eden/config.yaml
++```
++
++What it does:
++
++1. `helm upgrade --install` with `experiment.baseCommitSha` empty → the infra
++   tier (Postgres, Forgejo) comes up.
++2. Provisions the Forgejo `eden` user (idempotent) and seeds the bare repo via
++   a one-shot Job; the push auto-creates the experiment repo on Forgejo. Then
++   `helm upgrade --set experiment.baseCommitSha=<seed-sha>` → the
++   **task-store-server** comes up.
++3. Mints the reserved `admins` / `orchestrators` groups + one worker per service
++   against the task-store-server (`POST {"name": ...}`, under #128 the server
++   mints the opaque `worker_id` and returns a one-time `registration_token`),
++   then `helm upgrade` with the minted `identity.*` values → the **app tier**
++   (orchestrator, worker hosts, web-ui) comes up with pre-provisioned
++   credentials. With `orchestrator.leaseMode.enabled=true` (deferred #281) it
++   additionally deploys the control plane and registers the experiment with it.
++
++The experiment id must be an opaque `exp_*` id (the event model rejects any id
++not matching `^exp_[0-9a-hjkmnp-tv-z]{26}$`); the script mints one when
++`--experiment-id` is omitted. When no `--values` file is supplied, the script
++generates fresh dev secrets
++(read back from the cluster Secret on re-run, so re-running is idempotent) and
++requires `--image`. Supply `--values <file>` (e.g. for production secrets via
++`existingSecret`) to drive secrets yourself.
++
++**One experiment per release in v0.** The reference task-store-server is
++single-experiment per process, and the release-wide `experiment.id` value points
++the whole stack at one experiment. Do **not** re-run the script with a different
++`--experiment-id` against the same release — that rewrites `experiment.id` and
++re-points the single task-store/worker stack at the new experiment, orphaning
++the first. To run a **second** experiment, install a **separate release in a
++separate namespace** (e.g. `--release eden-b --namespace eden-b`). True
++multiple-experiments-per-release hosting is tracked in
++[#254](https://github.com/ealt/eden/issues/254).
++
++Reach the Web UI:
++
++```sh
++kubectl -n eden-prod port-forward svc/eden-web-ui 18090:8090
++open http://localhost:18090/
++```
++
++### Plain `helm install` (chart resources only — NOT a complete bootstrap)
++
++A bare `helm install` cannot produce a functional deployment: under the #128
++opaque-id model the task-store-server **mints** every worker id, so the chart
++cannot know the orchestrator / worker-host / web-ui `worker_id`s (and their
++tokens) until the script has minted them — and the app-tier templates render
++only once `identity.<svc>.workerId` is set. A bare install also skips the
++Forgejo `eden` user, the bare-repo seed, and the reserved `admins` /
++`orchestrators` group bootstrap. There is no hand-set values incantation that
++substitutes for the minting round-trip; use `setup-experiment-helm.sh`, which is
++the canonical, supported bootstrap. (An operator wiring the chart by hand would
++have to mint the workers against a running task-store-server themselves and feed
++the returned ids + tokens back as `identity.*` values — exactly what the script
++automates.)
++
++## 3. The three-phase bootstrap (why)
++
++Two facts force the multi-phase shape:
++
++1. **Seed gate.** The reference task-store-server is single-experiment per
++   process and records the experiment's **seed commit** at first experiment-row
++   creation — a row created without a seed never acquires a baseline
++   (02-data-model.md §9.4). So the task-store-server must not start before the
++   seed SHA is known. `experiment.baseCommitSha` is its render gate
++   (`{{ include "eden.appEnabled" . }}`).
++2. **Identity gate.** Under #128 the task-store-server mints each service's
++   opaque `worker_id`; the orchestrator, worker hosts, and web-ui cannot start
++   before their id exists. Each renders only once its `identity.<svc>.workerId`
++   value is set (`{{ include "eden.identityEnabled" ... }}`).
++
++So phase 1 brings up infra (Postgres, Forgejo), phase 2 seeds the repo and
++starts the task-store-server (`baseCommitSha` set), and phase 3 mints the
++identities and starts the app tier (`identity.*` set). This is deliberate
++bootstrap gating, distinct from scaling a service to zero (§5) — during the
++earlier phases nothing references the not-yet-rendered Services, so their
++absence is harmless.
++
++## 4. Values reference
++
++See [`reference/helm/eden/values.yaml`](../../reference/helm/eden/values.yaml)
++for the fully-annotated surface and the
++[chart README](../../reference/helm/eden/README.md) for the summary table. Key
++groups:
++
++- **`image`** — required repository + tag; `pullPolicy`; `pullSecrets`.
++- **`experiment`** — `id` (opaque `exp_*`), inline `config` (→ ConfigMap), `baseCommitSha`.
++- **`identity`** — per-service minted `workerId` + `token`; set by the setup
++  script (the app-tier gate). Leave empty for hand-wired installs to mint
++  yourself.
++- **`orchestrator.leaseMode.enabled`** — opt-in lease-driven HA + control plane;
++  default `false`, deferred + unvalidated behind #281.
++- **`replicas`** — per-service counts; orchestrator defaults to 1
++  (single-experiment). Multi-replica HA needs lease mode + per-replica
++  identities (#281).
++- **`secrets`** — dev inline or `existingSecret` (§4.1).
++- **`storage`** — `className` + per-PVC sizes.
++- **`ingress`** — Web UI Ingress, off by default (§4.2).
++- **`config`** — Compose-mirror knobs (lease duration, quiescence, worker mode).
++
++### 4.1 Secrets
++
++**Development.** Set the secret values inline; the chart materializes a single
++`<release>-secrets` Secret and derives the Postgres DSNs from
++`secrets.postgresPassword`. The password is interpolated into the DSNs verbatim,
++so it must be URL-safe (the setup script generates hex; supply pre-encoded DSNs
++via `existingSecret` for passwords with reserved URI characters).
++
++**Production.** Pre-create the Secret externally (Sealed Secrets, External
++Secrets Operator, Vault) and set `secrets.existingSecret=<name>`. It must carry
++every key the chart-managed Secret would: `EDEN_ADMIN_TOKEN`,
++`EDEN_SESSION_SECRET`, `POSTGRES_PASSWORD`, `EDEN_READONLY_PASSWORD`,
++`FORGEJO_REMOTE_PASSWORD`, `FORGEJO_SECRET_KEY`, `FORGEJO_INTERNAL_TOKEN`,
++`EDEN_STORE_URL`, `EDEN_READONLY_STORE_URL`, `EDEN_CONTROL_PLANE_STORE_URL`.
++
++The Forgejo auth posture mirrors Compose's HTTP Basic + git-credential-helper
++exactly; 13e replaces it with per-branch ACLs + native PR review.
++
++### 4.2 Ingress
++
++`ingress.enabled=false` by default — services are `ClusterIP` and reached via
++`kubectl port-forward`. To expose the Web UI, set `ingress.enabled=true`,
++`ingress.className=<your-controller>`, and `ingress.hosts.webUi=<hostname>`
++(defaults to a per-release `<release>-webui.eden.local` to avoid cross-release
++hostname collisions). Supply `ingress.tls` cert refs as your controller expects.
++
++### 4.3 Private registries
++
++Pre-create an `imagePullSecret` and reference it:
++
++```sh
++kubectl -n eden-prod create secret docker-registry regcred \
++  --docker-server=<registry> --docker-username=<u> --docker-password=<p>
++helm upgrade eden reference/helm/eden -n eden-prod --reuse-values \
++  --set image.pullSecrets[0].name=regcred
++```
++
++## 5. Operational notes
++
++- **PVC retention.** StatefulSet `volumeClaimTemplates` PVCs are **not** deleted
++  on `helm uninstall` (Kubernetes leaves them for manual cleanup). To fully tear
++  down a deployment and its data: `helm uninstall eden -n eden-prod` then
++  `kubectl delete pvc -n eden-prod --all`. Operators who only `helm uninstall`
++  keep their Postgres / Forgejo / clone data for the next install.
++- **Secrets + retained PVCs (reinstall hazard).** `helm uninstall` deletes the
++  chart-managed `<release>-secrets` Secret, but the PVCs are retained. A
++  reinstall with chart-managed (inline) secrets regenerates a fresh
++  `POSTGRES_PASSWORD`, while the retained Postgres data dir still holds the
++  **old** role password — so the new DSNs fail authentication (the same hazard
++  as rotating the Compose `.env` password against an existing data volume). For
++  any deployment you intend to uninstall **and reinstall against the same
++  PVCs**, use `secrets.existingSecret` so the credentials outlive the release.
++  Otherwise, wipe the PVCs (`kubectl delete pvc -n <ns> --all`) for a clean
++  reinstall.
++- **Scaling to zero.** Set `replicas.<service>=0` to idle a workload (e.g. pause
++  the orchestrator). The StatefulSet keeps its PVCs, so scaling back up
++  reattaches the per-replica clones. Postgres and Forgejo cannot scale to zero
++  in v0.
++- **Orchestrator lifecycle.** On Kubernetes the orchestrator runs forever:
++  `config.maxQuiescentIterations=0` disables the quiescence exit, because a
++  Deployment/StatefulSet only supports `restartPolicy: Always` and a clean
++  quiescence exit would CrashLoopBackOff. The orchestrator ends only on SIGTERM
++  (pod termination).
++- **Orchestrator restarts (single-experiment default).** There is one
++  orchestrator; while its pod restarts (a StatefulSet rollout, sub-second to a
++  few seconds) no dispatch happens, then it resumes. The orchestrator verifies
++  its provisioned credential via `/whoami` and self-joins the `orchestrators`
++  group under the admin token on each start, so a restart is self-healing.
++- **Scaling the orchestrator beyond one replica.** Not supported on the default
++  path: a second replica sharing the single minted `worker_id` would contend for
++  the same identity with no lease coordinator to arbitrate. Multi-replica HA is
++  the job of lease mode (`orchestrator.leaseMode.enabled`), which is **deferred +
++  unvalidated behind [#281](https://github.com/ealt/eden/issues/281)** — that
++  issue covers reconciling the #128 per-replica opaque-id minting with #147's
++  lease-mode orchestrator self-registration. Keep `replicas.orchestrator=1`.
++
++## 6. Coexistence
++
++- **Namespace per release.** Resource names are prefixed by the release name via
++  `eden.fullname`, so two releases in **different** namespaces don't collide.
++  Two releases in the **same** namespace will — use a distinct namespace per
++  release.
++- **Alongside Compose.** When running both a Compose stack and a Helm release on
++  one machine, port-forward to offset ports (e.g. 18090 / 13001) to avoid
++  Compose's published 8090 / 3001.
++
++## 7. Upgrades
++
++`helm upgrade eden reference/helm/eden -n eden-prod --reuse-values` rolls the
++workloads with the new chart/image. The PVCs (Postgres, Forgejo, per-service
++clones) are retained across upgrades, so experiment state survives. The
++`appVersion` in `Chart.yaml` is documentation only; the actual image is whatever
++`image.tag` points at — keep them in sync to avoid drift.
++
++## 8. Troubleshooting
++
++- **`ErrImagePull`** — `image.repository`/`image.tag` point at an image the
++  cluster can't pull. Confirm the image is pushed and `image.pullSecrets` is set
++  for private registries. (Empty image values fail earlier, at `helm template`.)
++- **PVC `Pending`** — no default `StorageClass`, or the requested size exceeds
++  the provisioner's limit. `kubectl get pvc -n <ns>` and `kubectl describe pvc`.
++- **task-store-server `CrashLoopBackOff`** — usually a Postgres connectivity or
++  DSN issue. Check the `eden-postgres-0` pod is `Ready` and that
++  `EDEN_STORE_URL` (in the Secret) matches the Postgres credentials.
++- **No `variant.integrated` events** — confirm the orchestrator is running
++  (`kubectl logs statefulset/eden-orchestrator -n <ns>`) and that each
++  identity-consuming pod's `provision-credential` initContainer succeeded
++  (`kubectl get pod -n <ns>`; a pod stuck in `Init:` means its identity Secret
++  or token is missing). The worker hosts verify their provisioned `worker_id`
++  via `/whoami` at startup (no self-registration under #128). The Forgejo `eden`
++  user + repo must exist — re-run `setup-experiment-helm.sh`.
++- **Reproduce the CI smoke locally** — with kind + helm + kubectl + docker + jq +
++  python3 installed, run `bash reference/helm/eden/ci-smoke.sh`.
++
++## 9. What 13a does not cover
++
++GPU executor as a k8s Job (13b), managed external Postgres (13c), S3/GCS blob
++backend (13d), Forgejo auth + per-branch ACLs + native PR review (13e), and
++`--mode subprocess` + DooD worker hosts (a later 13 sub-chunk). The artifact
++store is a web-ui-owned `ReadWriteOnce` PVC; cross-service artifact serving needs
++a `ReadWriteMany` or external blob backend (13d). Operators who need
++user-supplied LLM workers via subprocess + DooD stay on the Compose stack until
++13b lands.
+diff --git a/docs/roadmap.md b/docs/roadmap.md
+index 217234b..f1336a5 100644
+--- a/docs/roadmap.md
++++ b/docs/roadmap.md
+@@ -273,8 +273,8 @@ Units and chunking to be named closer to execution — too far ahead to estimate
+ 
+ Units and chunking to be named closer to execution. Scope:
+ 
+-- Base Helm chart for the reference services.
+-- Executor as a k8s Job (GPU node selection).
+-- Managed Postgres migration.
+-- S3/GCS blob backend.
+-- Forgejo with auth + per-branch ACLs + native PR review enabled.
++- [13a](plans/eden-phase-13a-helm-base-chart.md) — Base Helm chart for the reference services — **shipped 2026-06-04** (see [CHANGELOG](../CHANGELOG.md))
++- Executor as a k8s Job (GPU node selection) — 13b.
++- Managed Postgres migration — 13c.
++- S3/GCS blob backend — 13d.
++- Forgejo with auth + per-branch ACLs + native PR review enabled — 13e.
+diff --git a/reference/helm/eden/Chart.yaml b/reference/helm/eden/Chart.yaml
+new file mode 100644
+index 0000000..a6d691c
+--- /dev/null
++++ b/reference/helm/eden/Chart.yaml
+@@ -0,0 +1,27 @@
++apiVersion: v2
++name: eden
++description: >-
++  EDEN reference deployment as a Helm chart — the EDEN services the Compose
++  stack runs (task-store-server, orchestrator, ideator/executor/evaluator hosts,
++  web-ui, Forgejo, Postgres; plus an opt-in control plane for lease mode),
++  packaged for any conforming Kubernetes cluster (1.27+). Phase 13a base chart;
++  cloud-specific extensions land in 13b–13e.
++type: application
++# Chart version follows the EDEN repo's tagged versions (0.x for v0).
++version: 0.1.0
++# appVersion pins the eden-reference image tag the chart is built against.
++# It is documentation only — the operator supplies the actual image via
++# image.repository + image.tag (Decision 7; the image is the operator's to
++# build + push). See docs/deployment/helm.md "Image build vs chart version".
++appVersion: "0.1.0"
++kubeVersion: ">=1.27.0-0"
++home: https://github.com/ealt/eden
++sources:
++  - https://github.com/ealt/eden
++keywords:
++  - eden
++  - directed-evolution
++  - orchestration
++maintainers:
++  - name: EDEN maintainers
++    url: https://github.com/ealt/eden
+diff --git a/reference/helm/eden/README.md b/reference/helm/eden/README.md
+new file mode 100644
+index 0000000..9fb4b49
+--- /dev/null
++++ b/reference/helm/eden/README.md
+@@ -0,0 +1,152 @@
++# EDEN reference Helm chart
++
++The Helm packaging of the EDEN reference deployment — the EDEN services the
++[Compose stack](../../compose/) runs (task-store-server, orchestrator,
++ideator/executor/evaluator hosts, web-ui, Forgejo, Postgres), deployable on any
++conforming Kubernetes cluster (1.27+). The **default** deployment runs the
++single-experiment path (one orchestrator, no control plane), mirroring the
++Compose default stack that `compose-smoke` validates. Lease-driven HA (a
++control plane plus multiple contending orchestrator replicas) is an opt-in
++toggle — `orchestrator.leaseMode.enabled` — that is **deferred + unvalidated
++behind [#281](https://github.com/ealt/eden/issues/281)**; leave it off.
++
++This chart is **parallel** to the Compose deployment, not a replacement. Both
++are first-class v0 substrates; Compose is the local-development path, Helm is
++the production-ish path. See [`docs/deployment/helm.md`](../../../docs/deployment/helm.md)
++for the full operator guide; this README is the chart-local quick reference.
++
++## Prerequisites
++
++- A Kubernetes cluster (1.27+) with a default `StorageClass` that provisions
++  `ReadWriteOnce` PVCs, plus `kubectl` + `helm` (3.x) configured against it.
++- The `eden-reference` image **built and pushed** to a registry the cluster
++  can pull from. The chart does **not** build the image — the Compose stack
++  builds `eden-reference:dev` as a local Dockerfile target
++  ([`reference/compose/Dockerfile`](../../compose/Dockerfile)), which a cluster
++  cannot pull. Build + push it yourself:
++
++  ```sh
++  docker build -t <registry>/eden-reference:<tag> \
++    -f reference/compose/Dockerfile .
++  docker push <registry>/eden-reference:<tag>
++  ```
++
++`image.repository` and `image.tag` are **required** — the chart fails at
++template time (via `values.schema.json`) if either is empty, rather than at
++pod-pull time with a confusing `ErrImagePull`.
++
++## Quickstart
++
++The canonical bootstrap is `setup-experiment-helm.sh`, which seeds the bare
++repo, mints the experiment's opaque worker identities, and brings the stack up
++in three phases. Omit `--experiment-id` to mint a fresh opaque `exp_*` id:
++
++```sh
++bash reference/scripts/setup-experiment-helm.sh \
++  --namespace eden-prod \
++  --release eden \
++  --image <registry>/eden-reference:<tag> \
++  --experiment-config tests/fixtures/experiment/.eden/config.yaml
++```
++
++Then reach the Web UI (port-forward offset to avoid Compose's 8090):
++
++```sh
++kubectl -n eden-prod port-forward svc/eden-web-ui 18090:8090
++open http://localhost:18090/
++```
++
++### Why three phases
++
++Two facts shape the bootstrap. First, the reference task-store-server is
++single-experiment per process and records its **seed commit** at first
++experiment-row creation, so the task-store-server must not start until the seed
++SHA is known. Second, under the [#128](https://github.com/ealt/eden/issues/128)
++opaque-id model the task-store-server **mints** every worker id (`wkr_*`) — the
++orchestrator, worker hosts, and web-ui cannot start until their minted
++`worker_id` exists. So `setup-experiment-helm.sh`:
++
++1. `helm upgrade --install` with `baseCommitSha` empty → only the **infra tier**
++   (Postgres, Forgejo) comes up.
++2. Provisions the Forgejo `eden` user, seeds the bare repo via a one-shot Job
++   (the push auto-creates the repo), reads the seed SHA, then
++   `helm upgrade --set experiment.baseCommitSha=<sha>` → the **task-store-server**
++   comes up (its render gate is `baseCommitSha`).
++3. Mints the reserved groups (`admins`, `orchestrators`) + one worker per
++   service (`POST {"name": ...}`, capturing each minted `worker_id` +
++   one-time `registration_token`), then `helm upgrade` with the minted
++   `identity.*` values → the **app tier** (orchestrator, worker hosts, web-ui)
++   comes up with pre-provisioned credentials. Each identity-consuming service
++   renders only once its `identity.<svc>.workerId` is set.
++
++The chart hands each pod its minted `worker_id` as `--worker-id` and renders a
++per-service Secret carrying the token, which an initContainer installs at
++`/var/lib/eden/credentials/<workerId>.token`; the service's startup credential
++bootstrap verifies it via `/whoami` (no admin reissue). The minted ids + tokens
++are stored in the release values, so re-running the script reuses them rather
++than minting duplicates. `setup-experiment-helm.sh` is the canonical, supported
++bootstrap — a plain `helm install` cannot mint the server-side identities.
++
++## Values
++
++| Key | Default | Notes |
++|---|---|---|
++| `image.repository` / `image.tag` | `""` (required) | The pushed reference image. |
++| `image.pullPolicy` | `IfNotPresent` | `Never` for kind-loaded images. |
++| `image.pullSecrets` | `[]` | `[{name: <secret>}]` for private registries. |
++| `experiment.id` | `""` (required) | Opaque `exp_*` id; minted by the setup script when `--experiment-id` is omitted. |
++| `experiment.config` | fixture | Inline experiment-config YAML → ConfigMap. |
++| `experiment.baseCommitSha` | `""` | Store-tier gate; set by the setup script. |
++| `identity.<svc>.workerId` / `.token` | `""` | Minted worker id + token per service; set by the setup script (app-tier gate). |
++| `orchestrator.leaseMode.enabled` | `false` | Opt-in lease-driven HA + control plane. Deferred + unvalidated behind #281. |
++| `replicas.orchestrator` | `1` | Single-experiment. Raising it needs lease mode + per-replica identities (#281). |
++| `replicas.*` | `1` | Per-service replica counts. |
++| `secrets.*` | `""` | Dev: inline; prod: `secrets.existingSecret`. |
++| `storage.className` | `""` | Cluster default `StorageClass` if empty. |
++| `storage.*Size` | see values | PVC sizes (Postgres, Forgejo, per-service clones, artifacts). |
++| `ingress.enabled` | `false` | Web UI Ingress; operator picks the controller. |
++| `config.maxQuiescentIterations` | `0` | `0` = never exit on quiescence (k8s; Decision 9). |
++| `config.workerMode` | `scripted` | Only `scripted` in 13a (Decision 10). |
++
++See [`values.yaml`](values.yaml) for the full annotated surface and
++[`values.schema.json`](values.schema.json) for the validation rules.
++
++### Secrets
++
++- **Dev**: set `secrets.adminToken`, `secrets.postgresPassword`, etc. inline;
++  the chart materializes `<release>-secrets`. The Postgres password is
++  interpolated into the DSNs verbatim, so it must be URL-safe (the setup script
++  generates hex).
++- **Prod**: pre-create the Secret externally (Sealed Secrets / External Secrets
++  / Vault) and set `secrets.existingSecret`. It must carry every key the
++  chart-managed Secret would — see the header comment in
++  [`templates/secret.yaml`](templates/secret.yaml).
++
++## Operational notes
++
++- **PVC retention.** StatefulSet `volumeClaimTemplates` PVCs are **not**
++  deleted on `helm uninstall`. To fully tear down: `helm uninstall <release> -n
++  <ns>` then `kubectl delete pvc -n <ns> --all`. Note: `helm uninstall` DOES
++  delete the chart-managed Secret while keeping the PVCs, so a reinstall with
++  regenerated secrets can't authenticate against the retained Postgres data —
++  use `secrets.existingSecret` for reinstallable deployments (see
++  [`docs/deployment/helm.md`](../../../docs/deployment/helm.md) §5).
++- **Coexistence.** Use a distinct namespace per release; two releases in the
++  same namespace collide on resource names. When running alongside the Compose
++  stack on one machine, port-forward to offset ports (e.g. 18090) to avoid
++  Compose's published 8090 / 3001.
++- **Scaling to zero.** Set `replicas.<service> = 0` to idle a workload; the PVCs
++  are retained, so scaling back up reattaches the per-replica clones.
++- **Orchestrator restarts.** In the default single-experiment path there is one
++  orchestrator; while its pod restarts no dispatch happens (sub-second to a few
++  seconds on a StatefulSet rollout). Standby-replica failover needs lease mode,
++  which is deferred behind #281.
++
++## Scope (13a)
++
++In scope: the base chart + the `--mode scripted` worker hosts + an embedded
++Postgres / Forgejo. Out of scope (later 13 sub-chunks): GPU executor as a k8s
++Job (13b), managed Postgres (13c), S3/GCS blob backend (13d), Forgejo auth +
++per-branch ACLs (13e), and `--mode subprocess` + DooD worker hosts. The artifact
++store is a web-ui-owned RWO PVC in 13a; cross-service artifact serving needs a
++RWX/blob backend (13d).
+diff --git a/reference/helm/eden/bootstrap/repo-init-job.yaml.tmpl b/reference/helm/eden/bootstrap/repo-init-job.yaml.tmpl
+new file mode 100644
+index 0000000..285700f
+--- /dev/null
++++ b/reference/helm/eden/bootstrap/repo-init-job.yaml.tmpl
+@@ -0,0 +1,84 @@
++# Per-experiment bare-repo seed Job — NOT a chart template.
++#
++# Helm does not render files outside templates/, by design: this Job's
++# lifecycle is per-EXPERIMENT, not per-RELEASE (the long-lived release hosts
++# many experiments over time, so a chart-managed singleton can't bootstrap
++# experiment 2, 3, … with distinct inputs — see plan §3.5 and the AGENTS.md
++# "Multi-tenant lifecycle" pitfall). setup-experiment-helm.sh renders this with
++# `envsubst` and `kubectl apply`s it, one Job per experiment.
++#
++# The Job seeds an empty bare repo (ephemeral staging) and pushes the seed
++# commit to Forgejo over HTTP Basic via the chart's git-credential-helper. It
++# emits `EDEN_REPO_SEEDED sha=<hex>` (or `EDEN_REPO_ALREADY_SEEDED sha=<hex>`)
++# on stdout; the script reads the SHA from the pod log.
++#
++# Substituted variables (written without the dollar-brace syntax here so the
++# template renderer does not expand them inside this comment): EDEN_NAMESPACE,
++# EDEN_JOB_NAME, EDEN_IMAGE, EDEN_IMAGE_PULL_POLICY, EDEN_SECRET_NAME,
++# EDEN_HELPER_CONFIGMAP, EDEN_FORGEJO_REMOTE_URL, EDEN_IMAGE_PULL_SECRETS
++# (a rendered imagePullSecrets block or empty, so private-registry pulls work),
++# and EDEN_POD_SCHEDULING (rendered nodeSelector/tolerations/affinity from the
++# release values, so the seed Job schedules on the same constrained/tainted
++# nodes the chart pods target).
++apiVersion: batch/v1
++kind: Job
++metadata:
++  name: ${EDEN_JOB_NAME}
++  namespace: ${EDEN_NAMESPACE}
++  labels:
++    app.kubernetes.io/name: eden
++    app.kubernetes.io/component: repo-init
++spec:
++  backoffLimit: 2
++  # Reaped by setup-experiment-helm.sh after it reads the seed SHA.
++  ttlSecondsAfterFinished: 600
++  template:
++    metadata:
++      labels:
++        app.kubernetes.io/name: eden
++        app.kubernetes.io/component: repo-init
++    spec:
++      restartPolicy: Never
++${EDEN_IMAGE_PULL_SECRETS}
++${EDEN_POD_SCHEDULING}
++      # The image runs as uid/gid 1000 (eden); fsGroup makes the staging
++      # emptyDir group-writable so the seed git writes succeed.
++      securityContext:
++        fsGroup: 1000
++      containers:
++        - name: repo-init
++          image: ${EDEN_IMAGE}
++          imagePullPolicy: ${EDEN_IMAGE_PULL_POLICY}
++          env:
++            - name: FORGEJO_REMOTE_PASSWORD
++              valueFrom:
++                secretKeyRef:
++                  name: ${EDEN_SECRET_NAME}
++                  key: FORGEJO_REMOTE_PASSWORD
++          command:
++            - python
++            - -m
++            - eden_service_common.repo_init
++            # Seed into a CHILD of the staging mount: fsGroup leaves the mount
++            # root root-owned (group-writable), so eden mkdir's repo/ as an
++            # eden-owned child — otherwise the later `git push` trips git's
++            # dubious-ownership check. Mirrors the StatefulSet clone pattern.
++            - --repo-path
++            - /var/lib/eden/seed/repo
++            - --push-to
++            - ${EDEN_FORGEJO_REMOTE_URL}
++            - --credential-helper
++            - /etc/eden/git-credential-helper
++          volumeMounts:
++            - name: staging
++              mountPath: /var/lib/eden/seed
++            - name: git-credential-helper
++              mountPath: /etc/eden/git-credential-helper
++              subPath: git-credential-helper
++      volumes:
++        - name: staging
++          emptyDir: {}
++        - name: git-credential-helper
++          configMap:
++            name: ${EDEN_HELPER_CONFIGMAP}
++            defaultMode: 0555
+diff --git a/reference/helm/eden/ci-smoke.sh b/reference/helm/eden/ci-smoke.sh
+new file mode 100755
+index 0000000..35f3db9
+--- /dev/null
++++ b/reference/helm/eden/ci-smoke.sh
+@@ -0,0 +1,128 @@
++#!/usr/bin/env bash
++set -euo pipefail
++
++# helm-smoke — the Helm analogue of reference/compose/healthcheck/smoke.sh.
++#
++# Spins up a kind cluster, builds + loads the reference image, runs
++# setup-experiment-helm.sh against the fixture experiment, waits for the
++# orchestrator to drive 3 ideation tasks → 3 variants → 3 integrations, and
++# asserts the same end-state as compose-smoke: >= 3 variant.integrated, >= 9
++# task.completed, >= 3 ideation-task task.completed events. Tears the cluster
++# down on every exit path.
++#
++# Mirrors the CI helm-smoke job; runnable locally with kind + helm + kubectl +
++# docker + jq + python3 installed.
++
++for tool in kind kubectl helm docker jq python3; do
++    command -v "$tool" >/dev/null || {
++        echo "ci-smoke.sh requires '$tool' on PATH" >&2
++        exit 2
++    }
++done
++
++SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
++CHART_DIR="$SCRIPT_DIR"
++REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
++
++CLUSTER="${EDEN_KIND_CLUSTER:-eden-helm-smoke}"
++NAMESPACE="eden-ci"
++RELEASE="eden"
++IMAGE="eden-reference:ci"
++# Mint a valid opaque exp_* id (#128 grammar ^exp_[0-9a-hjkmnp-tv-z]{26}$). An
++# operator-typed mnemonic like "exp-1" is rejected by the event model at runtime,
++# so the smoke must drive a real opaque id end-to-end.
++EXPERIMENT_ID="$(python3 -c '
++import secrets, time
++alphabet = "0123456789abcdefghjkmnpqrstvwxyz"
++value = ((int(time.time() * 1000) & ((1 << 48) - 1)) << 80) | secrets.randbits(80)
++print("exp_" + "".join(alphabet[(value >> (5 * i)) & 31] for i in range(26))[::-1])
++')"
++# Quiescence budget: the orchestrator runs forever (maxQuiescentIterations=0),
++# so we poll for the integration end-state rather than for a clean exit.
++DEADLINE_SECONDS="${EDEN_HELM_SMOKE_DEADLINE:-240}"
++
++# Only tear down a cluster THIS script created — never delete a pre-existing
++# local cluster that happens to share the name.
++CREATED_CLUSTER=0
++cleanup() {
++    local rc=$?
++    if [[ "$CREATED_CLUSTER" -eq 1 ]]; then
++        echo "--- tearing down kind cluster ${CLUSTER} ---" >&2
++        kind delete cluster --name "$CLUSTER" >/dev/null 2>&1 || true
++    fi
++    exit "$rc"
++}
++trap cleanup EXIT
++
++if kind get clusters 2>/dev/null | grep -qx "$CLUSTER"; then
++    echo "kind cluster '${CLUSTER}' already exists; refusing to reuse/delete it." >&2
++    echo "Delete it yourself or set EDEN_KIND_CLUSTER to a fresh name." >&2
++    exit 2
++fi
++echo "--- creating kind cluster ${CLUSTER} ---" >&2
++kind create cluster --name "$CLUSTER" --wait 120s
++CREATED_CLUSTER=1
++
++echo "--- building + loading ${IMAGE} ---" >&2
++docker build -t "$IMAGE" -f "${REPO_ROOT}/reference/compose/Dockerfile" "$REPO_ROOT"
++kind load docker-image "$IMAGE" --name "$CLUSTER"
++
++echo "--- running setup-experiment-helm.sh ---" >&2
++bash "${REPO_ROOT}/reference/scripts/setup-experiment-helm.sh" \
++    --namespace "$NAMESPACE" \
++    --release "$RELEASE" \
++    --chart "$CHART_DIR" \
++    --values "${CHART_DIR}/ci-values.yaml" \
++    --experiment-config "${REPO_ROOT}/tests/fixtures/experiment/.eden/config.yaml" \
++    --experiment-id "$EXPERIMENT_ID" \
++    --timeout 5m
++
++TASK_STORE_POD="$(kubectl get pod -n "$NAMESPACE" \
++    -l app.kubernetes.io/component=task-store-server -o name | head -n1)"
++ADMIN_TOKEN="$(kubectl get secret "${RELEASE}-secrets" -n "$NAMESPACE" \
++    -o 'jsonpath={.data.EDEN_ADMIN_TOKEN}' | base64 -d)"
++
++fetch_events() {
++    kubectl exec -n "$NAMESPACE" "$TASK_STORE_POD" -- curl -fsS \
++        -H "Authorization: Bearer admin:${ADMIN_TOKEN}" \
++        -H "X-Eden-Experiment-Id: ${EXPERIMENT_ID}" \
++        "http://localhost:8080/v0/experiments/${EXPERIMENT_ID}/events"
++}
++
++count_type() {
++    # count_type <events-json> <type> [task-id-prefix]
++    if [[ -n "${3:-}" ]]; then
++        echo "$1" | jq --arg p "$3" '(.events // .) | [.[] | select(
++            .type == "task.completed" and (.data.task_id | startswith($p)))] | length'
++    else
++        echo "$1" | jq --arg t "$2" '(.events // .) | [.[] | select(.type == $t)] | length'
++    fi
++}
++
++echo "--- waiting for >= 3 variant.integrated (budget ${DEADLINE_SECONDS}s) ---" >&2
++elapsed=0
++integrated=0
++while [[ "$elapsed" -lt "$DEADLINE_SECONDS" ]]; do
++    events="$(fetch_events 2>/dev/null || echo '{}')"
++    integrated="$(count_type "$events" "variant.integrated")"
++    if [[ "${integrated:-0}" -ge 3 ]]; then
++        break
++    fi
++    sleep 5
++    elapsed=$((elapsed + 5))
++done
++
++events="$(fetch_events)"
++integrated="$(count_type "$events" "variant.integrated")"
++completed="$(count_type "$events" "task.completed")"
++ideation_completed="$(count_type "$events" "task.completed" "ideation-")"
++
++echo "--- final counts: variant.integrated=${integrated} task.completed=${completed} ideation=${ideation_completed} ---" >&2
++test "${integrated:-0}" -ge 3 || { echo "expected >= 3 variant.integrated; got ${integrated}" >&2; exit 1; }
++test "${completed:-0}" -ge 9 || { echo "expected >= 9 task.completed; got ${completed}" >&2; exit 1; }
++test "${ideation_completed:-0}" -ge 3 || { echo "expected >= 3 ideation task.completed; got ${ideation_completed}" >&2; exit 1; }
++
++echo "--- running helm test (connection probe) ---" >&2
++helm test "$RELEASE" -n "$NAMESPACE" --timeout 2m
++
++echo "--- helm-smoke PASSED ---" >&2
+diff --git a/reference/helm/eden/ci-values.yaml b/reference/helm/eden/ci-values.yaml
+new file mode 100644
+index 0000000..297948c
+--- /dev/null
++++ b/reference/helm/eden/ci-values.yaml
+@@ -0,0 +1,56 @@
++# Pinned values for the helm-smoke / helm-lint CI jobs. NOT for production —
++# secrets are dev placeholders inline and storage sizes are minimized for a
++# single-node kind cluster.
++#
++# CI builds the reference image locally and `kind load`s it as
++# eden-reference:ci, so pullPolicy is Never (nothing is pulled from a registry).
++image:
++  repository: eden-reference
++  tag: ci
++  pullPolicy: Never
++
++experiment:
++  # A valid opaque exp_* placeholder (lint/template only). setup-experiment-helm.sh
++  # overrides this with --set-string experiment.id=<minted exp_*> at install time.
++  # An operator-typed mnemonic (e.g. "exp-1") is invalid post-#128 — the event
++  # model rejects any id not matching ^exp_[0-9a-hjkmnp-tv-z]{26}$.
++  id: exp_0123456789abcdefghjkmnpqrs
++  # baseCommitSha is left empty: setup-experiment-helm.sh seeds Forgejo, then
++  # `helm upgrade --set experiment.baseCommitSha=<sha>` brings the app tier up.
++  baseCommitSha: ""
++  config:
++    parallel_variants: 1
++    evaluation_schema:
++      score: real
++    objective:
++      expr: "score"
++      direction: "maximize"
++    ideation_policy:
++      kind: fixed_total
++      total: 3
++
++# replicas.orchestrator defaults to 1 (single-experiment); no override needed.
++# Lease-driven HA is opt-in (orchestrator.leaseMode.enabled) and deferred (#281),
++# so the smoke runs the default single-experiment path that compose-smoke validates.
++
++secrets:
++  adminToken: ci-admin-token
++  sessionSecret: ci-session-secret
++  postgresPassword: cipgpassword
++  readonlyPassword: cireadonlypassword
++  forgejoRemotePassword: ciforgejopassword
++  forgejoSecretKey: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcd"
++  forgejoInternalToken: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcd"
++
++storage:
++  postgresSize: 1Gi
++  forgejoSize: 1Gi
++  orchestratorRepoSize: 1Gi
++  executorRepoSize: 1Gi
++  evaluatorRepoSize: 1Gi
++  webUiRepoSize: 1Gi
++  artifactsSize: 1Gi
++
++config:
++  # Run-forever quiescence per Decision 9 (Kubernetes restartPolicy: Always).
++  maxQuiescentIterations: 0
+diff --git a/reference/helm/eden/templates/_helpers.tpl b/reference/helm/eden/templates/_helpers.tpl
+new file mode 100644
+index 0000000..5f41fd6
+--- /dev/null
++++ b/reference/helm/eden/templates/_helpers.tpl
+@@ -0,0 +1,230 @@
++{{/*
++Chart name. The chart deliberately does NOT support nameOverride: the setup
++script derives the same fullname in bash, and a values-only override would
++silently diverge from the resource names it targets.
++*/}}
++{{- define "eden.name" -}}
++{{- .Chart.Name | trunc 63 | trimSuffix "-" -}}
++{{- end -}}
++
++{{/*
++Fully-qualified release name. With the conventional release name "eden" and
++chart name "eden" this collapses to "eden", so resources read as
++"eden-orchestrator", "eden-postgres", etc. Two releases in the SAME namespace
++WOULD collide on these names — operators MUST use distinct namespaces per
++release (see README "Coexistence").
++*/}}
++{{- define "eden.fullname" -}}
++{{- $name := .Chart.Name -}}
++{{- /* Truncate to 40, not 63: per-resource suffixes are appended after this
++       (the longest, "-git-credential-helper", is 22 chars), so reserving
++       headroom keeps every rendered name within Kubernetes' 63-char DNS
++       label limit even for long release names. */ -}}
++{{- if contains $name .Release.Name -}}
++{{- .Release.Name | trunc 40 | trimSuffix "-" -}}
++{{- else -}}
++{{- printf "%s-%s" .Release.Name $name | trunc 40 | trimSuffix "-" -}}
++{{- end -}}
++{{- end -}}
++
++{{/*
++Chart label value (name-version).
++*/}}
++{{- define "eden.chart" -}}
++{{- printf "%s-%s" .Chart.Name .Chart.Version | replace "+" "_" | trunc 63 | trimSuffix "-" -}}
++{{- end -}}
++
++{{/*
++Common labels stamped on every resource.
++*/}}
++{{- define "eden.labels" -}}
++helm.sh/chart: {{ include "eden.chart" . }}
++{{ include "eden.selectorLabels" . }}
++{{- if .Chart.AppVersion }}
++app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
++{{- end }}
++app.kubernetes.io/managed-by: {{ .Release.Service }}
++{{- end -}}
++
++{{/*
++Selector labels (release-scoped, no version — version must not be a selector).
++*/}}
++{{- define "eden.selectorLabels" -}}
++app.kubernetes.io/name: {{ include "eden.name" . }}
++app.kubernetes.io/instance: {{ .Release.Name }}
++{{- end -}}
++
++{{/*
++Per-component selector labels. Call with (dict "ctx" . "component" "orchestrator").
++*/}}
++{{- define "eden.componentSelectorLabels" -}}
++{{ include "eden.selectorLabels" .ctx }}
++app.kubernetes.io/component: {{ .component }}
++{{- end -}}
++
++{{/*
++Per-component full labels. Call with (dict "ctx" . "component" "orchestrator").
++*/}}
++{{- define "eden.componentLabels" -}}
++{{ include "eden.labels" .ctx }}
++app.kubernetes.io/component: {{ .component }}
++{{- end -}}
++
++{{/*
++Resolved container image reference. image.repository + image.tag are both
++required (values.schema.json minLength: 1).
++*/}}
++{{- define "eden.image" -}}
++{{- printf "%s:%s" (required "image.repository is required — build + push the eden-reference image and set image.repository (see docs/deployment/helm.md)" .Values.image.repository) (required "image.tag is required — set image.tag to the pushed image tag" .Values.image.tag) -}}
++{{- end -}}
++
++{{/*
++imagePullSecrets block (renders nothing when empty).
++*/}}
++{{- define "eden.imagePullSecrets" -}}
++{{- if .Values.image.pullSecrets }}
++imagePullSecrets:
++{{- range .Values.image.pullSecrets }}
++  - {{ toYaml . | nindent 4 | trim }}
++{{- end }}
++{{- end -}}
++{{- end -}}
++
++{{/*
++The Secret name the workloads pull env from: the operator's existingSecret
++when set, else the chart-managed "<fullname>-secrets".
++*/}}
++{{- define "eden.secretName" -}}
++{{- if .Values.secrets.existingSecret -}}
++{{- .Values.secrets.existingSecret -}}
++{{- else -}}
++{{- printf "%s-secrets" (include "eden.fullname" .) -}}
++{{- end -}}
++{{- end -}}
++
++{{/*
++Whether the store tier renders. The task-store-server needs a seeded base
++commit (it stamps the seed onto the experiment row at first creation); see
++values.yaml "experiment.baseCommitSha".
++*/}}
++{{- define "eden.appEnabled" -}}
++{{- if .Values.experiment.baseCommitSha -}}true{{- else -}}false{{- end -}}
++{{- end -}}
++
++{{/*
++Whether lease-driven HA mode is enabled (opt-in, default false). When true the
++control-plane Deployment renders, the orchestrator + web-ui get
++EDEN_CONTROL_PLANE_URL, and setup-experiment-helm.sh registers the experiment
++with the control plane. DEFERRED + unvalidated behind #281.
++*/}}
++{{- define "eden.leaseModeEnabled" -}}
++{{- if (((.Values.orchestrator).leaseMode).enabled) -}}true{{- else -}}false{{- end -}}
++{{- end -}}
++
++{{/*
++Whether an identity-consuming service should render. An identity service
++(orchestrator, web-ui, worker hosts) renders only once BOTH the store tier is
++enabled AND its minted worker_id is set (so the app tier holds back until
++setup-experiment-helm.sh has provisioned identities). Call with
++(dict "ctx" . "key" "orchestrator").
++*/}}
++{{- define "eden.identityEnabled" -}}
++{{- $id := index .ctx.Values.identity .key -}}
++{{- if and (eq (include "eden.appEnabled" .ctx) "true") $id.workerId -}}true{{- else -}}false{{- end -}}
++{{- end -}}
++
++{{/*
++Per-service identity Secret name. Call with (dict "ctx" . "component" "orchestrator").
++*/}}
++{{- define "eden.identitySecretName" -}}
++{{- printf "%s-%s-identity" (include "eden.fullname" .ctx) .component -}}
++{{- end -}}
++
++{{/*
++The per-service credential-provisioning initContainer: installs the minted
++worker's token (from its identity Secret) into the writable credentials emptyDir
++at /var/lib/eden/credentials/<workerId>.token (mode 0600), so the service's
++startup credential-bootstrap verifies it via /whoami without an admin reissue.
++Call with (dict "ctx" . "workerId" <id> "component" <component>).
++*/}}
++{{- define "eden.identityInitContainer" -}}
++- name: provision-credential
++  image: {{ include "eden.image" .ctx | quote }}
++  imagePullPolicy: {{ .ctx.Values.image.pullPolicy }}
++  command:
++    - sh
++    - -c
++    - |
++      set -e
++      umask 077
++      cp /etc/eden/identity/token "/var/lib/eden/credentials/{{ .workerId }}.token"
++  volumeMounts:
++    - name: identity-token
++      mountPath: /etc/eden/identity
++      readOnly: true
++    - name: credentials
++      mountPath: /var/lib/eden/credentials
++{{- end -}}
++
++{{/*
++The volumes backing the identity flow: the read-only token Secret + the writable
++credentials emptyDir the initContainer copies it into (and the service's
++bootstrap lock/reissue path writes to). Call with
++(dict "ctx" . "component" <component>).
++*/}}
++{{- define "eden.identityVolumes" -}}
++- name: identity-token
++  secret:
++    secretName: {{ include "eden.identitySecretName" (dict "ctx" .ctx "component" .component) }}
++- name: credentials
++  emptyDir: {}
++{{- end -}}
++
++{{/*
++In-cluster service URLs derived from the release fullname.
++*/}}
++{{- define "eden.taskStoreUrl" -}}
++{{- printf "http://%s-task-store-server:8080" (include "eden.fullname" .) -}}
++{{- end -}}
++
++{{- define "eden.controlPlaneUrl" -}}
++{{- printf "http://%s-control-plane:8081" (include "eden.fullname" .) -}}
++{{- end -}}
++
++{{- define "eden.forgejoRemoteUrl" -}}
++{{- printf "http://%s-forgejo:3000/eden/%s.git" (include "eden.fullname" .) .Values.experiment.id -}}
++{{- end -}}
++
++{{/*
++The Web UI ingress host: explicit value, else a per-release default that
++avoids cross-release hostname collisions.
++*/}}
++{{- define "eden.webUiHost" -}}
++{{- if .Values.ingress.hosts.webUi -}}
++{{- .Values.ingress.hosts.webUi -}}
++{{- else -}}
++{{- printf "%s-webui.eden.local" .Release.Name -}}
++{{- end -}}
++{{- end -}}
++
++{{/*
++Path to the git credential-helper mounted from the ConfigMap.
++*/}}
++{{- define "eden.credentialHelperPath" -}}
++/etc/eden/git-credential-helper
++{{- end -}}
++
++{{/*
++Rollout-trigger checksums for the pod template's metadata.annotations. A change
++to the chart-managed Secret or the startup-read ConfigMaps changes these
++annotations, which changes the pod template and forces a rolling restart — so a
++re-run that rotates a secret (or edits the experiment config) doesn't leave
++pods running with stale env/config. (With secrets.existingSecret the Secret
++template renders empty, so its checksum is stable — external-secret rotation is
++the operator's concern.)
++*/}}
++{{- define "eden.rolloutChecksums" -}}
++checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
++checksum/experiment-config: {{ include (print $.Template.BasePath "/experiment-config-configmap.yaml") . | sha256sum }}
++checksum/git-credential-helper: {{ include (print $.Template.BasePath "/git-credential-helper-configmap.yaml") . | sha256sum }}
++{{- end -}}
+diff --git a/reference/helm/eden/templates/control-plane-deployment.yaml b/reference/helm/eden/templates/control-plane-deployment.yaml
+new file mode 100644
+index 0000000..75ac32f
+--- /dev/null
++++ b/reference/helm/eden/templates/control-plane-deployment.yaml
+@@ -0,0 +1,103 @@
++{{- /*
++The control plane is only deployed in lease-driven HA mode (opt-in, deferred
++behind #281). The default single-experiment path runs without it — the
++orchestrator drives its one experiment directly and never talks to a control
++plane. See values.yaml "orchestrator.leaseMode".
++*/ -}}
++{{- if eq (include "eden.leaseModeEnabled" .) "true" }}
++{{- $fullName := include "eden.fullname" . }}
++apiVersion: apps/v1
++kind: Deployment
++metadata:
++  name: {{ $fullName }}-control-plane
++  labels:
++    {{- include "eden.componentLabels" (dict "ctx" . "component" "control-plane") | nindent 4 }}
++spec:
++  replicas: {{ .Values.replicas.controlPlane }}
++  selector:
++    matchLabels:
++      {{- include "eden.componentSelectorLabels" (dict "ctx" . "component" "control-plane") | nindent 6 }}
++  template:
++    metadata:
++      annotations:
++        {{- include "eden.rolloutChecksums" . | nindent 8 }}
++      labels:
++        {{- include "eden.componentLabels" (dict "ctx" . "component" "control-plane") | nindent 8 }}
++    spec:
++      {{- include "eden.imagePullSecrets" . | nindent 6 }}
++      {{- with .Values.nodeSelector }}
++      nodeSelector: {{- toYaml . | nindent 8 }}
++      {{- end }}
++      {{- with .Values.tolerations }}
++      tolerations: {{- toYaml . | nindent 8 }}
++      {{- end }}
++      {{- with .Values.affinity }}
++      affinity: {{- toYaml . | nindent 8 }}
++      {{- end }}
++      containers:
++        - name: control-plane
++          image: {{ include "eden.image" . | quote }}
++          imagePullPolicy: {{ .Values.image.pullPolicy }}
++          envFrom:
++            - secretRef:
++                name: {{ include "eden.secretName" . }}
++          ports:
++            - name: http
++              containerPort: 8081
++          args:
++            - python
++            - -m
++            - eden_control_plane_server
++            - --store-url
++            - $(EDEN_CONTROL_PLANE_STORE_URL)
++            - --host
++            - 0.0.0.0
++            - --port
++            - "8081"
++            - --admin-token
++            - $(EDEN_ADMIN_TOKEN)
++            - --task-store-url
++            - {{ include "eden.taskStoreUrl" . | quote }}
++            - --lease-duration-seconds
++            - {{ .Values.config.leaseDurationSeconds | quote }}
++            - --state-sync-interval-seconds
++            - {{ .Values.config.stateSyncIntervalSeconds | quote }}
++            - --state-sync-failure-threshold
++            - {{ .Values.config.stateSyncFailureThreshold | quote }}
++            - --log-level
++            - info
++          readinessProbe:
++            httpGet:
++              path: /healthz
++              port: http
++            initialDelaySeconds: 5
++            periodSeconds: 5
++            timeoutSeconds: 3
++            failureThreshold: 20
++          livenessProbe:
++            httpGet:
++              path: /healthz
++              port: http
++            initialDelaySeconds: 15
++            periodSeconds: 10
++            timeoutSeconds: 3
++            failureThreshold: 6
++          {{- with .Values.resources }}
++          resources: {{- toYaml . | nindent 12 }}
++          {{- end }}
++---
++apiVersion: v1
++kind: Service
++metadata:
++  name: {{ $fullName }}-control-plane
++  labels:
++    {{- include "eden.componentLabels" (dict "ctx" . "component" "control-plane") | nindent 4 }}
++spec:
++  type: ClusterIP
++  selector:
++    {{- include "eden.componentSelectorLabels" (dict "ctx" . "component" "control-plane") | nindent 4 }}
++  ports:
++    - name: http
++      port: 8081
++      targetPort: http
++{{- end }}
+diff --git a/reference/helm/eden/templates/evaluator-host-statefulset.yaml b/reference/helm/eden/templates/evaluator-host-statefulset.yaml
+new file mode 100644
+index 0000000..56eebb1
+--- /dev/null
++++ b/reference/helm/eden/templates/evaluator-host-statefulset.yaml
+@@ -0,0 +1,115 @@
++{{- if eq (include "eden.identityEnabled" (dict "ctx" . "key" "evaluatorHost")) "true" }}
++{{- $fullName := include "eden.fullname" . }}
++{{- $id := .Values.identity.evaluatorHost }}
++apiVersion: apps/v1
++kind: StatefulSet
++metadata:
++  name: {{ $fullName }}-evaluator-host
++  labels:
++    {{- include "eden.componentLabels" (dict "ctx" . "component" "evaluator-host") | nindent 4 }}
++spec:
++  serviceName: {{ $fullName }}-evaluator-host
++  replicas: {{ .Values.replicas.evaluatorHost }}
++  selector:
++    matchLabels:
++      {{- include "eden.componentSelectorLabels" (dict "ctx" . "component" "evaluator-host") | nindent 6 }}
++  template:
++    metadata:
++      annotations:
++        {{- include "eden.rolloutChecksums" . | nindent 8 }}
++        checksum/identity: {{ $id.token | sha256sum }}
++      labels:
++        {{- include "eden.componentLabels" (dict "ctx" . "component" "evaluator-host") | nindent 8 }}
++    spec:
++      {{- include "eden.imagePullSecrets" . | nindent 6 }}
++      # The image runs as uid/gid 1000 (eden); fsGroup makes the (reserved)
++      # clone PVC + credentials emptyDir group-writable (clone PVC is forward-
++      # compat with subprocess mode; credentials for the bootstrap writes).
++      securityContext:
++        fsGroup: 1000
++      {{- with .Values.nodeSelector }}
++      nodeSelector: {{- toYaml . | nindent 8 }}
++      {{- end }}
++      {{- with .Values.tolerations }}
++      tolerations: {{- toYaml . | nindent 8 }}
++      {{- end }}
++      {{- with .Values.affinity }}
++      affinity: {{- toYaml . | nindent 8 }}
++      {{- end }}
++      initContainers:
++        {{- include "eden.identityInitContainer" (dict "ctx" . "workerId" $id.workerId "component" "evaluator-host") | nindent 8 }}
++      containers:
++        - name: evaluator-host
++          image: {{ include "eden.image" . | quote }}
++          imagePullPolicy: {{ .Values.image.pullPolicy }}
++          envFrom:
++            - secretRef:
++                name: {{ include "eden.secretName" . }}
++          args:
++            - python
++            - -m
++            - eden_evaluator_host
++            - --task-store-url
++            - {{ include "eden.taskStoreUrl" . | quote }}
++            - --experiment-id
++            - {{ required "experiment.id is required" .Values.experiment.id | quote }}
++            - --admin-token
++            - $(EDEN_ADMIN_TOKEN)
++            - --worker-id
++            - {{ $id.workerId | quote }}
++            - --mode
++            - {{ .Values.config.workerMode | quote }}
++            - --experiment-config
++            - /etc/eden/experiment-config.yaml
++            - --poll-interval
++            - {{ .Values.config.pollIntervalSeconds | quote }}
++            - --log-level
++            - info
++          volumeMounts:
++            # In scripted mode the evaluator does not clone (it scores from the
++            # task store); the clone PVC + mount are reserved for subprocess
++            # mode (13b), per Decision 3's StatefulSet-with-clone shape. Mounted
++            # at the parent (no subPath) so a future clone target child gets
++            # fsGroup ownership — see orchestrator-statefulset.yaml.
++            - name: repo
++              mountPath: /var/lib/eden/clone
++            - name: credentials
++              mountPath: /var/lib/eden/credentials
++            - name: experiment-config
++              mountPath: /etc/eden/experiment-config.yaml
++              subPath: experiment-config.yaml
++          {{- with .Values.resources }}
++          resources: {{- toYaml . | nindent 12 }}
++          {{- end }}
++      volumes:
++        {{- include "eden.identityVolumes" (dict "ctx" . "component" "evaluator-host") | nindent 8 }}
++        - name: experiment-config
++          configMap:
++            name: {{ $fullName }}-experiment-config
++  volumeClaimTemplates:
++    - metadata:
++        name: repo
++      spec:
++        accessModes: ["ReadWriteOnce"]
++        {{- if .Values.storage.className }}
++        storageClassName: {{ .Values.storage.className | quote }}
++        {{- end }}
++        resources:
++          requests:
++            storage: {{ .Values.storage.evaluatorRepoSize | quote }}
++---
++apiVersion: v1
++kind: Service
++metadata:
++  name: {{ $fullName }}-evaluator-host
++  labels:
++    {{- include "eden.componentLabels" (dict "ctx" . "component" "evaluator-host") | nindent 4 }}
++spec:
++  clusterIP: None
++  selector:
++    {{- include "eden.componentSelectorLabels" (dict "ctx" . "component" "evaluator-host") | nindent 4 }}
++  ports:
++    - name: placeholder
++      port: 8080
++      targetPort: 8080
++{{- end }}
+diff --git a/reference/helm/eden/templates/executor-host-statefulset.yaml b/reference/helm/eden/templates/executor-host-statefulset.yaml
+new file mode 100644
+index 0000000..ba4025e
+--- /dev/null
++++ b/reference/helm/eden/templates/executor-host-statefulset.yaml
+@@ -0,0 +1,118 @@
++{{- if eq (include "eden.identityEnabled" (dict "ctx" . "key" "executorHost")) "true" }}
++{{- $fullName := include "eden.fullname" . }}
++{{- $id := .Values.identity.executorHost }}
++apiVersion: apps/v1
++kind: StatefulSet
++metadata:
++  name: {{ $fullName }}-executor-host
++  labels:
++    {{- include "eden.componentLabels" (dict "ctx" . "component" "executor-host") | nindent 4 }}
++spec:
++  serviceName: {{ $fullName }}-executor-host
++  replicas: {{ .Values.replicas.executorHost }}
++  selector:
++    matchLabels:
++      {{- include "eden.componentSelectorLabels" (dict "ctx" . "component" "executor-host") | nindent 6 }}
++  template:
++    metadata:
++      annotations:
++        {{- include "eden.rolloutChecksums" . | nindent 8 }}
++        checksum/identity: {{ $id.token | sha256sum }}
++      labels:
++        {{- include "eden.componentLabels" (dict "ctx" . "component" "executor-host") | nindent 8 }}
++    spec:
++      {{- include "eden.imagePullSecrets" . | nindent 6 }}
++      # The image runs as uid/gid 1000 (eden); fsGroup makes the clone PVC +
++      # credentials emptyDir group-writable so the executor's git writes and the
++      # credential-bootstrap writes succeed.
++      securityContext:
++        fsGroup: 1000
++      {{- with .Values.nodeSelector }}
++      nodeSelector: {{- toYaml . | nindent 8 }}
++      {{- end }}
++      {{- with .Values.tolerations }}
++      tolerations: {{- toYaml . | nindent 8 }}
++      {{- end }}
++      {{- with .Values.affinity }}
++      affinity: {{- toYaml . | nindent 8 }}
++      {{- end }}
++      initContainers:
++        {{- include "eden.identityInitContainer" (dict "ctx" . "workerId" $id.workerId "component" "executor-host") | nindent 8 }}
++      containers:
++        - name: executor-host
++          image: {{ include "eden.image" . | quote }}
++          imagePullPolicy: {{ .Values.image.pullPolicy }}
++          envFrom:
++            - secretRef:
++                name: {{ include "eden.secretName" . }}
++          args:
++            - python
++            - -m
++            - eden_executor_host
++            - --task-store-url
++            - {{ include "eden.taskStoreUrl" . | quote }}
++            - --experiment-id
++            - {{ required "experiment.id is required" .Values.experiment.id | quote }}
++            - --admin-token
++            - $(EDEN_ADMIN_TOKEN)
++            - --worker-id
++            - {{ $id.workerId | quote }}
++            - --mode
++            - {{ .Values.config.workerMode | quote }}
++            - --repo-path
++            - /var/lib/eden/clone/repo
++            - --forgejo-url
++            - {{ include "eden.forgejoRemoteUrl" . | quote }}
++            - --credential-helper
++            - {{ include "eden.credentialHelperPath" . | quote }}
++            - --poll-interval
++            - {{ .Values.config.pollIntervalSeconds | quote }}
++            - --log-level
++            - info
++          volumeMounts:
++            # PVC mounted at a parent; clone into the .../clone/repo child so
++            # fsGroup ownership applies (volume root) and git creates the empty
++            # repo dir — see orchestrator-statefulset.yaml for the rationale.
++            - name: repo
++              mountPath: /var/lib/eden/clone
++            - name: credentials
++              mountPath: /var/lib/eden/credentials
++            - name: git-credential-helper
++              mountPath: {{ include "eden.credentialHelperPath" . }}
++              subPath: git-credential-helper
++          {{- with .Values.resources }}
++          resources: {{- toYaml . | nindent 12 }}
++          {{- end }}
++      volumes:
++        {{- include "eden.identityVolumes" (dict "ctx" . "component" "executor-host") | nindent 8 }}
++        - name: git-credential-helper
++          configMap:
++            name: {{ $fullName }}-git-credential-helper
++            defaultMode: 0555
++  volumeClaimTemplates:
++    - metadata:
++        name: repo
++      spec:
++        accessModes: ["ReadWriteOnce"]
++        {{- if .Values.storage.className }}
++        storageClassName: {{ .Values.storage.className | quote }}
++        {{- end }}
++        resources:
++          requests:
++            storage: {{ .Values.storage.executorRepoSize | quote }}
++---
++apiVersion: v1
++kind: Service
++metadata:
++  name: {{ $fullName }}-executor-host
++  labels:
++    {{- include "eden.componentLabels" (dict "ctx" . "component" "executor-host") | nindent 4 }}
++spec:
++  clusterIP: None
++  selector:
++    {{- include "eden.componentSelectorLabels" (dict "ctx" . "component" "executor-host") | nindent 4 }}
++  ports:
++    - name: placeholder
++      port: 8080
++      targetPort: 8080
++{{- end }}
+diff --git a/reference/helm/eden/templates/experiment-config-configmap.yaml b/reference/helm/eden/templates/experiment-config-configmap.yaml
+new file mode 100644
+index 0000000..a8b3c1d
+--- /dev/null
++++ b/reference/helm/eden/templates/experiment-config-configmap.yaml
+@@ -0,0 +1,19 @@
++{{- /*
++The experiment-config.schema.json YAML, rendered from values.experiment.config
++and mounted at /etc/eden/experiment-config.yaml on every service that reads it
++(task-store-server, orchestrator, evaluator-host, web-ui). Mirrors the Compose
++`configs:` entry sourced from reference/compose/experiment-config.yaml.
++*/ -}}
++apiVersion: v1
++kind: ConfigMap
++metadata:
++  name: {{ include "eden.fullname" . }}-experiment-config
++  labels:
++    {{- include "eden.labels" . | nindent 4 }}
++data:
++  experiment-config.yaml: |
++    {{- if .Values.experiment.configRaw }}
++    {{- .Values.experiment.configRaw | nindent 4 }}
++    {{- else }}
++    {{- toYaml .Values.experiment.config | nindent 4 }}
++    {{- end }}
+diff --git a/reference/helm/eden/templates/forgejo-service.yaml b/reference/helm/eden/templates/forgejo-service.yaml
+new file mode 100644
+index 0000000..c67012f
+--- /dev/null
++++ b/reference/helm/eden/templates/forgejo-service.yaml
+@@ -0,0 +1,15 @@
++{{- $fullName := include "eden.fullname" . }}
++apiVersion: v1
++kind: Service
++metadata:
++  name: {{ $fullName }}-forgejo
++  labels:
++    {{- include "eden.componentLabels" (dict "ctx" . "component" "forgejo") | nindent 4 }}
++spec:
++  type: ClusterIP
++  selector:
++    {{- include "eden.componentSelectorLabels" (dict "ctx" . "component" "forgejo") | nindent 4 }}
++  ports:
++    - name: http
++      port: 3000
++      targetPort: http
+diff --git a/reference/helm/eden/templates/forgejo-statefulset.yaml b/reference/helm/eden/templates/forgejo-statefulset.yaml
+new file mode 100644
+index 0000000..d00e093
+--- /dev/null
++++ b/reference/helm/eden/templates/forgejo-statefulset.yaml
+@@ -0,0 +1,123 @@
++{{- $fullName := include "eden.fullname" . }}
++apiVersion: apps/v1
++kind: StatefulSet
++metadata:
++  name: {{ $fullName }}-forgejo
++  labels:
++    {{- include "eden.componentLabels" (dict "ctx" . "component" "forgejo") | nindent 4 }}
++spec:
++  serviceName: {{ $fullName }}-forgejo
++  replicas: 1
++  selector:
++    matchLabels:
++      {{- include "eden.componentSelectorLabels" (dict "ctx" . "component" "forgejo") | nindent 6 }}
++  template:
++    metadata:
++      annotations:
++        {{- include "eden.rolloutChecksums" . | nindent 8 }}
++      labels:
++        {{- include "eden.componentLabels" (dict "ctx" . "component" "forgejo") | nindent 8 }}
++    spec:
++      {{- include "eden.imagePullSecrets" . | nindent 6 }}
++      # The rootless Forgejo image runs as uid/gid 1000; fsGroup lets it write
++      # the PVC regardless of the StorageClass's default ownership.
++      securityContext:
++        fsGroup: 1000
++      {{- with .Values.nodeSelector }}
++      nodeSelector: {{- toYaml . | nindent 8 }}
++      {{- end }}
++      {{- with .Values.tolerations }}
++      tolerations: {{- toYaml . | nindent 8 }}
++      {{- end }}
++      {{- with .Values.affinity }}
++      affinity: {{- toYaml . | nindent 8 }}
++      {{- end }}
++      containers:
++        - name: forgejo
++          image: {{ .Values.forgejo.image | quote }}
++          imagePullPolicy: {{ .Values.forgejo.pullPolicy }}
++          ports:
++            - name: http
++              containerPort: 3000
++          env:
++            - name: FORGEJO__server__DOMAIN
++              value: {{ printf "%s-forgejo" $fullName | quote }}
++            - name: FORGEJO__server__ROOT_URL
++              value: {{ printf "http://%s-forgejo:3000/" $fullName | quote }}
++            - name: FORGEJO__server__HTTP_PORT
++              value: "3000"
++            # NOTE: the container path stays `/var/lib/gitea` — the Forgejo
++            # image is a Gitea soft-fork and writes its data there regardless
++            # of brand (see reference/compose/compose.yaml, issue #129).
++            - name: FORGEJO__database__DB_TYPE
++              value: sqlite3
++            - name: FORGEJO__database__PATH
++              value: /var/lib/gitea/data/forgejo.db
++            - name: FORGEJO__security__INSTALL_LOCK
++              value: "true"
++            - name: FORGEJO__security__SECRET_KEY
++              valueFrom:
++                secretKeyRef:
++                  name: {{ include "eden.secretName" . }}
++                  key: FORGEJO_SECRET_KEY
++            - name: FORGEJO__security__INTERNAL_TOKEN
++              valueFrom:
++                secretKeyRef:
++                  name: {{ include "eden.secretName" . }}
++                  key: FORGEJO_INTERNAL_TOKEN
++            - name: FORGEJO__service__DISABLE_REGISTRATION
++              value: "true"
++            # Let the seed `git push` auto-create the experiment repo, so the
++            # bootstrap Job needs no separate API repo-create step (the eden
++            # user is provisioned by setup-experiment-helm.sh via the CLI).
++            - name: FORGEJO__repository__ENABLE_PUSH_CREATE_USER
++              value: "true"
++            - name: FORGEJO__log__LEVEL
++              value: Warn
++          readinessProbe:
++            httpGet:
++              path: /api/v1/version
++              port: http
++            initialDelaySeconds: 10
++            periodSeconds: 5
++            timeoutSeconds: 3
++            failureThreshold: 30
++          livenessProbe:
++            httpGet:
++              path: /api/v1/version
++              port: http
++            initialDelaySeconds: 30
++            periodSeconds: 10
++            timeoutSeconds: 3
++            failureThreshold: 6
++          volumeMounts:
++            # Durable data at the PVC root (no subPath, so fsGroup makes it
++            # writable by the rootless uid-1000 Forgejo on a fresh PVC; a stray
++            # lost+found is harmless — Forgejo creates its own subdirs).
++            - name: data
++              mountPath: /var/lib/gitea
++            # /etc/gitea (app.ini, derived host keys) is regenerated from the
++            # FORGEJO__* env on every boot — SECRET_KEY/INTERNAL_TOKEN come from
++            # the persistent chart Secret, so a fresh emptyDir is consistent
++            # with the existing data PVC. v0 uses HTTP only (no SSH host-key
++            # persistence) and applies no operator config edits, so it need not
++            # persist. (13e revisits when Forgejo gains auth/ACL config.)
++            - name: config
++              mountPath: /etc/gitea
++          {{- with .Values.forgejo.resources }}
++          resources: {{- toYaml . | nindent 12 }}
++          {{- end }}
++      volumes:
++        - name: config
++          emptyDir: {}
++  volumeClaimTemplates:
++    - metadata:
++        name: data
++      spec:
++        accessModes: ["ReadWriteOnce"]
++        {{- if .Values.storage.className }}
++        storageClassName: {{ .Values.storage.className | quote }}
++        {{- end }}
++        resources:
++          requests:
++            storage: {{ .Values.storage.forgejoSize | quote }}
+diff --git a/reference/helm/eden/templates/git-credential-helper-configmap.yaml b/reference/helm/eden/templates/git-credential-helper-configmap.yaml
+new file mode 100644
+index 0000000..4cf8ae5
+--- /dev/null
++++ b/reference/helm/eden/templates/git-credential-helper-configmap.yaml
+@@ -0,0 +1,24 @@
++{{- /*
++git credential-helper script (Phase 10d follow-up B parity, §3.3a). The script
++is pure shell and carries NO secret — it reads FORGEJO_REMOTE_PASSWORD from the
++pod env (injected from the chart Secret). Mounted read-only into the
++orchestrator / executor-host / web-ui pods at /etc/eden/git-credential-helper;
++each passes --credential-helper <that path> to eden_git's clone/fetch/push ops.
++*/ -}}
++apiVersion: v1
++kind: ConfigMap
++metadata:
++  name: {{ include "eden.fullname" . }}-git-credential-helper
++  labels:
++    {{- include "eden.labels" . | nindent 4 }}
++data:
++  git-credential-helper: |
++    #!/bin/sh
++    # Generated by the EDEN Helm chart — HTTP Basic credential helper for the
++    # Forgejo remote. Mirrors the Compose credential-helper shape.
++    case "$1" in
++      get)
++        printf 'username=eden\n'
++        printf 'password=%s\n' "$FORGEJO_REMOTE_PASSWORD"
++        ;;
++    esac
+diff --git a/reference/helm/eden/templates/ideator-host-deployment.yaml b/reference/helm/eden/templates/ideator-host-deployment.yaml
+new file mode 100644
+index 0000000..6a8f8bf
+--- /dev/null
++++ b/reference/helm/eden/templates/ideator-host-deployment.yaml
+@@ -0,0 +1,79 @@
++{{- if eq (include "eden.identityEnabled" (dict "ctx" . "key" "ideatorHost")) "true" }}
++{{- $fullName := include "eden.fullname" . }}
++{{- $id := .Values.identity.ideatorHost }}
++apiVersion: apps/v1
++kind: Deployment
++metadata:
++  name: {{ $fullName }}-ideator-host
++  labels:
++    {{- include "eden.componentLabels" (dict "ctx" . "component" "ideator-host") | nindent 4 }}
++spec:
++  replicas: {{ .Values.replicas.ideatorHost }}
++  # Recreate (not RollingUpdate): the ideator uses a single minted --worker-id,
++  # so a rolling update's overlapping old+new pods would race on the same
++  # worker credential. Recreate terminates the old pod before starting the new.
++  strategy:
++    type: Recreate
++  selector:
++    matchLabels:
++      {{- include "eden.componentSelectorLabels" (dict "ctx" . "component" "ideator-host") | nindent 6 }}
++  template:
++    metadata:
++      annotations:
++        {{- include "eden.rolloutChecksums" . | nindent 8 }}
++        checksum/identity: {{ $id.token | sha256sum }}
++      labels:
++        {{- include "eden.componentLabels" (dict "ctx" . "component" "ideator-host") | nindent 8 }}
++    spec:
++      {{- include "eden.imagePullSecrets" . | nindent 6 }}
++      # fsGroup makes the credentials emptyDir group-writable for the rootless
++      # (uid/gid 1000) image's credential-bootstrap writes.
++      securityContext:
++        fsGroup: 1000
++      {{- with .Values.nodeSelector }}
++      nodeSelector: {{- toYaml . | nindent 8 }}
++      {{- end }}
++      {{- with .Values.tolerations }}
++      tolerations: {{- toYaml . | nindent 8 }}
++      {{- end }}
++      {{- with .Values.affinity }}
++      affinity: {{- toYaml . | nindent 8 }}
++      {{- end }}
++      initContainers:
++        {{- include "eden.identityInitContainer" (dict "ctx" . "workerId" $id.workerId "component" "ideator-host") | nindent 8 }}
++      containers:
++        - name: ideator-host
++          image: {{ include "eden.image" . | quote }}
++          imagePullPolicy: {{ .Values.image.pullPolicy }}
++          envFrom:
++            - secretRef:
++                name: {{ include "eden.secretName" . }}
++          args:
++            - python
++            - -m
++            - eden_ideator_host
++            - --task-store-url
++            - {{ include "eden.taskStoreUrl" . | quote }}
++            - --experiment-id
++            - {{ required "experiment.id is required" .Values.experiment.id | quote }}
++            - --admin-token
++            - $(EDEN_ADMIN_TOKEN)
++            - --worker-id
++            - {{ $id.workerId | quote }}
++            - --mode
++            - {{ .Values.config.workerMode | quote }}
++            - --base-commit-sha
++            - {{ .Values.experiment.baseCommitSha | quote }}
++            - --poll-interval
++            - {{ .Values.config.pollIntervalSeconds | quote }}
++            - --log-level
++            - info
++          volumeMounts:
++            - name: credentials
++              mountPath: /var/lib/eden/credentials
++          {{- with .Values.resources }}
++          resources: {{- toYaml . | nindent 12 }}
++          {{- end }}
++      volumes:
++        {{- include "eden.identityVolumes" (dict "ctx" . "component" "ideator-host") | nindent 8 }}
++{{- end }}
+diff --git a/reference/helm/eden/templates/identity-secrets.yaml b/reference/helm/eden/templates/identity-secrets.yaml
+new file mode 100644
+index 0000000..87306a3
+--- /dev/null
++++ b/reference/helm/eden/templates/identity-secrets.yaml
+@@ -0,0 +1,38 @@
++{{- /*
++Per-service identity Secrets (#128 opaque-id model). setup-experiment-helm.sh
++mints one worker per service against the task-store-server (POST {"name": ...}),
++captures the minted worker_id + one-time registration_token, and re-runs
++`helm upgrade` to fill values.identity.<svc>.{workerId,token}. Each service then
++renders a Secret here carrying just the token; an initContainer installs it at
++/var/lib/eden/credentials/<workerId>.token so the service's startup credential
++bootstrap verifies it via /whoami (no admin reissue needed).
++
++One Secret per identity-consuming service so each pod mounts only its own token.
++Each renders only once its workerId AND token are set — the same gate that holds
++the app tier back until identities are provisioned. With secrets.existingSecret
++the OTHER chart-managed Secret is suppressed, but these identity Secrets are
++always chart-managed (the tokens are minted at bootstrap time, not pre-known).
++*/ -}}
++{{- $fullName := include "eden.fullname" . -}}
++{{- $services := list
++    (dict "key" "orchestrator"  "component" "orchestrator")
++    (dict "key" "webUi"         "component" "web-ui")
++    (dict "key" "ideatorHost"   "component" "ideator-host")
++    (dict "key" "executorHost"  "component" "executor-host")
++    (dict "key" "evaluatorHost" "component" "evaluator-host")
++-}}
++{{- range $svc := $services }}
++{{- $id := index $.Values.identity $svc.key }}
++{{- if and $id.workerId $id.token }}
++---
++apiVersion: v1
++kind: Secret
++metadata:
++  name: {{ $fullName }}-{{ $svc.component }}-identity
++  labels:
++    {{- include "eden.componentLabels" (dict "ctx" $ "component" $svc.component) | nindent 4 }}
++type: Opaque
++stringData:
++  token: {{ $id.token | quote }}
++{{- end }}
++{{- end }}
+diff --git a/reference/helm/eden/templates/orchestrator-service.yaml b/reference/helm/eden/templates/orchestrator-service.yaml
+new file mode 100644
+index 0000000..cd6e546
+--- /dev/null
++++ b/reference/helm/eden/templates/orchestrator-service.yaml
+@@ -0,0 +1,20 @@
++{{- if eq (include "eden.appEnabled" .) "true" }}
++{{- $fullName := include "eden.fullname" . }}
++apiVersion: v1
++kind: Service
++metadata:
++  name: {{ $fullName }}-orchestrator
++  labels:
++    {{- include "eden.componentLabels" (dict "ctx" . "component" "orchestrator") | nindent 4 }}
++spec:
++  # Headless service required by the StatefulSet for stable per-pod network
++  # identity. The orchestrator is a client (no inbound HTTP), so the port is a
++  # placeholder that nothing connects to.
++  clusterIP: None
++  selector:
++    {{- include "eden.componentSelectorLabels" (dict "ctx" . "component" "orchestrator") | nindent 4 }}
++  ports:
++    - name: placeholder
++      port: 8080
++      targetPort: 8080
++{{- end }}
+diff --git a/reference/helm/eden/templates/orchestrator-statefulset.yaml b/reference/helm/eden/templates/orchestrator-statefulset.yaml
+new file mode 100644
+index 0000000..460037e
+--- /dev/null
++++ b/reference/helm/eden/templates/orchestrator-statefulset.yaml
+@@ -0,0 +1,130 @@
++{{- if eq (include "eden.identityEnabled" (dict "ctx" . "key" "orchestrator")) "true" }}
++{{- $fullName := include "eden.fullname" . }}
++{{- $id := .Values.identity.orchestrator }}
++apiVersion: apps/v1
++kind: StatefulSet
++metadata:
++  name: {{ $fullName }}-orchestrator
++  labels:
++    {{- include "eden.componentLabels" (dict "ctx" . "component" "orchestrator") | nindent 4 }}
++spec:
++  serviceName: {{ $fullName }}-orchestrator
++  # Default single-experiment path: ONE replica drives the experiment under the
++  # setup-minted opaque worker_id. Multi-replica lease-driven HA (N replicas
++  # contend for one lease) requires orchestrator.leaseMode.enabled AND
++  # per-replica opaque identities — deferred behind #281.
++  replicas: {{ .Values.replicas.orchestrator }}
++  selector:
++    matchLabels:
++      {{- include "eden.componentSelectorLabels" (dict "ctx" . "component" "orchestrator") | nindent 6 }}
++  template:
++    metadata:
++      annotations:
++        {{- include "eden.rolloutChecksums" . | nindent 8 }}
++        checksum/identity: {{ $id.token | sha256sum }}
++      labels:
++        {{- include "eden.componentLabels" (dict "ctx" . "component" "orchestrator") | nindent 8 }}
++    spec:
++      {{- include "eden.imagePullSecrets" . | nindent 6 }}
++      # The image runs as uid/gid 1000 (eden); fsGroup makes the clone PVC +
++      # credentials emptyDir group-writable so the integrator's git writes and
++      # the credential-bootstrap lock/token writes succeed.
++      securityContext:
++        fsGroup: 1000
++      {{- with .Values.nodeSelector }}
++      nodeSelector: {{- toYaml . | nindent 8 }}
++      {{- end }}
++      {{- with .Values.tolerations }}
++      tolerations: {{- toYaml . | nindent 8 }}
++      {{- end }}
++      {{- with .Values.affinity }}
++      affinity: {{- toYaml . | nindent 8 }}
++      {{- end }}
++      initContainers:
++        {{- include "eden.identityInitContainer" (dict "ctx" . "workerId" $id.workerId "component" "orchestrator") | nindent 8 }}
++      containers:
++        - name: orchestrator
++          image: {{ include "eden.image" . | quote }}
++          imagePullPolicy: {{ .Values.image.pullPolicy }}
++          envFrom:
++            - secretRef:
++                name: {{ include "eden.secretName" . }}
++          {{- if eq (include "eden.leaseModeEnabled" .) "true" }}
++          env:
++            # Lease mode (opt-in, deferred #281): a non-empty control-plane URL
++            # flips the orchestrator into the chapter 11 §5 lease-driven loop.
++            - name: EDEN_CONTROL_PLANE_URL
++              value: {{ include "eden.controlPlaneUrl" . | quote }}
++          {{- end }}
++          args:
++            - python
++            - -m
++            - eden_orchestrator
++            - --task-store-url
++            - {{ include "eden.taskStoreUrl" . | quote }}
++            - --experiment-id
++            - {{ required "experiment.id is required" .Values.experiment.id | quote }}
++            - --admin-token
++            - $(EDEN_ADMIN_TOKEN)
++            # The setup-minted opaque worker_id (wkr_*). The orchestrator
++            # verifies/reissues this credential (never fresh-registers) and
++            # self-joins the `orchestrators` group under the admin token.
++            - --worker-id
++            - {{ $id.workerId | quote }}
++            - --repo-path
++            - /var/lib/eden/clone/repo
++            - --forgejo-url
++            - {{ include "eden.forgejoRemoteUrl" . | quote }}
++            - --credential-helper
++            - {{ include "eden.credentialHelperPath" . | quote }}
++            - --experiment-config
++            - /etc/eden/experiment-config.yaml
++            - --poll-interval
++            - {{ .Values.config.pollIntervalSeconds | quote }}
++            - --max-quiescent-iterations
++            - {{ .Values.config.maxQuiescentIterations | quote }}
++            - --lease-duration-seconds
++            - {{ .Values.config.leaseDurationSeconds | quote }}
++            - --log-level
++            - info
++          volumeMounts:
++            # Mount the PVC at a dedicated parent and clone into a CHILD dir
++            # (--repo-path .../clone/repo). fsGroup makes the volume ROOT
++            # group-writable (subPath dirs are created root-owned AFTER the
++            # fsGroup pass, so a rootless pod can't write them), and git creates
++            # the empty repo/ child — sidestepping both the ext4 lost+found at
++            # the root and the subPath ownership gap.
++            - name: repo
++              mountPath: /var/lib/eden/clone
++            - name: credentials
++              mountPath: /var/lib/eden/credentials
++            - name: experiment-config
++              mountPath: /etc/eden/experiment-config.yaml
++              subPath: experiment-config.yaml
++            - name: git-credential-helper
++              mountPath: {{ include "eden.credentialHelperPath" . }}
++              subPath: git-credential-helper
++          {{- with .Values.resources }}
++          resources: {{- toYaml . | nindent 12 }}
++          {{- end }}
++      volumes:
++        {{- include "eden.identityVolumes" (dict "ctx" . "component" "orchestrator") | nindent 8 }}
++        - name: experiment-config
++          configMap:
++            name: {{ $fullName }}-experiment-config
++        - name: git-credential-helper
++          configMap:
++            name: {{ $fullName }}-git-credential-helper
++            defaultMode: 0555
++  volumeClaimTemplates:
++    - metadata:
++        name: repo
++      spec:
++        accessModes: ["ReadWriteOnce"]
++        {{- if .Values.storage.className }}
++        storageClassName: {{ .Values.storage.className | quote }}
++        {{- end }}
++        resources:
++          requests:
++            storage: {{ .Values.storage.orchestratorRepoSize | quote }}
++{{- end }}
+diff --git a/reference/helm/eden/templates/postgres-init-configmap.yaml b/reference/helm/eden/templates/postgres-init-configmap.yaml
+new file mode 100644
+index 0000000..ef11edc
+--- /dev/null
++++ b/reference/helm/eden/templates/postgres-init-configmap.yaml
+@@ -0,0 +1,26 @@
++{{- /*
++Postgres init hook (chapter 11 §3.4 Option A): create the control-plane's
++second logical database on a fresh data dir. Mounted into
++/docker-entrypoint-initdb.d/ on the upstream postgres image, which runs *.sh
++there exactly once. Mirrors reference/compose/init-control-plane-db.sh.
++*/ -}}
++apiVersion: v1
++kind: ConfigMap
++metadata:
++  name: {{ include "eden.fullname" . }}-postgres-init
++  labels:
++    {{- include "eden.labels" . | nindent 4 }}
++data:
++  01-control-plane-db.sh: |
++    #!/bin/sh
++    set -eu
++    DB_NAME="${POSTGRES_DB_CONTROL_PLANE:-eden_control_plane}"
++    exists="$(psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc \
++        "SELECT 1 FROM pg_database WHERE datname = '${DB_NAME}'")"
++    if [ "$exists" = "1" ]; then
++        echo "init-control-plane-db: database ${DB_NAME} already exists; skipping"
++    else
++        echo "init-control-plane-db: creating database ${DB_NAME}"
++        psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
++            -c "CREATE DATABASE \"${DB_NAME}\" OWNER \"$POSTGRES_USER\";"
++    fi
+diff --git a/reference/helm/eden/templates/postgres-service.yaml b/reference/helm/eden/templates/postgres-service.yaml
+new file mode 100644
+index 0000000..9c5ddd3
+--- /dev/null
++++ b/reference/helm/eden/templates/postgres-service.yaml
+@@ -0,0 +1,17 @@
++{{- $fullName := include "eden.fullname" . }}
++apiVersion: v1
++kind: Service
++metadata:
++  name: {{ $fullName }}-postgres
++  labels:
++    {{- include "eden.componentLabels" (dict "ctx" . "component" "postgres") | nindent 4 }}
++spec:
++  # Headless: governs the StatefulSet's stable network identity and resolves
++  # `<fullname>-postgres` to the pod IP for the task-store / control-plane DSNs.
++  clusterIP: None
++  selector:
++    {{- include "eden.componentSelectorLabels" (dict "ctx" . "component" "postgres") | nindent 4 }}
++  ports:
++    - name: postgres
++      port: 5432
++      targetPort: postgres
+diff --git a/reference/helm/eden/templates/postgres-statefulset.yaml b/reference/helm/eden/templates/postgres-statefulset.yaml
+new file mode 100644
+index 0000000..c441b80
+--- /dev/null
++++ b/reference/helm/eden/templates/postgres-statefulset.yaml
+@@ -0,0 +1,91 @@
++{{- $fullName := include "eden.fullname" . }}
++apiVersion: apps/v1
++kind: StatefulSet
++metadata:
++  name: {{ $fullName }}-postgres
++  labels:
++    {{- include "eden.componentLabels" (dict "ctx" . "component" "postgres") | nindent 4 }}
++spec:
++  serviceName: {{ $fullName }}-postgres
++  replicas: 1
++  selector:
++    matchLabels:
++      {{- include "eden.componentSelectorLabels" (dict "ctx" . "component" "postgres") | nindent 6 }}
++  template:
++    metadata:
++      annotations:
++        {{- include "eden.rolloutChecksums" . | nindent 8 }}
++      labels:
++        {{- include "eden.componentLabels" (dict "ctx" . "component" "postgres") | nindent 8 }}
++    spec:
++      {{- include "eden.imagePullSecrets" . | nindent 6 }}
++      {{- with .Values.nodeSelector }}
++      nodeSelector: {{- toYaml . | nindent 8 }}
++      {{- end }}
++      {{- with .Values.tolerations }}
++      tolerations: {{- toYaml . | nindent 8 }}
++      {{- end }}
++      {{- with .Values.affinity }}
++      affinity: {{- toYaml . | nindent 8 }}
++      {{- end }}
++      containers:
++        - name: postgres
++          image: {{ .Values.postgres.image | quote }}
++          imagePullPolicy: {{ .Values.postgres.pullPolicy }}
++          ports:
++            - name: postgres
++              containerPort: 5432
++          env:
++            - name: POSTGRES_DB
++              value: {{ .Values.postgres.database | quote }}
++            - name: POSTGRES_USER
++              value: {{ .Values.postgres.user | quote }}
++            - name: POSTGRES_DB_CONTROL_PLANE
++              value: {{ .Values.postgres.controlPlaneDatabase | quote }}
++            - name: POSTGRES_PASSWORD
++              valueFrom:
++                secretKeyRef:
++                  name: {{ include "eden.secretName" . }}
++                  key: POSTGRES_PASSWORD
++            # Init hook + data live under PGDATA; point PGDATA at a subdir so
++            # the volume root (which may carry lost+found) doesn't trip initdb.
++            - name: PGDATA
++              value: /var/lib/postgresql/data/pgdata
++          readinessProbe:
++            exec:
++              command: ["pg_isready", "-U", {{ .Values.postgres.user | quote }}, "-d", {{ .Values.postgres.database | quote }}]
++            initialDelaySeconds: 5
++            periodSeconds: 5
++            timeoutSeconds: 3
++            failureThreshold: 10
++          livenessProbe:
++            exec:
++              command: ["pg_isready", "-U", {{ .Values.postgres.user | quote }}, "-d", {{ .Values.postgres.database | quote }}]
++            initialDelaySeconds: 15
++            periodSeconds: 10
++            timeoutSeconds: 3
++            failureThreshold: 6
++          volumeMounts:
++            - name: data
++              mountPath: /var/lib/postgresql/data
++            - name: init
++              mountPath: /docker-entrypoint-initdb.d
++          {{- with .Values.postgres.resources }}
++          resources: {{- toYaml . | nindent 12 }}
++          {{- end }}
++      volumes:
++        - name: init
++          configMap:
++            name: {{ $fullName }}-postgres-init
++            defaultMode: 0555
++  volumeClaimTemplates:
++    - metadata:
++        name: data
++      spec:
++        accessModes: ["ReadWriteOnce"]
++        {{- if .Values.storage.className }}
++        storageClassName: {{ .Values.storage.className | quote }}
++        {{- end }}
++        resources:
++          requests:
++            storage: {{ .Values.storage.postgresSize | quote }}
+diff --git a/reference/helm/eden/templates/secret.yaml b/reference/helm/eden/templates/secret.yaml
+new file mode 100644
+index 0000000..eebd3bf
+--- /dev/null
++++ b/reference/helm/eden/templates/secret.yaml
+@@ -0,0 +1,36 @@
++{{- /*
++NOTE: this chart-managed Secret is deleted by `helm uninstall`, but the
++StatefulSet PVCs (Postgres data, …) are intentionally RETAINED. A reinstall
++then regenerates secrets while the Postgres data dir still holds the OLD role
++password, so the rendered DSNs can no longer authenticate. For any deployment
++you intend to uninstall + reinstall (rather than fully tearing down PVCs), use
++secrets.existingSecret so the credentials outlive the release. See
++docs/deployment/helm.md §5 "PVC retention".
++*/ -}}
++{{- if not .Values.secrets.existingSecret }}
++{{- $fullName := include "eden.fullname" . }}
++{{- $pw := required "secrets.postgresPassword is required (or set secrets.existingSecret)" .Values.secrets.postgresPassword }}
++{{- $roPw := required "secrets.readonlyPassword is required (or set secrets.existingSecret)" .Values.secrets.readonlyPassword }}
++{{- $pgHost := printf "%s-postgres:5432" $fullName }}
++apiVersion: v1
++kind: Secret
++metadata:
++  name: {{ $fullName }}-secrets
++  labels:
++    {{- include "eden.labels" . | nindent 4 }}
++type: Opaque
++stringData:
++  EDEN_ADMIN_TOKEN: {{ required "secrets.adminToken is required (or set secrets.existingSecret)" .Values.secrets.adminToken | quote }}
++  EDEN_SESSION_SECRET: {{ required "secrets.sessionSecret is required (or set secrets.existingSecret)" .Values.secrets.sessionSecret | quote }}
++  EDEN_READONLY_PASSWORD: {{ $roPw | quote }}
++  POSTGRES_PASSWORD: {{ $pw | quote }}
++  FORGEJO_REMOTE_PASSWORD: {{ required "secrets.forgejoRemotePassword is required (or set secrets.existingSecret)" .Values.secrets.forgejoRemotePassword | quote }}
++  FORGEJO_SECRET_KEY: {{ required "secrets.forgejoSecretKey is required (or set secrets.existingSecret)" .Values.secrets.forgejoSecretKey | quote }}
++  FORGEJO_INTERNAL_TOKEN: {{ required "secrets.forgejoInternalToken is required (or set secrets.existingSecret)" .Values.secrets.forgejoInternalToken | quote }}
++  # Derived Postgres DSNs. The password is interpolated verbatim, so it MUST be
++  # URL-safe (the setup script generates hex; supply pre-encoded DSNs via
++  # existingSecret if you use a password with reserved URI characters).
++  EDEN_STORE_URL: {{ printf "postgresql://%s:%s@%s/%s" .Values.postgres.user $pw $pgHost .Values.postgres.database | quote }}
++  EDEN_READONLY_STORE_URL: {{ printf "postgresql://eden_readonly:%s@%s/%s" $roPw $pgHost .Values.postgres.database | quote }}
++  EDEN_CONTROL_PLANE_STORE_URL: {{ printf "postgresql://%s:%s@%s/%s" .Values.postgres.user $pw $pgHost .Values.postgres.controlPlaneDatabase | quote }}
++{{- end }}
+diff --git a/reference/helm/eden/templates/task-store-server-deployment.yaml b/reference/helm/eden/templates/task-store-server-deployment.yaml
+new file mode 100644
+index 0000000..c4f9e69
+--- /dev/null
++++ b/reference/helm/eden/templates/task-store-server-deployment.yaml
+@@ -0,0 +1,106 @@
++{{- if eq (include "eden.appEnabled" .) "true" }}
++{{- $fullName := include "eden.fullname" . }}
++apiVersion: apps/v1
++kind: Deployment
++metadata:
++  name: {{ $fullName }}-task-store-server
++  labels:
++    {{- include "eden.componentLabels" (dict "ctx" . "component" "task-store-server") | nindent 4 }}
++spec:
++  replicas: {{ .Values.replicas.taskStoreServer }}
++  selector:
++    matchLabels:
++      {{- include "eden.componentSelectorLabels" (dict "ctx" . "component" "task-store-server") | nindent 6 }}
++  template:
++    metadata:
++      annotations:
++        {{- include "eden.rolloutChecksums" . | nindent 8 }}
++      labels:
++        {{- include "eden.componentLabels" (dict "ctx" . "component" "task-store-server") | nindent 8 }}
++    spec:
++      {{- include "eden.imagePullSecrets" . | nindent 6 }}
++      {{- with .Values.nodeSelector }}
++      nodeSelector: {{- toYaml . | nindent 8 }}
++      {{- end }}
++      {{- with .Values.tolerations }}
++      tolerations: {{- toYaml . | nindent 8 }}
++      {{- end }}
++      {{- with .Values.affinity }}
++      affinity: {{- toYaml . | nindent 8 }}
++      {{- end }}
++      containers:
++        - name: task-store-server
++          image: {{ include "eden.image" . | quote }}
++          imagePullPolicy: {{ .Values.image.pullPolicy }}
++          envFrom:
++            - secretRef:
++                name: {{ include "eden.secretName" . }}
++          ports:
++            - name: http
++              containerPort: 8080
++          args:
++            - python
++            - -m
++            - eden_task_store_server
++            - --store-url
++            - $(EDEN_STORE_URL)
++            - --experiment-id
++            - {{ required "experiment.id is required" .Values.experiment.id | quote }}
++            - --experiment-config
++            - /etc/eden/experiment-config.yaml
++            - --base-commit-sha
++            - {{ .Values.experiment.baseCommitSha | quote }}
++            - --admin-token
++            - $(EDEN_ADMIN_TOKEN)
++            - --host
++            - 0.0.0.0
++            - --port
++            - "8080"
++            - --log-level
++            - info
++          # The task-store-server has no /healthz route and its experiment-
++          # scoped endpoints require an auth header that probe exec commands
++          # cannot supply ($(VAR) is not expanded in probes). A TCP probe on
++          # the bound port is sufficient for readiness ordering — uvicorn
++          # binds 8080 only once the app is constructed.
++          readinessProbe:
++            tcpSocket:
++              port: http
++            initialDelaySeconds: 5
++            periodSeconds: 5
++            timeoutSeconds: 3
++            failureThreshold: 30
++          livenessProbe:
++            tcpSocket:
++              port: http
++            initialDelaySeconds: 15
++            periodSeconds: 10
++            timeoutSeconds: 3
++            failureThreshold: 6
++          volumeMounts:
++            - name: experiment-config
++              mountPath: /etc/eden/experiment-config.yaml
++              subPath: experiment-config.yaml
++          {{- with .Values.resources }}
++          resources: {{- toYaml . | nindent 12 }}
++          {{- end }}
++      volumes:
++        - name: experiment-config
++          configMap:
++            name: {{ $fullName }}-experiment-config
++---
++apiVersion: v1
++kind: Service
++metadata:
++  name: {{ $fullName }}-task-store-server
++  labels:
++    {{- include "eden.componentLabels" (dict "ctx" . "component" "task-store-server") | nindent 4 }}
++spec:
++  type: ClusterIP
++  selector:
++    {{- include "eden.componentSelectorLabels" (dict "ctx" . "component" "task-store-server") | nindent 4 }}
++  ports:
++    - name: http
++      port: 8080
++      targetPort: http
++{{- end }}
+diff --git a/reference/helm/eden/templates/tests/test-connection.yaml b/reference/helm/eden/templates/tests/test-connection.yaml
+new file mode 100644
+index 0000000..9db1f28
+--- /dev/null
++++ b/reference/helm/eden/templates/tests/test-connection.yaml
+@@ -0,0 +1,35 @@
++{{- $fullName := include "eden.fullname" . }}
++apiVersion: v1
++kind: Pod
++metadata:
++  name: {{ $fullName }}-test-connection
++  labels:
++    {{- include "eden.componentLabels" (dict "ctx" . "component" "test") | nindent 4 }}
++  annotations:
++    "helm.sh/hook": test
++    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
++spec:
++  {{- include "eden.imagePullSecrets" . | nindent 2 }}
++  restartPolicy: Never
++  containers:
++    - name: test-connection
++      image: {{ include "eden.image" . | quote }}
++      imagePullPolicy: {{ .Values.image.pullPolicy }}
++      command:
++        - /bin/sh
++        - -c
++        - |
++          set -eu
++          {{- if eq (include "eden.leaseModeEnabled" .) "true" }}
++          echo "checking control-plane /healthz"
++          curl -fsS "{{ include "eden.controlPlaneUrl" . }}/healthz" >/dev/null
++          {{- end }}
++          {{- if eq (include "eden.appEnabled" .) "true" }}
++          echo "checking task-store-server TCP :8080"
++          curl -fsS -o /dev/null "{{ include "eden.taskStoreUrl" . }}/" || true
++          {{- end }}
++          {{- if eq (include "eden.identityEnabled" (dict "ctx" . "key" "webUi")) "true" }}
++          echo "checking web-ui /healthz"
++          curl -fsS "http://{{ $fullName }}-web-ui:8090/healthz" >/dev/null
++          {{- end }}
++          echo "ok"
+diff --git a/reference/helm/eden/templates/web-ui-ingress.yaml b/reference/helm/eden/templates/web-ui-ingress.yaml
+new file mode 100644
+index 0000000..4fa241a
+--- /dev/null
++++ b/reference/helm/eden/templates/web-ui-ingress.yaml
+@@ -0,0 +1,32 @@
++{{- if and (eq (include "eden.appEnabled" .) "true") .Values.ingress.enabled }}
++{{- $fullName := include "eden.fullname" . }}
++apiVersion: networking.k8s.io/v1
++kind: Ingress
++metadata:
++  name: {{ $fullName }}-web-ui
++  labels:
++    {{- include "eden.componentLabels" (dict "ctx" . "component" "web-ui") | nindent 4 }}
++  {{- with .Values.ingress.annotations }}
++  annotations:
++    {{- toYaml . | nindent 4 }}
++  {{- end }}
++spec:
++  {{- if .Values.ingress.className }}
++  ingressClassName: {{ .Values.ingress.className | quote }}
++  {{- end }}
++  {{- with .Values.ingress.tls }}
++  tls:
++    {{- toYaml . | nindent 4 }}
++  {{- end }}
++  rules:
++    - host: {{ include "eden.webUiHost" . | quote }}
++      http:
++        paths:
++          - path: /
++            pathType: Prefix
++            backend:
++              service:
++                name: {{ $fullName }}-web-ui
++                port:
++                  number: 8090
++{{- end }}
+diff --git a/reference/helm/eden/templates/web-ui-statefulset.yaml b/reference/helm/eden/templates/web-ui-statefulset.yaml
+new file mode 100644
+index 0000000..fc91221
+--- /dev/null
++++ b/reference/helm/eden/templates/web-ui-statefulset.yaml
+@@ -0,0 +1,175 @@
++{{- if eq (include "eden.identityEnabled" (dict "ctx" . "key" "webUi")) "true" }}
++{{- $fullName := include "eden.fullname" . }}
++{{- $id := .Values.identity.webUi }}
++apiVersion: apps/v1
++kind: StatefulSet
++metadata:
++  name: {{ $fullName }}-web-ui
++  labels:
++    {{- include "eden.componentLabels" (dict "ctx" . "component" "web-ui") | nindent 4 }}
++spec:
++  serviceName: {{ $fullName }}-web-ui
++  # Operator-singleton in v0: the web-ui's executor module holds a local clone
++  # and serves artifacts from a RWO PVC. Horizontal scaling needs sticky-session
++  # ingress + a RWX artifacts mount or an external blob backend (13d).
++  replicas: {{ .Values.replicas.webUi }}
++  selector:
++    matchLabels:
++      {{- include "eden.componentSelectorLabels" (dict "ctx" . "component" "web-ui") | nindent 6 }}
++  template:
++    metadata:
++      annotations:
++        {{- include "eden.rolloutChecksums" . | nindent 8 }}
++        checksum/identity: {{ $id.token | sha256sum }}
++      labels:
++        {{- include "eden.componentLabels" (dict "ctx" . "component" "web-ui") | nindent 8 }}
++    spec:
++      {{- include "eden.imagePullSecrets" . | nindent 6 }}
++      # The image runs as uid/gid 1000 (eden); fsGroup makes the clone +
++      # artifacts PVCs and the credentials emptyDir group-writable so git,
++      # artifact, and credential-bootstrap writes succeed.
++      securityContext:
++        fsGroup: 1000
++      {{- with .Values.nodeSelector }}
++      nodeSelector: {{- toYaml . | nindent 8 }}
++      {{- end }}
++      {{- with .Values.tolerations }}
++      tolerations: {{- toYaml . | nindent 8 }}
++      {{- end }}
++      {{- with .Values.affinity }}
++      affinity: {{- toYaml . | nindent 8 }}
++      {{- end }}
++      initContainers:
++        {{- include "eden.identityInitContainer" (dict "ctx" . "workerId" $id.workerId "component" "web-ui") | nindent 8 }}
++      containers:
++        - name: web-ui
++          image: {{ include "eden.image" . | quote }}
++          imagePullPolicy: {{ .Values.image.pullPolicy }}
++          envFrom:
++            - secretRef:
++                name: {{ include "eden.secretName" . }}
++          {{- if eq (include "eden.leaseModeEnabled" .) "true" }}
++          env:
++            # Lease mode (opt-in, deferred #281): when set, the web-ui mounts the
++            # cross-experiment /admin/experiments/ dashboard (chapter 11).
++            - name: EDEN_CONTROL_PLANE_URL
++              value: {{ include "eden.controlPlaneUrl" . | quote }}
++          {{- end }}
++          ports:
++            - name: http
++              containerPort: 8090
++          args:
++            - python
++            - -m
++            - eden_web_ui
++            - --task-store-url
++            - {{ include "eden.taskStoreUrl" . | quote }}
++            - --experiment-id
++            - {{ required "experiment.id is required" .Values.experiment.id | quote }}
++            - --admin-token
++            - $(EDEN_ADMIN_TOKEN)
++            - --experiment-config
++            - /etc/eden/experiment-config.yaml
++            - --session-secret
++            - $(EDEN_SESSION_SECRET)
++            - --artifacts-dir
++            - /var/lib/eden/artifacts
++            - --repo-path
++            - /var/lib/eden/clone/repo
++            - --forgejo-url
++            - {{ include "eden.forgejoRemoteUrl" . | quote }}
++            - --credential-helper
++            - {{ include "eden.credentialHelperPath" . | quote }}
++            - --base-commit-sha
++            - {{ .Values.experiment.baseCommitSha | quote }}
++            - --worker-id
++            - {{ $id.workerId | quote }}
++            - --host
++            - 0.0.0.0
++            - --port
++            - "8090"
++            - --log-level
++            - info
++          readinessProbe:
++            httpGet:
++              path: /healthz
++              port: http
++            initialDelaySeconds: 10
++            periodSeconds: 5
++            timeoutSeconds: 3
++            failureThreshold: 30
++          livenessProbe:
++            httpGet:
++              path: /healthz
++              port: http
++            initialDelaySeconds: 20
++            periodSeconds: 10
++            timeoutSeconds: 3
++            failureThreshold: 6
++          volumeMounts:
++            # Clone into the .../clone/repo child (see orchestrator-statefulset
++            # for the fsGroup/subPath/lost+found rationale).
++            - name: repo
++              mountPath: /var/lib/eden/clone
++            # Artifacts: mounted at the volume root (no subPath) so fsGroup makes
++            # it writable by the rootless web-ui; a stray lost+found is harmless
++            # to the artifact-serving route.
++            - name: artifacts
++              mountPath: /var/lib/eden/artifacts
++            - name: credentials
++              mountPath: /var/lib/eden/credentials
++            - name: experiment-config
++              mountPath: /etc/eden/experiment-config.yaml
++              subPath: experiment-config.yaml
++            - name: git-credential-helper
++              mountPath: {{ include "eden.credentialHelperPath" . }}
++              subPath: git-credential-helper
++          {{- with .Values.resources }}
++          resources: {{- toYaml . | nindent 12 }}
++          {{- end }}
++      volumes:
++        {{- include "eden.identityVolumes" (dict "ctx" . "component" "web-ui") | nindent 8 }}
++        - name: experiment-config
++          configMap:
++            name: {{ $fullName }}-experiment-config
++        - name: git-credential-helper
++          configMap:
++            name: {{ $fullName }}-git-credential-helper
++            defaultMode: 0555
++  volumeClaimTemplates:
++    - metadata:
++        name: repo
++      spec:
++        accessModes: ["ReadWriteOnce"]
++        {{- if .Values.storage.className }}
++        storageClassName: {{ .Values.storage.className | quote }}
++        {{- end }}
++        resources:
++          requests:
++            storage: {{ .Values.storage.webUiRepoSize | quote }}
++    - metadata:
++        name: artifacts
++      spec:
++        accessModes: ["ReadWriteOnce"]
++        {{- if .Values.storage.className }}
++        storageClassName: {{ .Values.storage.className | quote }}
++        {{- end }}
++        resources:
++          requests:
++            storage: {{ .Values.storage.artifactsSize | quote }}
++---
++apiVersion: v1
++kind: Service
++metadata:
++  name: {{ $fullName }}-web-ui
++  labels:
++    {{- include "eden.componentLabels" (dict "ctx" . "component" "web-ui") | nindent 4 }}
++spec:
++  type: ClusterIP
++  selector:
++    {{- include "eden.componentSelectorLabels" (dict "ctx" . "component" "web-ui") | nindent 4 }}
++  ports:
++    - name: http
++      port: 8090
++      targetPort: http
++{{- end }}
+diff --git a/reference/helm/eden/values.schema.json b/reference/helm/eden/values.schema.json
+new file mode 100644
+index 0000000..34a2f79
+--- /dev/null
++++ b/reference/helm/eden/values.schema.json
+@@ -0,0 +1,158 @@
++{
++  "$schema": "https://json-schema.org/draft-07/schema#",
++  "title": "EDEN Helm chart values",
++  "type": "object",
++  "required": ["image", "experiment", "replicas", "storage", "config"],
++  "properties": {
++    "image": {
++      "type": "object",
++      "required": ["repository", "tag"],
++      "properties": {
++        "repository": {
++          "type": "string",
++          "minLength": 1,
++          "description": "Container image repository. REQUIRED — build + push the eden-reference image to a registry the cluster can pull from."
++        },
++        "tag": {
++          "type": "string",
++          "minLength": 1,
++          "description": "Image tag. REQUIRED."
++        },
++        "pullPolicy": {
++          "type": "string",
++          "enum": ["Always", "IfNotPresent", "Never"]
++        },
++        "pullSecrets": {
++          "type": "array",
++          "items": {
++            "type": "object",
++            "required": ["name"],
++            "properties": { "name": { "type": "string", "minLength": 1 } }
++          }
++        }
++      }
++    },
++    "experiment": {
++      "type": "object",
++      "required": ["id"],
++      "properties": {
++        "id": { "type": "string", "minLength": 1 },
++        "config": { "type": "object" },
++        "baseCommitSha": { "type": "string" }
++      }
++    },
++    "replicas": {
++      "type": "object",
++      "properties": {
++        "taskStoreServer": { "type": "integer", "minimum": 0 },
++        "controlPlane": { "type": "integer", "minimum": 0 },
++        "orchestrator": { "type": "integer", "minimum": 0 },
++        "ideatorHost": {
++          "description": "Operator-singleton in v0: the ideator Deployment uses one minted worker_id, so >1 replica would race on one worker credential. Capped at 1 until unique worker ids are generated per replica.",
++          "type": "integer",
++          "minimum": 0,
++          "maximum": 1
++        },
++        "executorHost": { "type": "integer", "minimum": 0 },
++        "evaluatorHost": { "type": "integer", "minimum": 0 },
++        "webUi": {
++          "description": "Operator-singleton in v0: a fixed --worker-id + RWO clone/artifacts PVCs make >1 replica incoherent (credential reissue races, split artifacts). Capped at 1 until horizontal scaling lands.",
++          "type": "integer",
++          "minimum": 0,
++          "maximum": 1
++        }
++      }
++    },
++    "secrets": {
++      "type": "object",
++      "properties": {
++        "adminToken": { "type": "string" },
++        "sessionSecret": { "type": "string" },
++        "postgresPassword": { "type": "string" },
++        "readonlyPassword": { "type": "string" },
++        "forgejoRemotePassword": { "type": "string" },
++        "forgejoSecretKey": { "type": "string" },
++        "forgejoInternalToken": { "type": "string" },
++        "existingSecret": { "type": "string" }
++      }
++    },
++    "storage": {
++      "type": "object",
++      "properties": {
++        "className": { "type": "string" },
++        "postgresSize": { "type": "string", "pattern": "^[0-9]+(Mi|Gi|Ti)$" },
++        "forgejoSize": { "type": "string", "pattern": "^[0-9]+(Mi|Gi|Ti)$" },
++        "orchestratorRepoSize": { "type": "string", "pattern": "^[0-9]+(Mi|Gi|Ti)$" },
++        "executorRepoSize": { "type": "string", "pattern": "^[0-9]+(Mi|Gi|Ti)$" },
++        "evaluatorRepoSize": { "type": "string", "pattern": "^[0-9]+(Mi|Gi|Ti)$" },
++        "webUiRepoSize": { "type": "string", "pattern": "^[0-9]+(Mi|Gi|Ti)$" },
++        "artifactsSize": { "type": "string", "pattern": "^[0-9]+(Mi|Gi|Ti)$" }
++      }
++    },
++    "ingress": {
++      "type": "object",
++      "properties": {
++        "enabled": { "type": "boolean" },
++        "className": { "type": "string" },
++        "annotations": { "type": "object" },
++        "hosts": { "type": "object" },
++        "tls": { "type": "array" }
++      }
++    },
++    "config": {
++      "type": "object",
++      "properties": {
++        "leaseDurationSeconds": { "type": "integer", "minimum": 1 },
++        "stateSyncIntervalSeconds": { "type": "integer", "minimum": 1 },
++        "stateSyncFailureThreshold": { "type": "integer", "minimum": 1 },
++        "maxQuiescentIterations": {
++          "description": "0 = never exit on quiescence (Kubernetes default); otherwise >= 2.",
++          "anyOf": [
++            { "type": "integer", "const": 0 },
++            { "type": "integer", "minimum": 2 }
++          ]
++        },
++        "pollIntervalSeconds": { "type": "number", "exclusiveMinimum": 0 },
++        "workerMode": {
++          "description": "Only 'scripted' is supported in 13a (Decision 10).",
++          "type": "string",
++          "enum": ["scripted"]
++        }
++      }
++    },
++    "orchestrator": {
++      "type": "object",
++      "properties": {
++        "leaseMode": {
++          "type": "object",
++          "properties": {
++            "enabled": {
++              "description": "Lease-driven HA toggle. false (default) = single-experiment, control plane idle/not-rendered. true = lease-driven mode (control plane rendered, EDEN_CONTROL_PLANE_URL set, experiment registered). DEFERRED + unvalidated behind #281.",
++              "type": "boolean"
++            }
++          }
++        }
++      }
++    },
++    "identity": {
++      "description": "Per-service minted opaque worker identities (#128). Filled by setup-experiment-helm.sh after the task-store-server mints them. Each service renders only once its workerId is set.",
++      "type": "object",
++      "properties": {
++        "orchestrator": { "$ref": "#/definitions/serviceIdentity" },
++        "webUi": { "$ref": "#/definitions/serviceIdentity" },
++        "ideatorHost": { "$ref": "#/definitions/serviceIdentity" },
++        "executorHost": { "$ref": "#/definitions/serviceIdentity" },
++        "evaluatorHost": { "$ref": "#/definitions/serviceIdentity" }
++      }
++    }
++  },
++  "definitions": {
++    "serviceIdentity": {
++      "type": "object",
++      "properties": {
++        "workerId": { "type": "string" },
++        "token": { "type": "string" }
++      }
++    }
++  }
++}
+diff --git a/reference/helm/eden/values.yaml b/reference/helm/eden/values.yaml
+new file mode 100644
+index 0000000..68fb2f5
+--- /dev/null
++++ b/reference/helm/eden/values.yaml
+@@ -0,0 +1,263 @@
++# Default values for the EDEN reference Helm chart.
++#
++# The structure mirrors the Compose stack's `.env.example`
++# (reference/compose/.env.example) so operators porting from Compose can
++# find their knobs in predictable places. Env-var-shaped Compose keys
++# (EDEN_LEASE_DURATION_SECONDS, …) become camelCase under `config:` per
++# Helm convention.
++#
++# Run `setup-experiment-helm.sh` to generate a working values overlay with
++# fresh secrets + the seeded base commit; this file documents the full
++# surface and the safe defaults.
++
++# ---------------------------------------------------------------------------
++# Image — REQUIRED.
++#
++# The Compose stack builds `eden-reference:dev` as a LOCAL Dockerfile target
++# (reference/compose/Dockerfile); a Kubernetes cluster cannot pull that local
++# image. Operators MUST build + push the image to a registry they control and
++# supply repository + tag. values.schema.json enforces both as non-empty, so a
++# `helm install` with empty image values fails at template time with a clear
++# message rather than at pod-pull time with ErrImagePull.
++# ---------------------------------------------------------------------------
++image:
++  repository: ""          # required, e.g. ghcr.io/your-org/eden-reference
++  tag: ""                 # required, e.g. 0.1.0
++  pullPolicy: IfNotPresent
++  # References to pre-created imagePullSecrets for private registries.
++  # Each entry is `{ name: <secret-name> }`. See docs/deployment/helm.md.
++  pullSecrets: []
++
++# ---------------------------------------------------------------------------
++# Experiment identity.
++#
++# The reference task-store-server is single-experiment per process (#254 cross-
++# experiment isolation is deferred). The DEFAULT deployment runs the
++# single-experiment path: ONE orchestrator, the control plane present but idle
++# (lease mode off), mirroring the Compose default stack that `compose-smoke`
++# validates. Lease-driven HA (multiple orchestrator replicas contending for one
++# lease) is an opt-in toggle (orchestrator.leaseMode.enabled, default false),
++# deferred behind #281 — see that block below. `id` + `config` identify the
++# experiment; `baseCommitSha` is the seed commit recorded on the experiment
++# object.
++#
++# Two render gates stage the bring-up (see docs/deployment/helm.md §3):
++#   * baseCommitSha gates the STORE TIER (task-store-server) — it records the
++#     seed commit at first experiment-row creation, so it must not start before
++#     the seed SHA is known.
++#   * identity.<svc>.workerId gates each IDENTITY-CONSUMING service (orchestrator,
++#     worker hosts, web-ui) — under #128 the task-store-server mints those ids,
++#     so the pods cannot start before their minted worker_id exists.
++# The INFRA TIER (Postgres, Forgejo, Secret, ConfigMaps) always renders;
++# the control plane renders only under orchestrator.leaseMode.enabled.
++# setup-experiment-helm.sh stages these: infra → seed → task-store-server →
++# mint identities → app tier.
++experiment:
++  # Required. An opaque, system-minted experiment id matching the #128 grammar
++  # ^exp_[0-9a-hjkmnp-tv-z]{26}$ (spec/v0/02-data-model.md §1.6). The
++  # task-store-server stamps this id onto every event, and the event model
++  # rejects a non-opaque id — so an operator-typed mnemonic like "exp-1" fails
++  # at runtime. setup-experiment-helm.sh mints a fresh exp_* when --experiment-id
++  # is omitted; pass --experiment-id <exp_*> to reuse one.
++  id: ""
++  # Raw experiment-config YAML as a string. When non-empty it takes precedence
++  # over `config` below — used by setup-experiment-helm.sh, which passes the
++  # operator's config file verbatim via `helm --set-file experiment.configRaw`
++  # (so the script needs no YAML library). Leave empty to use `config`.
++  configRaw: ""
++  # Inline experiment-config.schema.json YAML, rendered into a ConfigMap and
++  # mounted at /etc/eden/experiment-config.yaml. Defaults to the repo fixture.
++  config:
++    parallel_variants: 1
++    evaluation_schema:
++      score: real
++    objective:
++      expr: "score"
++      direction: "maximize"
++    ideation_policy:
++      kind: fixed_total
++      total: 3
++  baseCommitSha: ""       # set by setup-experiment-helm.sh after seeding
++
++# ---------------------------------------------------------------------------
++# Per-service replica counts.
++# ---------------------------------------------------------------------------
++replicas:
++  taskStoreServer: 1      # singleton in v0 (clustered Postgres is 13c)
++  controlPlane: 1         # singleton SPOF per chapter 11 §3.9 (only deployed when
++                          # orchestrator.leaseMode.enabled — see below)
++  # Default 1: the single-experiment path runs ONE orchestrator under a minted
++  # opaque worker_id. Multi-replica HA requires lease mode AND per-replica opaque
++  # identities, which is deferred behind #281 — DO NOT raise this above 1 unless
++  # orchestrator.leaseMode.enabled is true (and even then #281 is unresolved).
++  orchestrator: 1
++  ideatorHost: 1
++  executorHost: 1
++  evaluatorHost: 1
++  webUi: 1
++
++# ---------------------------------------------------------------------------
++# Orchestrator deployment mode.
++#
++# leaseMode.enabled (default false) selects between:
++#   * false (DEFAULT, single-experiment): the orchestrator drives the one
++#     --experiment-id directly, ignores the control plane, and runs under the
++#     setup-minted opaque worker_id. The control-plane Deployment is NOT
++#     rendered. This is the path `helm-smoke` / `compose-smoke` validate.
++#   * true (lease-driven HA): the control-plane Deployment renders, the
++#     orchestrator + web-ui receive EDEN_CONTROL_PLANE_URL, and
++#     setup-experiment-helm.sh registers the experiment with the control plane.
++#     DEFERRED + UNVALIDATED behind #281 (reconcile #128 opaque-id minting with
++#     #147's lease-mode orchestrator self-registration). Do not rely on this in
++#     production until #281 lands.
++# ---------------------------------------------------------------------------
++orchestrator:
++  leaseMode:
++    enabled: false
++
++# ---------------------------------------------------------------------------
++# Secrets.
++#
++# DEV: set the values inline; the chart materializes a single Secret named
++# `<release>-eden-secrets`. The derived Postgres DSNs are assembled in the
++# Secret template from postgresPassword, so the password MUST be URL-safe
++# (the setup script generates hex; if you supply a password with reserved URI
++# characters, use existingSecret + pre-encoded DSNs instead).
++#
++# PROD: pre-create the Secret externally (Sealed Secrets / External Secrets /
++# Vault) and set existingSecret. It MUST carry every key the chart-managed
++# Secret would (see secret.yaml / docs/deployment/helm.md): EDEN_ADMIN_TOKEN,
++# EDEN_SESSION_SECRET, POSTGRES_PASSWORD, EDEN_READONLY_PASSWORD,
++# FORGEJO_REMOTE_PASSWORD, FORGEJO_SECRET_KEY, FORGEJO_INTERNAL_TOKEN,
++# EDEN_STORE_URL, EDEN_READONLY_STORE_URL, EDEN_CONTROL_PLANE_STORE_URL.
++# ---------------------------------------------------------------------------
++secrets:
++  adminToken: ""              # required (chapter 07 §13 deployment admin token)
++  sessionSecret: ""           # required (web-ui session-cookie signing key)
++  postgresPassword: ""        # required (eden Postgres superuser)
++  readonlyPassword: ""        # required (eden_readonly Postgres role)
++  forgejoRemotePassword: ""   # required (eden Forgejo user; HTTP Basic + helper)
++  forgejoSecretKey: ""        # required (Forgejo cookie/CSRF/2FA key)
++  forgejoInternalToken: ""    # required (Forgejo inter-component auth)
++  existingSecret: ""          # if set, all of the above are ignored
++
++# ---------------------------------------------------------------------------
++# Storage.
++#
++# StatefulSet volumeClaimTemplates mint one PVC per replica; Deployments don't
++# carry per-replica state. Per the §1.0 substrate baseline, Forgejo is the
++# central git remote and the orchestrator/executor/web-ui each hold their OWN
++# local clone — hence the per-service repo PVCs.
++# ---------------------------------------------------------------------------
++storage:
++  className: ""               # cluster default StorageClass if empty
++  postgresSize: 10Gi
++  forgejoSize: 20Gi
++  orchestratorRepoSize: 5Gi
++  executorRepoSize: 5Gi
++  evaluatorRepoSize: 5Gi      # unused in scripted mode; reserved for subprocess
++  webUiRepoSize: 5Gi
++  artifactsSize: 50Gi
++
++# ---------------------------------------------------------------------------
++# Networking. Services are ClusterIP. The Web UI optionally exposes an Ingress.
++# ---------------------------------------------------------------------------
++ingress:
++  enabled: false
++  className: ""               # cluster default IngressClass if empty
++  annotations: {}
++  hosts:
++    # Per-release-name defaults avoid hostname collisions when more than one
++    # release (or a release + the Compose stack) share an ingress controller.
++    # Override for a deliberately-shared hostname.
++    webUi: ""                 # default: <release>-webui.eden.local (see _helpers)
++  tls: []                     # operator supplies cert refs
++
++# ---------------------------------------------------------------------------
++# Compose-mirror config knobs (per 12a-1/2/3 + 12b + 12c).
++# ---------------------------------------------------------------------------
++config:
++  leaseDurationSeconds: 30            # chapter 11
++  stateSyncIntervalSeconds: 30        # chapter 11 §3.4a
++  stateSyncFailureThreshold: 10       # chapter 11 §3.4a
++  # On Kubernetes (Decision 9) the orchestrator runs forever: a Deployment /
++  # StatefulSet only supports restartPolicy: Always, so a quiescence-exit would
++  # CrashLoopBackOff. 0 disables the quiescence-exit branch (run until SIGTERM).
++  # Requires the orchestrator CLI/loop change bundled in this chunk.
++  maxQuiescentIterations: 0
++  pollIntervalSeconds: 1.0
++  # --mode for the worker hosts. Only "scripted" is supported in 13a
++  # (Decision 10); user-supplied LLM workers via subprocess + DooD need a
++  # Kubernetes-native per-task packaging mechanism (13b "executor as k8s Job").
++  workerMode: scripted
++
++# ---------------------------------------------------------------------------
++# Per-service worker identities (#128 opaque-id model).
++#
++# Under the post-#128 identity model the task-store-server MINTS every worker
++# id (opaque wkr_*) — operators no longer type them. setup-experiment-helm.sh
++# brings the task-store-server up, POSTs {"name": "<role>"} to mint one worker
++# per service (capturing the minted worker_id + one-time registration_token),
++# and re-runs `helm upgrade` to fill these values. The chart then:
++#   * passes <workerId> as each service's --worker-id, and
++#   * renders a per-service Secret carrying <token>, which an initContainer
++#     installs at /var/lib/eden/credentials/<workerId>.token so the service's
++#     startup credential-bootstrap verifies it via /whoami (no admin reissue).
++#
++# Each identity-consuming service (orchestrator, web-ui, ideator/executor/
++# evaluator hosts) renders ONLY once its workerId is set — that is the gate that
++# holds the app tier back until identities are provisioned. Leave these empty;
++# the setup script fills them. Operators wiring the chart by hand mint the
++# workers themselves and supply the ids + tokens here (or via --set).
++# ---------------------------------------------------------------------------
++identity:
++  orchestrator:
++    workerId: ""
++    token: ""
++  webUi:
++    workerId: ""
++    token: ""
++  ideatorHost:
++    workerId: ""
++    token: ""
++  executorHost:
++    workerId: ""
++    token: ""
++  evaluatorHost:
++    workerId: ""
++    token: ""
++
++# ---------------------------------------------------------------------------
++# Postgres (embedded StatefulSet; managed external Postgres is 13c).
++# ---------------------------------------------------------------------------
++postgres:
++  image: postgres:16.6-alpine
++  # Pull policy for the upstream Postgres image. Kept separate from
++  # image.pullPolicy: a kind-loaded eden-reference image uses Never, but the
++  # upstream dependency images must still be pulled (IfNotPresent), or the
++  # infra pods ImagePullBackOff on a node that hasn't cached them.
++  pullPolicy: IfNotPresent
++  database: eden
++  controlPlaneDatabase: eden_control_plane
++  user: eden
++  resources: {}
++
++# ---------------------------------------------------------------------------
++# Forgejo (embedded StatefulSet; auth + ACLs are 13e).
++# ---------------------------------------------------------------------------
++forgejo:
++  image: codeberg.org/forgejo/forgejo:11-rootless
++  # See postgres.pullPolicy — kept separate from image.pullPolicy.
++  pullPolicy: IfNotPresent
++  resources: {}
++
++# ---------------------------------------------------------------------------
++# Default resource requests/limits per workload. Empty = unset (operators tune
++# for their cluster; Non-goal §4.4 keeps the chart from pinning strict limits).
++# ---------------------------------------------------------------------------
++resources: {}
++
++# Optional pod scheduling knobs applied to every workload.
++nodeSelector: {}
++tolerations: []
++affinity: {}
+diff --git a/reference/scripts/setup-experiment-helm.sh b/reference/scripts/setup-experiment-helm.sh
+new file mode 100755
+index 0000000..a4c9a4a
+--- /dev/null
++++ b/reference/scripts/setup-experiment-helm.sh
+@@ -0,0 +1,558 @@
++#!/usr/bin/env bash
++set -euo pipefail
++
++# setup-experiment-helm — bootstrap an EDEN experiment on a Helm-deployed stack.
++# The Helm equivalent of setup-experiment.sh (Compose), ported to the #128
++# opaque-id identity model.
++#
++# Identity model (#128): the experiment id and every infra worker / group id
++# are opaque, system-minted (exp_* / wkr_* / grp_*) — NOT operator-typed. This
++# script mints the experiment id (or accepts a pre-minted exp_* via
++# --experiment-id), brings the task-store-server up, then mints the reserved
++# groups (admins, orchestrators) and the per-service infra workers (operator,
++# web-ui, orchestrator, ideator-host, executor-host, evaluator-host) under the
++# admin bearer, capturing each minted worker_id + one-time registration_token.
++# It hands each worker_id + token to the chart as values.identity.<svc>.* so the
++# chart provisions a per-service credential the pod verifies via /whoami.
++#
++# Because the task-store-server records its seed commit at first experiment-row
++# creation, AND identity-consuming pods cannot start before their worker_id is
++# minted, the bring-up runs in THREE phases:
++#
++#   1. `helm upgrade --install` baseCommitSha empty → INFRA tier only (Postgres,
++#      Forgejo, + control-plane when lease mode is on).
++#   2. Provision the Forgejo eden user, seed the bare repo via a one-shot Job,
++#      read the seed SHA, then `helm upgrade --set experiment.baseCommitSha=<sha>`
++#      → the task-store-server comes up (still no identity-consuming pods).
++#   3. Mint the reserved groups + infra workers against the task-store-server,
++#      then `helm upgrade` with the minted identity values → the orchestrator,
++#      worker hosts, and web-ui come up with pre-provisioned credentials.
++#
++# Lease-driven HA mode (orchestrator.leaseMode.enabled, default false) is opt-in
++# and DEFERRED + unvalidated behind #281. When enabled, the control-plane is
++# deployed and the experiment is registered with it; the DEFAULT path is
++# single-experiment, mirroring the Compose default stack that compose-smoke
++# validates.
++#
++# Re-running with the same --experiment-id is safe: secrets are read back from
++# the cluster, minted identities are read back from the release values (so they
++# are NOT re-minted — re-minting would orphan the prior registry rows),
++# Forgejo user/repo creation is idempotent, and the repo-init Job short-circuits
++# on an already-seeded repo.
++#
++# kubectl + helm + python3 access to the target cluster is required.
++
++usage() {
++    cat <<'EOF' >&2
++Usage:
++  setup-experiment-helm.sh [--experiment-config <path>]
++                           [--experiment-id <exp_*>]
++                           [--namespace <ns>]
++                           [--release <name>]
++                           [--chart <path>]
++                           [--values <file>]
++                           [--image <repository:tag>]
++                           [--timeout <duration>]
++
++Defaults: --namespace eden, --release eden, --chart <repo>/reference/helm/eden,
++--experiment-config <repo>/tests/fixtures/experiment/.eden/config.yaml.
++
++--experiment-id, when omitted, is freshly MINTED as an opaque exp_* id (the
++post-#128 grammar; an operator-typed mnemonic like "exp-1" is rejected by the
++event model at runtime).
++
++--values is passed through to every `helm upgrade` (operator/CI-supplied image
+++ secrets, e.g. reference/helm/eden/ci-values.yaml). When omitted, the script
++generates fresh dev secrets (read back from the cluster on re-run) and requires
++--image.
++EOF
++}
++
++# --- Tooling preflight ---
++for tool in helm kubectl python3; do
++    command -v "$tool" >/dev/null || {
++        echo "setup-experiment-helm.sh requires '$tool' on PATH" >&2
++        exit 2
++    }
++done
++
++# --- Resolve paths ---
++SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
++REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
++
++# --- Parse args ---
++CONFIG_PATH=""
++EXPERIMENT_ID=""
++NAMESPACE="eden"
++RELEASE="eden"
++CHART="${REPO_ROOT}/reference/helm/eden"
++VALUES_FILE=""
++IMAGE_REF=""
++TIMEOUT="5m"
++
++require_value() {
++    local flag="$1" remaining="$2"
++    if [[ "$remaining" -lt 2 ]]; then
++        echo "$flag requires a value" >&2
++        usage
++        exit 2
++    fi
++}
++
++while [[ $# -gt 0 ]]; do
++    case "$1" in
++        --experiment-config) require_value "$1" "$#"; CONFIG_PATH="$2";   shift 2 ;;
++        --experiment-id)     require_value "$1" "$#"; EXPERIMENT_ID="$2"; shift 2 ;;
++        --namespace)         require_value "$1" "$#"; NAMESPACE="$2";     shift 2 ;;
++        --release)           require_value "$1" "$#"; RELEASE="$2";       shift 2 ;;
++        --chart)             require_value "$1" "$#"; CHART="$2";         shift 2 ;;
++        --values)            require_value "$1" "$#"; VALUES_FILE="$2";   shift 2 ;;
++        --image)             require_value "$1" "$#"; IMAGE_REF="$2";     shift 2 ;;
++        --timeout)           require_value "$1" "$#"; TIMEOUT="$2";       shift 2 ;;
++        -h|--help)           usage; exit 0 ;;
++        *) echo "unknown argument: $1" >&2; usage; exit 2 ;;
++    esac
++done
++
++if [[ -z "$CONFIG_PATH" ]]; then
++    CONFIG_PATH="${REPO_ROOT}/tests/fixtures/experiment/.eden/config.yaml"
++fi
++if [[ ! -f "$CONFIG_PATH" ]]; then
++    echo "experiment config not found: $CONFIG_PATH" >&2
++    exit 2
++fi
++CONFIG_PATH="$(cd "$(dirname "$CONFIG_PATH")" && pwd)/$(basename "$CONFIG_PATH")"
++
++# --- #128 opaque-id minting (Crockford base32 ULID) ---
++# Mirrors eden_contracts.mint_opaque_id / setup-experiment.sh so a setup-minted
++# id is indistinguishable from a server-minted one (spec §1.6 grammar:
++# ^<prefix>_[0-9a-hjkmnp-tv-z]{26}$).
++mint_opaque_id() {
++    python3 - "$1" <<'PY'
++import secrets, sys, time
++prefix = sys.argv[1]
++alphabet = "0123456789abcdefghjkmnpqrstvwxyz"
++value = ((int(time.time() * 1000) & ((1 << 48) - 1)) << 80) | secrets.randbits(80)
++suffix = "".join(alphabet[(value >> (5 * i)) & 31] for i in range(26))[::-1]
++sys.stdout.write(f"{prefix}_{suffix}")
++PY
++}
++
++# --- Resolve the opaque experiment id (#128) ---
++# Precedence: --experiment-id flag; else the EDEN_EXPERIMENT_ID baked into an
++# existing release (idempotent re-run); else mint a fresh exp_*.
++CHART_NAME="eden"
++if [[ "$RELEASE" == *"$CHART_NAME"* ]]; then
++    FULLNAME="$RELEASE"
++else
++    FULLNAME="${RELEASE}-${CHART_NAME}"
++fi
++# Mirror the chart's eden.fullname truncation EXACTLY: trunc 40 then
++# `trimSuffix "-"` (removes a SINGLE trailing hyphen, not a run).
++FULLNAME="$(printf '%s' "$FULLNAME" | cut -c1-40 | sed 's/-$//')"
++
++# Read the existing release's user-supplied values once (empty JSON when the
++# release does not yet exist). Used for idempotent reuse of the seed SHA + the
++# minted experiment id + the minted per-service identities.
++RELEASE_VALUES="{}"
++if helm status "$RELEASE" -n "$NAMESPACE" >/dev/null 2>&1; then
++    RELEASE_VALUES="$(helm get values "$RELEASE" -n "$NAMESPACE" -a -o json 2>/dev/null || echo '{}')"
++fi
++
++values_get() {
++    # values_get <python-expression-over-`v`> — read a value out of the merged
++    # release values JSON (v is the parsed dict). Prints empty on absence.
++    printf '%s' "$RELEASE_VALUES" | python3 -c "import json,sys; v=json.load(sys.stdin); print($1 or '')"
++}
++
++if [[ -z "$EXPERIMENT_ID" ]]; then
++    EXISTING_EXP_ID="$(values_get 'v.get("experiment",{}).get("id")')"
++    if [[ -n "$EXISTING_EXP_ID" ]]; then
++        EXPERIMENT_ID="$EXISTING_EXP_ID"
++    else
++        EXPERIMENT_ID="$(mint_opaque_id exp)"
++    fi
++fi
++
++SECRET_NAME="${FULLNAME}-secrets"
++HELPER_CONFIGMAP="${FULLNAME}-git-credential-helper"
++FORGEJO_REMOTE_URL="http://${FULLNAME}-forgejo:3000/eden/${EXPERIMENT_ID}.git"
++
++gen_hex() {
++    python3 -c 'import secrets,sys; sys.stdout.write(secrets.token_hex(int(sys.argv[1])))' "${1:-32}"
++}
++
++# --- Build the helm value args (image + experiment config + optional secrets) ---
++HELM_VALUE_ARGS=()
++if [[ -n "$VALUES_FILE" ]]; then
++    if [[ ! -f "$VALUES_FILE" ]]; then
++        echo "--values file not found: $VALUES_FILE" >&2
++        exit 2
++    fi
++    HELM_VALUE_ARGS+=(-f "$VALUES_FILE")
++fi
++if [[ -n "$IMAGE_REF" ]]; then
++    # Split on the LAST colon so registries with a port keep it in the
++    # repository. --set-string so numeric/bool-looking tags aren't type-coerced.
++    HELM_VALUE_ARGS+=(--set-string "image.repository=${IMAGE_REF%:*}")
++    HELM_VALUE_ARGS+=(--set-string "image.tag=${IMAGE_REF##*:}")
++fi
++
++# Drive the experiment identity + config. The config file is passed verbatim as
++# a raw string via --set-file (the chart's ConfigMap uses experiment.configRaw
++# when set), so this script needs no YAML library.
++HELM_VALUE_ARGS+=(--set-string "experiment.id=${EXPERIMENT_ID}")
++HELM_VALUE_ARGS+=(--set-file "experiment.configRaw=${CONFIG_PATH}")
++
++# When no values file was supplied, generate (or read back) dev secrets.
++if [[ -z "$VALUES_FILE" ]]; then
++    if [[ -z "$IMAGE_REF" ]]; then
++        echo "--image is required when --values is not supplied" >&2
++        exit 2
++    fi
++    read_secret_key() {
++        kubectl get secret "$SECRET_NAME" -n "$NAMESPACE" \
++            -o "jsonpath={.data.$1}" 2>/dev/null | base64 -d 2>/dev/null || true
++    }
++    for pair in \
++        "adminToken:EDEN_ADMIN_TOKEN" \
++        "sessionSecret:EDEN_SESSION_SECRET" \
++        "postgresPassword:POSTGRES_PASSWORD" \
++        "readonlyPassword:EDEN_READONLY_PASSWORD" \
++        "forgejoRemotePassword:FORGEJO_REMOTE_PASSWORD" \
++        "forgejoSecretKey:FORGEJO_SECRET_KEY" \
++        "forgejoInternalToken:FORGEJO_INTERNAL_TOKEN"; do
++        value_key="${pair%%:*}"
++        secret_key="${pair##*:}"
++        existing="$(read_secret_key "$secret_key")"
++        if [[ -z "$existing" ]]; then
++            existing="$(gen_hex 32)"
++        fi
++        HELM_VALUE_ARGS+=(--set "secrets.${value_key}=${existing}")
++    done
++fi
++
++# --- Phase 1: bring up (or refresh) infra. ---
++# On a FRESH install baseCommitSha is empty so only the infra tier renders. On a
++# RERUN we PRESERVE the existing SHA so phase 1 does not tear the live app tier
++# down (the repo-init Job is idempotent and phase 2/3 re-apply it).
++EXISTING_SHA="$(values_get 'v.get("experiment",{}).get("baseCommitSha")')"
++
++# helm upgrade does NOT retain prior `--set` values, so on a re-run we must
++# re-supply any already-minted identities in EVERY phase — otherwise phase 1/2
++# would reset identity.* to the (empty) chart defaults and tear the live app
++# tier down until phase 3 re-applies it. Empty on a fresh install.
++EXISTING_IDENTITY_ARGS=()
++for _key in orchestrator webUi ideatorHost executorHost evaluatorHost; do
++    _wid="$(values_get "v.get('identity',{}).get('${_key}',{}).get('workerId')")"
++    _tok="$(values_get "v.get('identity',{}).get('${_key}',{}).get('token')")"
++    if [[ -n "$_wid" && -n "$_tok" ]]; then
++        EXISTING_IDENTITY_ARGS+=(--set-string "identity.${_key}.workerId=${_wid}")
++        EXISTING_IDENTITY_ARGS+=(--set-string "identity.${_key}.token=${_tok}")
++    fi
++done
++echo "--- phase 1: helm upgrade --install ${RELEASE} (infra tier) ---" >&2
++helm upgrade --install "$RELEASE" "$CHART" \
++    --namespace "$NAMESPACE" --create-namespace \
++    "${HELM_VALUE_ARGS[@]}" \
++    ${EXISTING_IDENTITY_ARGS[@]+"${EXISTING_IDENTITY_ARGS[@]}"} \
++    --set-string "experiment.baseCommitSha=${EXISTING_SHA}" \
++    --wait --timeout "$TIMEOUT"
++
++# Resolve the actual secret name + lease-mode flag from the merged release
++# values: secrets.existingSecret wins over the chart-managed default.
++MERGED_VALUES="$(helm get values "$RELEASE" -n "$NAMESPACE" -a -o json)"
++merged_get() {
++    printf '%s' "$MERGED_VALUES" | python3 -c "import json,sys; v=json.load(sys.stdin); print($1)"
++}
++EXISTING_SECRET="$(merged_get 'v.get("secrets",{}).get("existingSecret") or ""')"
++if [[ -n "$EXISTING_SECRET" ]]; then
++    SECRET_NAME="$EXISTING_SECRET"
++fi
++LEASE_MODE="$(merged_get 'str(bool((v.get("orchestrator") or {}).get("leaseMode",{}).get("enabled"))).lower()')"
++
++kubectl rollout status "statefulset/${FULLNAME}-postgres" -n "$NAMESPACE" --timeout="$TIMEOUT"
++kubectl rollout status "statefulset/${FULLNAME}-forgejo" -n "$NAMESPACE" --timeout="$TIMEOUT"
++if [[ "$LEASE_MODE" == "true" ]]; then
++    kubectl rollout status "deployment/${FULLNAME}-control-plane" -n "$NAMESPACE" --timeout="$TIMEOUT"
++fi
++
++# --- Provision the Forgejo eden user (idempotent) ---
++FORGEJO_PASSWORD="$(kubectl get secret "$SECRET_NAME" -n "$NAMESPACE" \
++    -o 'jsonpath={.data.FORGEJO_REMOTE_PASSWORD}' | base64 -d)"
++FORGEJO_POD="$(kubectl get pod -n "$NAMESPACE" \
++    -l app.kubernetes.io/component=forgejo -o name | head -n1)"
++echo "--- provisioning forgejo eden user ---" >&2
++if ! kubectl exec -n "$NAMESPACE" "$FORGEJO_POD" -- \
++        forgejo admin user create --username eden \
++            --password "$FORGEJO_PASSWORD" --email eden@invalid \
++            --admin --must-change-password=false >/dev/null 2>&1; then
++    kubectl exec -n "$NAMESPACE" "$FORGEJO_POD" -- \
++        forgejo admin user change-password --username eden \
++            --password "$FORGEJO_PASSWORD" --must-change-password=false \
++            >/dev/null 2>&1 || true
++fi
++
++# --- Seed the bare repo via a one-shot Job (push auto-creates the repo) ---
++echo "--- seeding bare repo via repo-init Job ---" >&2
++IMAGE_PULL_POLICY="$(merged_get 'v.get("image",{}).get("pullPolicy","IfNotPresent")')"
++EDEN_IMAGE="$(merged_get 'v["image"]["repository"] + ":" + v["image"]["tag"]')"
++# Render the imagePullSecrets block (or empty) for the out-of-tree Job.
++IMAGE_PULL_SECRETS="$(printf '%s' "$MERGED_VALUES" | python3 -c '
++import json, sys
++secrets = json.load(sys.stdin).get("image", {}).get("pullSecrets") or []
++if secrets:
++    lines = ["      imagePullSecrets:"]
++    lines += ["        - name: " + s["name"] for s in secrets]
++    sys.stdout.write("\n".join(lines))
++')"
++# Render nodeSelector/tolerations/affinity from the release values so the seed
++# Job schedules where the chart pods do (JSON is valid YAML flow style).
++POD_SCHEDULING="$(printf '%s' "$MERGED_VALUES" | python3 -c '
++import json, sys
++v = json.load(sys.stdin)
++out = []
++for key in ("nodeSelector", "tolerations", "affinity"):
++    val = v.get(key)
++    if val:
++        out.append("      " + key + ": " + json.dumps(val))
++sys.stdout.write("\n".join(out))
++')"
++# Derive a DNS-safe Job name from the (possibly opaque) experiment id.
++SAFE_ID="$(printf '%s' "$EXPERIMENT_ID" | tr '[:upper:]' '[:lower:]' \
++    | tr -c 'a-z0-9' '-' | cut -c1-20 | sed 's/^-*//; s/-*$//')"
++ID_HASH="$(printf '%s' "$EXPERIMENT_ID" \
++    | python3 -c 'import hashlib,sys; print(hashlib.sha1(sys.stdin.buffer.read()).hexdigest()[:8])')"
++JOB_PREFIX="$(printf '%s' "${FULLNAME}-repo-init-${SAFE_ID}" | cut -c1-54 | sed 's/-*$//')"
++JOB_NAME="${JOB_PREFIX}-${ID_HASH}"
++
++kubectl delete job "$JOB_NAME" -n "$NAMESPACE" --ignore-not-found >/dev/null 2>&1 || true
++EDEN_NAMESPACE="$NAMESPACE" EDEN_JOB_NAME="$JOB_NAME" EDEN_IMAGE="$EDEN_IMAGE" \
++EDEN_IMAGE_PULL_POLICY="$IMAGE_PULL_POLICY" EDEN_SECRET_NAME="$SECRET_NAME" \
++EDEN_HELPER_CONFIGMAP="$HELPER_CONFIGMAP" EDEN_FORGEJO_REMOTE_URL="$FORGEJO_REMOTE_URL" \
++EDEN_IMAGE_PULL_SECRETS="$IMAGE_PULL_SECRETS" EDEN_POD_SCHEDULING="$POD_SCHEDULING" \
++    python3 - "${CHART}/bootstrap/repo-init-job.yaml.tmpl" <<'PY' \
++    | kubectl apply -n "$NAMESPACE" -f -
++import os, string, sys
++keys = (
++    "EDEN_NAMESPACE", "EDEN_JOB_NAME", "EDEN_IMAGE", "EDEN_IMAGE_PULL_POLICY",
++    "EDEN_SECRET_NAME", "EDEN_HELPER_CONFIGMAP", "EDEN_FORGEJO_REMOTE_URL",
++    "EDEN_IMAGE_PULL_SECRETS", "EDEN_POD_SCHEDULING",
++)
++mapping = {k: os.environ[k] for k in keys}
++sys.stdout.write(string.Template(open(sys.argv[1]).read()).substitute(mapping))
++PY
++
++if ! kubectl wait --for=condition=complete "job/${JOB_NAME}" \
++        -n "$NAMESPACE" --timeout="$TIMEOUT"; then
++    echo "repo-init Job did not complete; logs:" >&2
++    kubectl logs "job/${JOB_NAME}" -n "$NAMESPACE" >&2 || true
++    exit 1
++fi
++SEED_OUTPUT="$(kubectl logs "job/${JOB_NAME}" -n "$NAMESPACE")"
++SEED_SHA="$(echo "$SEED_OUTPUT" \
++    | sed -nE 's/^EDEN_REPO_(SEEDED|ALREADY_SEEDED) sha=([0-9a-f]{40})$/\2/p' | head -n1)"
++if [[ -z "$SEED_SHA" ]]; then
++    echo "failed to parse seed SHA from repo-init Job output:" >&2
++    echo "$SEED_OUTPUT" >&2
++    exit 1
++fi
++echo "--- seed commit: ${SEED_SHA} ---" >&2
++
++# --- Phase 2: bring the task-store-server up (baseCommitSha set, identities not
++# yet provisioned, so the identity-consuming pods stay held back). ---
++echo "--- phase 2: helm upgrade ${RELEASE} (task-store-server, baseCommitSha set) ---" >&2
++helm upgrade "$RELEASE" "$CHART" \
++    --namespace "$NAMESPACE" \
++    "${HELM_VALUE_ARGS[@]}" \
++    ${EXISTING_IDENTITY_ARGS[@]+"${EXISTING_IDENTITY_ARGS[@]}"} \
++    --set "experiment.baseCommitSha=${SEED_SHA}" \
++    --wait --timeout "$TIMEOUT"
++kubectl rollout status "deployment/${FULLNAME}-task-store-server" -n "$NAMESPACE" --timeout="$TIMEOUT"
++
++# --- Mint reserved groups + per-service infra workers (#128) ---
++ADMIN_TOKEN="$(kubectl get secret "$SECRET_NAME" -n "$NAMESPACE" \
++    -o 'jsonpath={.data.EDEN_ADMIN_TOKEN}' | base64 -d)"
++TASK_STORE_POD="$(kubectl get pod -n "$NAMESPACE" \
++    -l app.kubernetes.io/component=task-store-server -o name | head -n1)"
++EXP_BASE="/v0/experiments/${EXPERIMENT_ID}"
++
++store_body() {
++    # store_body <METHOD> <path> [json-body] — admin-authenticated task-store
++    # call from inside the task-store-server pod, returning the RESPONSE BODY on
++    # stdout. curl -f → non-zero on HTTP error (caller decides tolerance).
++    local method="$1" path="$2" body="${3:-}"
++    local args=(-fsS -X "$method"
++        -H "Authorization: Bearer admin:${ADMIN_TOKEN}"
++        -H "X-Eden-Experiment-Id: ${EXPERIMENT_ID}"
++        -H "Content-Type: application/json")
++    if [[ -n "$body" ]]; then args+=(-d "$body"); fi
++    args+=("http://localhost:8080${path}")
++    kubectl exec -n "$NAMESPACE" "$TASK_STORE_POD" -- curl "${args[@]}"
++}
++
++json_field() {
++    # Parse a single top-level string field out of a JSON object on stdin.
++    python3 -c 'import json,sys; d=json.load(sys.stdin); v=d.get(sys.argv[1]); sys.stdout.write(v if isinstance(v,str) else "")' "$1"
++}
++
++first_list_id() {
++    # first_list_id <list-key> <id-field> — from {"<list-key>": [ {...}, ...]}
++    # on stdin, print the <id-field> of the first element (empty if none).
++    python3 -c '
++import json, sys
++d = json.load(sys.stdin)
++items = d.get(sys.argv[1]) or []
++sys.stdout.write(items[0][sys.argv[2]] if items else "")
++' "$1" "$2"
++}
++
++# Mint a reserved group by NAME (admin may create reserved names), or reuse the
++# existing one on a re-run. Echoes the resolved group_id.
++mint_or_get_group() {
++    local name="$1" body gid
++    body="$(store_body GET "${EXP_BASE}/groups?name=${name}")"
++    gid="$(printf '%s' "$body" | first_list_id groups group_id)"
++    if [[ -z "$gid" ]]; then
++        body="$(store_body POST "${EXP_BASE}/groups" "{\"name\":\"${name}\"}")"
++        gid="$(printf '%s' "$body" | json_field group_id)"
++    fi
++    if [[ -z "$gid" ]]; then
++        echo "mint_or_get_group(${name}) returned no group_id" >&2
++        exit 1
++    fi
++    printf '%s' "$gid"
++}
++
++# Reuse-or-mint a per-service worker. Reuses the worker_id + token already baked
++# into the release values on a re-run (re-minting would orphan the prior row +
++# credential); otherwise mints a fresh worker and captures its registration
++# token. Sets MINTED_WORKER_ID + MINTED_TOKEN globals.
++reuse_or_mint_worker() {
++    local name="$1" values_key="$2" existing_id existing_token body
++    existing_id="$(values_get "v.get('identity',{}).get('${values_key}',{}).get('workerId')")"
++    existing_token="$(values_get "v.get('identity',{}).get('${values_key}',{}).get('token')")"
++    if [[ -n "$existing_id" && -n "$existing_token" ]]; then
++        MINTED_WORKER_ID="$existing_id"
++        MINTED_TOKEN="$existing_token"
++        return 0
++    fi
++    body="$(store_body POST "${EXP_BASE}/workers" "{\"name\":\"${name}\"}")"
++    MINTED_WORKER_ID="$(printf '%s' "$body" | json_field worker_id)"
++    MINTED_TOKEN="$(printf '%s' "$body" | json_field registration_token)"
++    if [[ -z "$MINTED_WORKER_ID" || -z "$MINTED_TOKEN" ]]; then
++        echo "register_worker(name=${name}) missing worker_id/registration_token: $body" >&2
++        exit 1
++    fi
++}
++
++# Reuse-or-mint a worker by NAME with no token capture (its token is consumed by
++# no pod — e.g. the operator admin actor). Reuse via list-by-name on a re-run.
++# Echoes the resolved worker_id.
++get_or_mint_worker() {
++    local name="$1" body wid
++    body="$(store_body GET "${EXP_BASE}/workers?name=${name}")"
++    wid="$(printf '%s' "$body" | first_list_id workers worker_id)"
++    if [[ -z "$wid" ]]; then
++        body="$(store_body POST "${EXP_BASE}/workers" "{\"name\":\"${name}\"}")"
++        wid="$(printf '%s' "$body" | json_field worker_id)"
++    fi
++    if [[ -z "$wid" ]]; then
++        echo "get_or_mint_worker(${name}) returned no worker_id" >&2
++        exit 1
++    fi
++    printf '%s' "$wid"
++}
++
++add_to_group() {
++    # admin-gated; idempotent on existing membership (200).
++    local gid="$1" member="$2"
++    store_body POST "${EXP_BASE}/groups/${gid}/members" \
++        "{\"member_id\":\"${member}\"}" >/dev/null
++}
++
++echo "--- minting reserved groups + infra workers ---" >&2
++# Reserved groups. `orchestrators` is created empty; the orchestrator self-joins
++# at startup under its admin token (eden_orchestrator._ensure_orchestrators_membership).
++ADMINS_GID="$(mint_or_get_group admins)"
++mint_or_get_group orchestrators >/dev/null
++
++# Initial admin worker ("operator"): the principal an operator drives the web UI
++# admin actions as. Its token is not consumed by any pod, so no capture.
++OPERATOR_WID="$(get_or_mint_worker operator)"
++add_to_group "$ADMINS_GID" "$OPERATOR_WID"
++
++# Per-service infra workers. Each minted worker_id + token is handed to the chart
++# as values.identity.<svc>.* (phase 3). The web-ui worker is also an admins
++# member (it drives §3.7 admin-gated routes).
++IDENTITY_SET_ARGS=()
++add_identity() {
++    # add_identity <name> <values-key>
++    reuse_or_mint_worker "$1" "$2"
++    IDENTITY_SET_ARGS+=(--set-string "identity.${2}.workerId=${MINTED_WORKER_ID}")
++    IDENTITY_SET_ARGS+=(--set-string "identity.${2}.token=${MINTED_TOKEN}")
++}
++
++add_identity orchestrator    orchestrator
++add_identity web-ui-1        webUi
++WEB_UI_WID="$MINTED_WORKER_ID"
++add_to_group "$ADMINS_GID" "$WEB_UI_WID"
++add_identity ideator-host-1  ideatorHost
++add_identity executor-host-1 executorHost
++add_identity evaluator-host-1 evaluatorHost
++
++echo "--- minted: admins=${ADMINS_GID} operator=${OPERATOR_WID} web-ui=${WEB_UI_WID} ---" >&2
++
++# --- Phase 3: app tier (identities provisioned) ---
++echo "--- phase 3: helm upgrade ${RELEASE} (app tier, identities provisioned) ---" >&2
++helm upgrade "$RELEASE" "$CHART" \
++    --namespace "$NAMESPACE" \
++    "${HELM_VALUE_ARGS[@]}" \
++    --set "experiment.baseCommitSha=${SEED_SHA}" \
++    "${IDENTITY_SET_ARGS[@]}" \
++    --wait --timeout "$TIMEOUT"
++kubectl rollout status "statefulset/${FULLNAME}-orchestrator" -n "$NAMESPACE" --timeout="$TIMEOUT"
++kubectl rollout status "statefulset/${FULLNAME}-web-ui" -n "$NAMESPACE" --timeout="$TIMEOUT"
++
++# --- Lease mode (opt-in, deferred #281): register the experiment with the
++# control plane so a lease-driven orchestrator can acquire it. ---
++if [[ "$LEASE_MODE" == "true" ]]; then
++    echo "--- lease mode: registering experiment ${EXPERIMENT_ID} with the control plane ---" >&2
++    CONTROL_PLANE_POD="$(kubectl get pod -n "$NAMESPACE" \
++        -l app.kubernetes.io/component=control-plane -o name | head -n1)"
++    CONFIG_URI="file:///etc/eden/experiment-config.yaml"
++    rc="$(kubectl exec -n "$NAMESPACE" "$CONTROL_PLANE_POD" -- curl -fsS -o /dev/null \
++        -w '%{http_code}' -X POST \
++        -H "Authorization: Bearer admin:${ADMIN_TOKEN}" \
++        -H "Content-Type: application/json" \
++        -d "{\"experiment_id\":\"${EXPERIMENT_ID}\",\"config_uri\":\"${CONFIG_URI}\"}" \
++        "http://localhost:8081/v0/control/experiments" || true)"
++    case "$rc" in
++        200|201) ;;
++        *) echo "register_experiment failed: http=$rc" >&2; exit 1 ;;
++    esac
++fi
++
++cat <<EOF
++setup-experiment-helm complete.
++
++  experiment id:    ${EXPERIMENT_ID}
++  namespace:        ${NAMESPACE}
++  release:          ${RELEASE}
++  base commit SHA:  ${SEED_SHA}
++  lease mode:       ${LEASE_MODE}
++
++  minted ids (opaque, system-minted):
++    admins group:   ${ADMINS_GID}
++    operator:       ${OPERATOR_WID}
++    web-ui:         ${WEB_UI_WID}
++
++The orchestrator is running in $( [[ "$LEASE_MODE" == "true" ]] && echo "lease-driven" || echo "single-experiment" ) mode.
++
++  # Web UI (port-forward; offset to 18090 to avoid Compose's 8090):
++  kubectl -n ${NAMESPACE} port-forward svc/${FULLNAME}-web-ui 18090:8090
++  open http://localhost:18090/
++
++Re-running setup-experiment-helm with the same --experiment-id is safe: minted
++identities are read back from the release and reused, not re-minted.
++EOF
+diff --git a/reference/services/orchestrator/src/eden_orchestrator/cli.py b/reference/services/orchestrator/src/eden_orchestrator/cli.py
+index 219e77e..f1ed3ca 100644
+--- a/reference/services/orchestrator/src/eden_orchestrator/cli.py
++++ b/reference/services/orchestrator/src/eden_orchestrator/cli.py
+@@ -63,18 +63,29 @@ _MAX_QUIESCENT_ITERATIONS_FLAG_DEFAULT = 3
+ 
+ 
+ def _quiescent_iterations(raw: str) -> int:
+-    """Argparse type for ``--max-quiescent-iterations`` (>=2)."""
++    """Argparse type for ``--max-quiescent-iterations`` (0 or >=2).
++
++    ``0`` is a sentinel meaning "never exit on quiescence; run until
++    SIGTERM" (Decision 9 of the Phase 13a Helm-base-chart plan). It
++    exists for substrates — chiefly a Kubernetes ``Deployment`` /
++    ``StatefulSet`` whose only valid ``restartPolicy`` is ``Always`` —
++    where a clean quiescence exit would be treated as a crash and
++    restarted in a tight loop. ``1`` stays rejected: a single
++    zero-progress iteration risks exiting while a worker is mid-submit.
++    """
+     try:
+         value = int(raw)
+     except ValueError as exc:
+         raise argparse.ArgumentTypeError(
+             f"--max-quiescent-iterations must be an integer, not {raw!r}"
+         ) from exc
++    if value == 0:
++        return 0
+     if value < 2:
+         raise argparse.ArgumentTypeError(
+-            f"--max-quiescent-iterations must be >= 2 (got {value}); a value "
+-            "of 0 or 1 risks the orchestrator exiting while a worker is "
+-            "mid-submit."
++            f"--max-quiescent-iterations must be 0 or >= 2 (got {value}); a "
++            "value of 1 risks the orchestrator exiting while a worker is "
++            "mid-submit, and 0 is the 'never exit on quiescence' sentinel."
+         )
+     return value
+ 
+@@ -215,7 +226,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+         default=_MAX_QUIESCENT_ITERATIONS_FLAG_DEFAULT,
+         help=(
+             "Exit after N consecutive no-progress iterations (default: 3). "
+-            "Must be >=2 — N=1 risks exiting while a worker is mid-submit. "
++            "Must be 0 or >=2 — N=1 risks exiting while a worker is "
++            "mid-submit. N=0 is the 'never exit on quiescence; run until "
++            "SIGTERM' sentinel for restartPolicy=Always substrates "
++            "(Kubernetes Deployments / StatefulSets; see the Phase 13a "
++            "Helm chart Decision 9). "
+             "In single-experiment mode the experiment-config "
+             "``max_quiescent_iterations`` field takes precedence; a "
+             "non-default CLI value triggers a startup-warning and is "
+@@ -425,8 +440,9 @@ def main(argv: list[str] | None = None) -> int:
+     # Warn (not silently) on any ignored non-default flag.
+     _warn_ignored_single_experiment_flags(args, log)
+     termination_policy = build_termination_policy(config.termination_policy)
+-    max_quiescent_iterations = (
+-        config.max_quiescent_iterations or _MAX_QUIESCENT_ITERATIONS_FLAG_DEFAULT
++    max_quiescent_iterations = _resolve_single_experiment_max_quiescent(
++        cli_value=args.max_quiescent_iterations,
++        config_value=config.max_quiescent_iterations,
+     )
+     return _run_single_experiment(
+         args=args,
+@@ -440,6 +456,28 @@ def main(argv: list[str] | None = None) -> int:
+     )
+ 
+ 
++def _resolve_single_experiment_max_quiescent(
++    *, cli_value: int, config_value: int | None
++) -> int:
++    """Resolve the single-experiment quiescence budget (CLI 0 wins as override).
++
++    #157 makes the experiment-config ``max_quiescent_iterations`` the portable
++    source of truth in single-experiment mode, with the CLI flag deferring to
++    it. Decision 9 (Phase 13a Helm) layers ONE exception: the
++    ``--max-quiescent-iterations 0`` "never exit on quiescence; run until
++    SIGTERM" sentinel is a *substrate* property (a Kubernetes Deployment /
++    StatefulSet only supports ``restartPolicy: Always``, which would
++    restart-loop a quiescence exit) — NOT an experiment property — so it
++    OVERRIDES the config. Any non-zero CLI value still defers to the config
++    field (falling back to the reference default when the config omits it),
++    preserving #157. The config field itself cannot be 0 (schema ``minimum: 2``);
++    0 is reachable only via the deployment's CLI flag.
++    """
++    if cli_value == 0:
++        return 0
++    return config_value or _MAX_QUIESCENT_ITERATIONS_FLAG_DEFAULT
++
++
+ def _warn_ignored_single_experiment_flags(
+     args,  # noqa: ANN001 — argparse Namespace
+     log,  # noqa: ANN001 — _CtxAdapter
+@@ -462,7 +500,13 @@ def _warn_ignored_single_experiment_flags(
+                 "in single-experiment mode"
+             ),
+         )
+-    if args.max_quiescent_iterations != _MAX_QUIESCENT_ITERATIONS_FLAG_DEFAULT:
++    # 0 is the never-exit substrate override (Decision 9) — it is HONORED in
++    # single-experiment mode, not ignored, so it must not warn. Only a non-zero,
++    # non-default value is superseded by the experiment-config field.
++    if args.max_quiescent_iterations not in (
++        _MAX_QUIESCENT_ITERATIONS_FLAG_DEFAULT,
++        0,
++    ):
+         log.warning(
+             "orchestrator_cli_flag_ignored",
+             flag="--max-quiescent-iterations",
+diff --git a/reference/services/orchestrator/src/eden_orchestrator/loop.py b/reference/services/orchestrator/src/eden_orchestrator/loop.py
+index a149711..c7c4820 100644
+--- a/reference/services/orchestrator/src/eden_orchestrator/loop.py
++++ b/reference/services/orchestrator/src/eden_orchestrator/loop.py
+@@ -99,6 +99,20 @@ def _observed_terminated(store: Store) -> bool:
+         return False
+ 
+ 
++def _quiescence_exit_reached(
++    max_quiescent_iterations: int, quiescent: int
++) -> bool:
++    """Whether the loop should exit after ``quiescent`` no-progress iterations.
++
++    ``max_quiescent_iterations == 0`` is the "never exit on quiescence;
++    run until ``stop``" sentinel (Phase 13a Decision 9): on a
++    ``restartPolicy: Always`` substrate (a Kubernetes Deployment /
++    StatefulSet) a clean quiescence exit would be restarted in a tight
++    loop, so the loop only ever ends on SIGTERM via the ``stop`` flag.
++    """
++    return max_quiescent_iterations != 0 and quiescent >= max_quiescent_iterations
++
++
+ def run_orchestrator_loop(
+     *,
+     store: Store,
+@@ -145,6 +159,9 @@ def run_orchestrator_loop(
+     quiescence still emits the terminal archive; a healthy
+     quiescent-but-running exit emits none (its state read returns
+     ``running``). A disabled scheduler makes every hook a no-op.
++
++    The ``max_quiescent_iterations == 0`` "never exit" sentinel (Phase
++    13a Decision 9) is implemented by ``_quiescence_exit_reached``.
+     """
+     ideation_factory = make_id_factory(ideation_task_prefix)
+     implement_factory = make_id_factory(execution_task_prefix)
+@@ -183,7 +200,7 @@ def run_orchestrator_loop(
+             quiescent = 0
+         else:
+             quiescent += 1
+-            if quiescent >= max_quiescent_iterations:
++            if _quiescence_exit_reached(max_quiescent_iterations, quiescent):
+                 log.info("quiescent", iterations=quiescent)
+                 break
+         if stop.wait(poll_interval):
+diff --git a/reference/services/orchestrator/tests/test_loop_unit.py b/reference/services/orchestrator/tests/test_loop_unit.py
+index c479494..593422f 100644
+--- a/reference/services/orchestrator/tests/test_loop_unit.py
++++ b/reference/services/orchestrator/tests/test_loop_unit.py
+@@ -246,6 +246,151 @@ def test_loop_picks_up_mode_changes_between_iterations(
+     assert len(store.list_tasks(kind="ideation")) == 2
+ 
+ 
++# ----------------------------------------------------------------------
++# max_quiescent_iterations == 0 sentinel (Phase 13a Decision 9)
++# ----------------------------------------------------------------------
++
++
++def test_quiescence_exit_reached_predicate() -> None:
++    """The extracted predicate honors the zero sentinel and the threshold."""
++    from eden_orchestrator.loop import _quiescence_exit_reached
++
++    # Sentinel: never exit on quiescence regardless of the counter.
++    assert _quiescence_exit_reached(0, 0) is False
++    assert _quiescence_exit_reached(0, 10_000) is False
++    # Non-zero budget: exit once the counter reaches the threshold.
++    assert _quiescence_exit_reached(2, 1) is False
++    assert _quiescence_exit_reached(2, 2) is True
++    assert _quiescence_exit_reached(2, 3) is True
++
++
++def test_loop_never_exits_on_quiescence_when_max_is_zero(
++    store: InMemoryStore,
++) -> None:
++    """``max_quiescent_iterations=0`` runs through many zero-progress iters.
++
++    The Kubernetes substrate (restartPolicy: Always) needs the
++    orchestrator to run until SIGTERM rather than exit cleanly on
++    quiescence — a clean exit would be restarted in a tight loop. The
++    sentinel value 0 disables the quiescence-exit branch entirely; only
++    the ``stop`` flag ends the loop. We drive 100 no-progress iterations
++    (manual mode → the policy is gated off, so every iteration is
++    zero-progress) and assert the loop is still running, then stop it.
++    """
++    store.update_dispatch_mode(
++        {"ideation_creation": "manual"}, updated_by="admin"
++    )
++    stop = StopFlag()
++    iterations = [0]
++
++    # The policy is gated off (manual mode), so it should never be
++    # called; we count iterations via a dispatch-mode read hook instead.
++    class _CountingStore:
++        def __init__(self, inner: InMemoryStore) -> None:
++            self._inner = inner
++
++        def read_dispatch_mode(self) -> DispatchMode:
++            iterations[0] += 1
++            # Well past any non-zero quiescence budget; if the loop
++            # honored a non-zero default it would have exited by ~iter 3.
++            if iterations[0] >= 100:
++                stop.set()
++            return self._inner.read_dispatch_mode()
++
++        def __getattr__(self, name: str) -> Any:
++            return getattr(self._inner, name)
++
++    def policy(state: ExperimentStateView) -> int:
++        raise AssertionError("policy must not be invoked in manual mode")
++
++    run_orchestrator_loop(
++        store=_CountingStore(store),  # type: ignore[arg-type]
++        integrator=_NoopIntegrator(),  # type: ignore[arg-type]
++        ideation_policy=policy,
++        termination_policy=never_terminate,
++        terminated_by="admin",
++        ideation_task_prefix="ideation-",
++        execution_task_prefix="execution-",
++        evaluation_task_prefix="evaluate-",
++        poll_interval=0.0,
++        max_quiescent_iterations=0,
++        stop=stop,
++        scheduler=_disabled_scheduler(),
++    )
++    # The loop only ended because ``stop`` fired at iteration 100 — it
++    # did NOT exit on quiescence despite 99 zero-progress iterations.
++    assert iterations[0] == 100
++
++
++# ----------------------------------------------------------------------
++# _quiescent_iterations argparse type
++# ----------------------------------------------------------------------
++
++
++def test_quiescent_iterations_accepts_zero_sentinel() -> None:
++    from eden_orchestrator.cli import _quiescent_iterations
++
++    assert _quiescent_iterations("0") == 0
++    assert _quiescent_iterations("2") == 2
++    assert _quiescent_iterations("30") == 30
++
++
++def test_quiescent_iterations_rejects_one_and_non_int() -> None:
++    import argparse
++
++    from eden_orchestrator.cli import _quiescent_iterations
++
++    with pytest.raises(argparse.ArgumentTypeError):
++        _quiescent_iterations("1")
++    with pytest.raises(argparse.ArgumentTypeError):
++        _quiescent_iterations("nope")
++
++
++# ----------------------------------------------------------------------
++# _resolve_single_experiment_max_quiescent (Phase 13a Decision 9 + #157)
++# ----------------------------------------------------------------------
++
++
++def test_single_experiment_max_quiescent_cli_zero_overrides_config() -> None:
++    """CLI 0 (substrate never-exit override) wins over the experiment-config.
++
++    The Kubernetes chart passes ``--max-quiescent-iterations 0`` so the
++    orchestrator never quiesce-exits (restartPolicy: Always would restart-loop
++    a clean exit). #157 otherwise makes the experiment-config field the source
++    of truth, but the never-exit sentinel is a substrate property and must
++    override it — even when the config sets a concrete budget.
++    """
++    from eden_orchestrator.cli import _resolve_single_experiment_max_quiescent
++
++    assert (
++        _resolve_single_experiment_max_quiescent(cli_value=0, config_value=30)
++        == 0
++    )
++    assert (
++        _resolve_single_experiment_max_quiescent(cli_value=0, config_value=None)
++        == 0
++    )
++
++
++def test_single_experiment_max_quiescent_nonzero_cli_defers_to_config() -> None:
++    """A non-zero CLI value still defers to the config field (#157 preserved)."""
++    from eden_orchestrator.cli import (
++        _MAX_QUIESCENT_ITERATIONS_FLAG_DEFAULT,
++        _resolve_single_experiment_max_quiescent,
++    )
++
++    # Config value wins over the (non-zero) CLI flag.
++    assert (
++        _resolve_single_experiment_max_quiescent(cli_value=3, config_value=30)
++        == 30
++    )
++    # Config omitted → reference default, NOT the CLI value.
++    assert (
++        _resolve_single_experiment_max_quiescent(cli_value=99, config_value=None)
++        == _MAX_QUIESCENT_ITERATIONS_FLAG_DEFAULT
++    )
++
++
+ # ----------------------------------------------------------------------
+ # _ensure_orchestrators_membership
+ # ----------------------------------------------------------------------

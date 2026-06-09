@@ -1,0 +1,19 @@
+{{- /*
+The experiment-config.schema.json YAML, rendered from values.experiment.config
+and mounted at /etc/eden/experiment-config.yaml on every service that reads it
+(task-store-server, orchestrator, evaluator-host, web-ui). Mirrors the Compose
+`configs:` entry sourced from reference/compose/experiment-config.yaml.
+*/ -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "eden.fullname" . }}-experiment-config
+  labels:
+    {{- include "eden.labels" . | nindent 4 }}
+data:
+  experiment-config.yaml: |
+    {{- if .Values.experiment.configRaw }}
+    {{- .Values.experiment.configRaw | nindent 4 }}
+    {{- else }}
+    {{- toYaml .Values.experiment.config | nindent 4 }}
+    {{- end }}

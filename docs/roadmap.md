@@ -274,8 +274,8 @@ Units and chunking to be named closer to execution — too far ahead to estimate
 
 Units and chunking to be named closer to execution. Scope:
 
-- Base Helm chart for the reference services.
-- Executor as a k8s Job (GPU node selection).
-- Managed Postgres migration.
-- S3/GCS blob backend.
-- Forgejo with auth + per-branch ACLs + native PR review enabled.
+- [13a](plans/eden-phase-13a-helm-base-chart.md) — Base Helm chart for the reference services — **shipped 2026-06-04** (see [CHANGELOG](../CHANGELOG.md))
+- Executor as a k8s Job (GPU node selection) — 13b.
+- Managed Postgres migration — 13c.
+- S3/GCS blob backend — 13d.
+- Forgejo with auth + per-branch ACLs + native PR review enabled — 13e.

@@ -1,0 +1,267 @@
+# Default values for the EDEN reference Helm chart.
+#
+# The structure mirrors the Compose stack's `.env.example`
+# (reference/compose/.env.example) so operators porting from Compose can
+# find their knobs in predictable places. Env-var-shaped Compose keys
+# (EDEN_LEASE_DURATION_SECONDS, …) become camelCase under `config:` per
+# Helm convention.
+#
+# Run `setup-experiment-helm.sh` to generate a working values overlay with
+# fresh secrets + the seeded base commit; this file documents the full
+# surface and the safe defaults.
+
+# ---------------------------------------------------------------------------
+# Image — REQUIRED.
+#
+# The Compose stack builds `eden-reference:dev` as a LOCAL Dockerfile target
+# (reference/compose/Dockerfile); a Kubernetes cluster cannot pull that local
+# image. Operators MUST build + push the image to a registry they control and
+# supply repository + tag. values.schema.json enforces both as non-empty, so a
+# `helm install` with empty image values fails at template time with a clear
+# message rather than at pod-pull time with ErrImagePull.
+# ---------------------------------------------------------------------------
+image:
+  repository: ""          # required, e.g. ghcr.io/your-org/eden-reference
+  tag: ""                 # required, e.g. 0.1.0
+  pullPolicy: IfNotPresent
+  # References to pre-created imagePullSecrets for private registries.
+  # Each entry is `{ name: <secret-name> }`. See docs/deployment/helm.md.
+  pullSecrets: []
+
+# ---------------------------------------------------------------------------
+# Experiment identity.
+#
+# The reference task-store-server is single-experiment per process (#254 cross-
+# experiment isolation is deferred). The DEFAULT deployment runs the
+# single-experiment path: ONE orchestrator, the control plane present but idle
+# (lease mode off), mirroring the Compose default stack that `compose-smoke`
+# validates. Lease-driven HA (multiple orchestrator replicas contending for one
+# lease) is an opt-in toggle (orchestrator.leaseMode.enabled, default false),
+# deferred behind #281 — see that block below. `id` + `config` identify the
+# experiment; `baseCommitSha` is the seed commit recorded on the experiment
+# object.
+#
+# Two render gates stage the bring-up (see docs/deployment/helm.md §3):
+#   * baseCommitSha gates the STORE TIER (task-store-server) — it records the
+#     seed commit at first experiment-row creation, so it must not start before
+#     the seed SHA is known.
+#   * identity.<svc>.workerId gates each IDENTITY-CONSUMING service (orchestrator,
+#     worker hosts, web-ui) — under #128 the task-store-server mints those ids,
+#     so the pods cannot start before their minted worker_id exists.
+# The INFRA TIER (Postgres, Forgejo, Secret, ConfigMaps) always renders;
+# the control plane renders only under orchestrator.leaseMode.enabled.
+# setup-experiment-helm.sh stages these: infra → seed → task-store-server →
+# mint identities → app tier.
+experiment:
+  # Required. An opaque, system-minted experiment id matching the #128 grammar
+  # ^exp_[0-9a-hjkmnp-tv-z]{26}$ (spec/v0/02-data-model.md §1.6). The
+  # task-store-server stamps this id onto every event, and the event model
+  # rejects a non-opaque id — so an operator-typed mnemonic like "exp-1" fails
+  # at runtime. setup-experiment-helm.sh mints a fresh exp_* when --experiment-id
+  # is omitted; pass --experiment-id <exp_*> to reuse one.
+  id: ""
+  # Raw experiment-config YAML as a string. When non-empty it takes precedence
+  # over `config` below — used by setup-experiment-helm.sh, which passes the
+  # operator's config file verbatim via `helm --set-file experiment.configRaw`
+  # (so the script needs no YAML library). Leave empty to use `config`.
+  configRaw: ""
+  # Inline experiment-config.schema.json YAML, rendered into a ConfigMap and
+  # mounted at /etc/eden/experiment-config.yaml. Defaults to the repo fixture.
+  config:
+    parallel_variants: 1
+    evaluation_schema:
+      score: real
+    objective:
+      expr: "score"
+      direction: "maximize"
+    ideation_policy:
+      kind: fixed_total
+      total: 3
+  baseCommitSha: ""       # set by setup-experiment-helm.sh after seeding
+
+# ---------------------------------------------------------------------------
+# Per-service replica counts.
+# ---------------------------------------------------------------------------
+replicas:
+  taskStoreServer: 1      # singleton in v0 (clustered Postgres is 13c)
+  controlPlane: 1         # singleton SPOF per chapter 11 §3.9 (only deployed when
+                          # orchestrator.leaseMode.enabled — see below)
+  # Default 1: the single-experiment path runs ONE orchestrator under a minted
+  # opaque worker_id. Multi-replica HA requires lease mode AND per-replica opaque
+  # identities, which is deferred behind #281 — DO NOT raise this above 1 unless
+  # orchestrator.leaseMode.enabled is true (and even then #281 is unresolved).
+  orchestrator: 1
+  ideatorHost: 1
+  executorHost: 1
+  evaluatorHost: 1
+  webUi: 1
+
+# ---------------------------------------------------------------------------
+# Orchestrator deployment mode.
+#
+# leaseMode.enabled (default false) selects between:
+#   * false (DEFAULT, single-experiment): the orchestrator drives the one
+#     --experiment-id directly, ignores the control plane, and runs under the
+#     setup-minted opaque worker_id. The control-plane Deployment is NOT
+#     rendered. This is the path `helm-smoke` / `compose-smoke` validate.
+#   * true (lease-driven HA): the control-plane Deployment renders, the
+#     orchestrator + web-ui receive EDEN_CONTROL_PLANE_URL, and
+#     setup-experiment-helm.sh registers the experiment with the control plane.
+#     DEFERRED + UNVALIDATED behind #281 (reconcile #128 opaque-id minting with
+#     #147's lease-mode orchestrator self-registration). Do not rely on this in
+#     production until #281 lands.
+# ---------------------------------------------------------------------------
+orchestrator:
+  leaseMode:
+    enabled: false
+
+# ---------------------------------------------------------------------------
+# Secrets.
+#
+# DEV: set the values inline; the chart materializes a single Secret named
+# `<release>-eden-secrets`. The derived Postgres DSNs are assembled in the
+# Secret template from postgresPassword, so the password MUST be URL-safe
+# (the setup script generates hex; if you supply a password with reserved URI
+# characters, use existingSecret + pre-encoded DSNs instead).
+#
+# PROD: pre-create the Secret externally (Sealed Secrets / External Secrets /
+# Vault) and set existingSecret. It MUST carry every key the chart-managed
+# Secret would (see secret.yaml / docs/deployment/helm.md): EDEN_ADMIN_TOKEN,
+# EDEN_SESSION_SECRET, POSTGRES_PASSWORD, EDEN_READONLY_PASSWORD,
+# FORGEJO_REMOTE_PASSWORD, FORGEJO_SECRET_KEY, FORGEJO_INTERNAL_TOKEN,
+# EDEN_STORE_URL, EDEN_READONLY_STORE_URL, EDEN_CONTROL_PLANE_STORE_URL.
+# ---------------------------------------------------------------------------
+secrets:
+  adminToken: ""              # required (chapter 07 §13 deployment admin token)
+  sessionSecret: ""           # required (web-ui session-cookie signing key)
+  postgresPassword: ""        # required (eden Postgres superuser)
+  readonlyPassword: ""        # required (eden_readonly Postgres role)
+  forgejoRemotePassword: ""   # required (eden Forgejo user; HTTP Basic + helper)
+  forgejoSecretKey: ""        # required (Forgejo cookie/CSRF/2FA key)
+  forgejoInternalToken: ""    # required (Forgejo inter-component auth)
+  existingSecret: ""          # if set, all of the above are ignored
+
+# ---------------------------------------------------------------------------
+# Storage.
+#
+# StatefulSet volumeClaimTemplates mint one PVC per replica; Deployments don't
+# carry per-replica state. Per the §1.0 substrate baseline, Forgejo is the
+# central git remote and the orchestrator/executor/web-ui each hold their OWN
+# local clone — hence the per-service repo PVCs.
+# ---------------------------------------------------------------------------
+storage:
+  className: ""               # cluster default StorageClass if empty
+  postgresSize: 10Gi
+  forgejoSize: 20Gi
+  orchestratorRepoSize: 5Gi
+  executorRepoSize: 5Gi
+  evaluatorRepoSize: 5Gi      # unused in scripted mode; reserved for subprocess
+  webUiRepoSize: 5Gi
+  artifactsSize: 50Gi
+
+# ---------------------------------------------------------------------------
+# Networking. Services are ClusterIP. The Web UI optionally exposes an Ingress.
+# ---------------------------------------------------------------------------
+ingress:
+  enabled: false
+  className: ""               # cluster default IngressClass if empty
+  annotations: {}
+  hosts:
+    # Per-release-name defaults avoid hostname collisions when more than one
+    # release (or a release + the Compose stack) share an ingress controller.
+    # Override for a deliberately-shared hostname.
+    webUi: ""                 # default: <release>-webui.eden.local (see _helpers)
+  tls: []                     # operator supplies cert refs
+
+# ---------------------------------------------------------------------------
+# Compose-mirror config knobs (per 12a-1/2/3 + 12b + 12c).
+# ---------------------------------------------------------------------------
+config:
+  leaseDurationSeconds: 30            # chapter 11
+  stateSyncIntervalSeconds: 30        # chapter 11 §3.4a
+  stateSyncFailureThreshold: 10       # chapter 11 §3.4a
+  # On Kubernetes (Decision 9) the orchestrator runs forever: a Deployment /
+  # StatefulSet only supports restartPolicy: Always, so a quiescence-exit would
+  # CrashLoopBackOff. 0 disables the quiescence-exit branch (run until SIGTERM).
+  # Requires the orchestrator CLI/loop change bundled in this chunk.
+  maxQuiescentIterations: 0
+  pollIntervalSeconds: 1.0
+  # --mode for the worker hosts. Only "scripted" is supported in 13a
+  # (Decision 10); user-supplied LLM workers via subprocess + DooD need a
+  # Kubernetes-native per-task packaging mechanism (13b "executor as k8s Job").
+  workerMode: scripted
+
+# ---------------------------------------------------------------------------
+# Per-service worker identities (#128 opaque-id model).
+#
+# Under the post-#128 identity model the task-store-server MINTS every worker
+# id (opaque wkr_*) — operators no longer type them. setup-experiment-helm.sh
+# brings the task-store-server up, POSTs {"name": "<role>"} to mint one worker
+# per service (capturing the minted worker_id + one-time registration_token),
+# and re-runs `helm upgrade` to fill these values. The chart then:
+#   * passes <workerId> as each service's --worker-id, and
+#   * renders a per-service Secret carrying <token>, which an initContainer
+#     installs at the path the service's credential bootstrap reads (the worker
+#     hosts + orchestrator read /var/lib/eden/credentials/<workerId>.token; the
+#     web-ui namespaces per experiment: .../<experimentId>/<workerId>.token) so
+#     startup verifies it via /whoami (no admin reissue).
+#
+# Each identity-consuming service (orchestrator, web-ui, ideator/executor/
+# evaluator hosts) renders ONLY once BOTH its workerId AND token are set — the
+# same condition the per-service identity Secret renders on, so a half-set state
+# (workerId without token) renders neither (no pod referencing a missing Secret).
+# That gate holds the app tier back until identities are provisioned. Leave these
+# empty; the setup script fills them. Operators wiring the chart by hand mint the
+# workers themselves and supply the ids + tokens here together (or via --set).
+# ---------------------------------------------------------------------------
+identity:
+  orchestrator:
+    workerId: ""
+    token: ""
+  webUi:
+    workerId: ""
+    token: ""
+  ideatorHost:
+    workerId: ""
+    token: ""
+  executorHost:
+    workerId: ""
+    token: ""
+  evaluatorHost:
+    workerId: ""
+    token: ""
+
+# ---------------------------------------------------------------------------
+# Postgres (embedded StatefulSet; managed external Postgres is 13c).
+# ---------------------------------------------------------------------------
+postgres:
+  image: postgres:16.6-alpine
+  # Pull policy for the upstream Postgres image. Kept separate from
+  # image.pullPolicy: a kind-loaded eden-reference image uses Never, but the
+  # upstream dependency images must still be pulled (IfNotPresent), or the
+  # infra pods ImagePullBackOff on a node that hasn't cached them.
+  pullPolicy: IfNotPresent
+  database: eden
+  controlPlaneDatabase: eden_control_plane
+  user: eden
+  resources: {}
+
+# ---------------------------------------------------------------------------
+# Forgejo (embedded StatefulSet; auth + ACLs are 13e).
+# ---------------------------------------------------------------------------
+forgejo:
+  image: codeberg.org/forgejo/forgejo:11-rootless
+  # See postgres.pullPolicy — kept separate from image.pullPolicy.
+  pullPolicy: IfNotPresent
+  resources: {}
+
+# ---------------------------------------------------------------------------
+# Default resource requests/limits per workload. Empty = unset (operators tune
+# for their cluster; Non-goal §4.4 keeps the chart from pinning strict limits).
+# ---------------------------------------------------------------------------
+resources: {}
+
+# Optional pod scheduling knobs applied to every workload.
+nodeSelector: {}
+tolerations: []
+affinity: {}

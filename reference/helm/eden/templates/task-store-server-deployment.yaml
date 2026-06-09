@@ -1,0 +1,106 @@
+{{- if eq (include "eden.appEnabled" .) "true" }}
+{{- $fullName := include "eden.fullname" . }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $fullName }}-task-store-server
+  labels:
+    {{- include "eden.componentLabels" (dict "ctx" . "component" "task-store-server") | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicas.taskStoreServer }}
+  selector:
+    matchLabels:
+      {{- include "eden.componentSelectorLabels" (dict "ctx" . "component" "task-store-server") | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        {{- include "eden.rolloutChecksums" . | nindent 8 }}
+      labels:
+        {{- include "eden.componentLabels" (dict "ctx" . "component" "task-store-server") | nindent 8 }}
+    spec:
+      {{- include "eden.imagePullSecrets" . | nindent 6 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: task-store-server
+          image: {{ include "eden.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          envFrom:
+            - secretRef:
+                name: {{ include "eden.secretName" . }}
+          ports:
+            - name: http
+              containerPort: 8080
+          args:
+            - python
+            - -m
+            - eden_task_store_server
+            - --store-url
+            - $(EDEN_STORE_URL)
+            - --experiment-id
+            - {{ required "experiment.id is required" .Values.experiment.id | quote }}
+            - --experiment-config
+            - /etc/eden/experiment-config.yaml
+            - --base-commit-sha
+            - {{ .Values.experiment.baseCommitSha | quote }}
+            - --admin-token
+            - $(EDEN_ADMIN_TOKEN)
+            - --host
+            - 0.0.0.0
+            - --port
+            - "8080"
+            - --log-level
+            - info
+          # The task-store-server has no /healthz route and its experiment-
+          # scoped endpoints require an auth header that probe exec commands
+          # cannot supply ($(VAR) is not expanded in probes). A TCP probe on
+          # the bound port is sufficient for readiness ordering — uvicorn
+          # binds 8080 only once the app is constructed.
+          readinessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 30
+          livenessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          volumeMounts:
+            - name: experiment-config
+              mountPath: /etc/eden/experiment-config.yaml
+              subPath: experiment-config.yaml
+          {{- with .Values.resources }}
+          resources: {{- toYaml . | nindent 12 }}
+          {{- end }}
+      volumes:
+        - name: experiment-config
+          configMap:
+            name: {{ $fullName }}-experiment-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $fullName }}-task-store-server
+  labels:
+    {{- include "eden.componentLabels" (dict "ctx" . "component" "task-store-server") | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "eden.componentSelectorLabels" (dict "ctx" . "component" "task-store-server") | nindent 4 }}
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+{{- end }}

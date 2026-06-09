@@ -99,6 +99,20 @@ def _observed_terminated(store: Store) -> bool:
         return False
 
 
+def _quiescence_exit_reached(
+    max_quiescent_iterations: int, quiescent: int
+) -> bool:
+    """Whether the loop should exit after ``quiescent`` no-progress iterations.
+
+    ``max_quiescent_iterations == 0`` is the "never exit on quiescence;
+    run until ``stop``" sentinel (Phase 13a Decision 9): on a
+    ``restartPolicy: Always`` substrate (a Kubernetes Deployment /
+    StatefulSet) a clean quiescence exit would be restarted in a tight
+    loop, so the loop only ever ends on SIGTERM via the ``stop`` flag.
+    """
+    return max_quiescent_iterations != 0 and quiescent >= max_quiescent_iterations
+
+
 def run_orchestrator_loop(
     *,
     store: Store,
@@ -145,6 +159,9 @@ def run_orchestrator_loop(
     quiescence still emits the terminal archive; a healthy
     quiescent-but-running exit emits none (its state read returns
     ``running``). A disabled scheduler makes every hook a no-op.
+
+    The ``max_quiescent_iterations == 0`` "never exit" sentinel (Phase
+    13a Decision 9) is implemented by ``_quiescence_exit_reached``.
     """
     ideation_factory = make_id_factory(ideation_task_prefix)
     implement_factory = make_id_factory(execution_task_prefix)
@@ -183,7 +200,7 @@ def run_orchestrator_loop(
             quiescent = 0
         else:
             quiescent += 1
-            if quiescent >= max_quiescent_iterations:
+            if _quiescence_exit_reached(max_quiescent_iterations, quiescent):
                 log.info("quiescent", iterations=quiescent)
                 break
         if stop.wait(poll_interval):
