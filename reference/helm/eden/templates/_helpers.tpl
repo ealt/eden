@@ -123,14 +123,16 @@ with the control plane. DEFERRED + unvalidated behind #281.
 
 {{/*
 Whether an identity-consuming service should render. An identity service
-(orchestrator, web-ui, worker hosts) renders only once BOTH the store tier is
-enabled AND its minted worker_id is set (so the app tier holds back until
-setup-experiment-helm.sh has provisioned identities). Call with
+(orchestrator, web-ui, worker hosts) renders only once the store tier is enabled
+AND BOTH its minted worker_id and token are set — the same (workerId AND token)
+condition the per-service identity Secret renders on (templates/identity-secrets.yaml),
+so a workload never references a Secret that didn't render (a partial values state
+with workerId but no token renders neither). Call with
 (dict "ctx" . "key" "orchestrator").
 */}}
 {{- define "eden.identityEnabled" -}}
 {{- $id := index .ctx.Values.identity .key -}}
-{{- if and (eq (include "eden.appEnabled" .ctx) "true") $id.workerId -}}true{{- else -}}false{{- end -}}
+{{- if and (eq (include "eden.appEnabled" .ctx) "true") $id.workerId $id.token -}}true{{- else -}}false{{- end -}}
 {{- end -}}
 
 {{/*
