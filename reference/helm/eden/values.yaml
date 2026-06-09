@@ -201,14 +201,18 @@ config:
 # and re-runs `helm upgrade` to fill these values. The chart then:
 #   * passes <workerId> as each service's --worker-id, and
 #   * renders a per-service Secret carrying <token>, which an initContainer
-#     installs at /var/lib/eden/credentials/<workerId>.token so the service's
-#     startup credential-bootstrap verifies it via /whoami (no admin reissue).
+#     installs at the path the service's credential bootstrap reads (the worker
+#     hosts + orchestrator read /var/lib/eden/credentials/<workerId>.token; the
+#     web-ui namespaces per experiment: .../<experimentId>/<workerId>.token) so
+#     startup verifies it via /whoami (no admin reissue).
 #
 # Each identity-consuming service (orchestrator, web-ui, ideator/executor/
-# evaluator hosts) renders ONLY once its workerId is set — that is the gate that
-# holds the app tier back until identities are provisioned. Leave these empty;
-# the setup script fills them. Operators wiring the chart by hand mint the
-# workers themselves and supply the ids + tokens here (or via --set).
+# evaluator hosts) renders ONLY once BOTH its workerId AND token are set — the
+# same condition the per-service identity Secret renders on, so a half-set state
+# (workerId without token) renders neither (no pod referencing a missing Secret).
+# That gate holds the app tier back until identities are provisioned. Leave these
+# empty; the setup script fills them. Operators wiring the chart by hand mint the
+# workers themselves and supply the ids + tokens here together (or via --set).
 # ---------------------------------------------------------------------------
 identity:
   orchestrator:

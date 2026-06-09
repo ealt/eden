@@ -40,7 +40,7 @@ spec:
       affinity: {{- toYaml . | nindent 8 }}
       {{- end }}
       initContainers:
-        {{- include "eden.identityInitContainer" (dict "ctx" . "workerId" $id.workerId "component" "web-ui") | nindent 8 }}
+        {{- include "eden.identityInitContainer" (dict "ctx" . "workerId" $id.workerId "key" "webUi") | nindent 8 }}
       containers:
         - name: web-ui
           image: {{ include "eden.image" . | quote }}
@@ -70,6 +70,13 @@ spec:
             - $(EDEN_ADMIN_TOKEN)
             - --experiment-config
             - /etc/eden/experiment-config.yaml
+            # The web-ui resolves per-experiment worker tokens under
+            # <credential-dir>/<experiment_id>/<worker_id>.token (its BearerCache,
+            # distinct from the worker-host flat layout). Point it at the mounted
+            # credentials emptyDir where the initContainer installs the token, so
+            # the provisioned identity is used instead of an admin reissue.
+            - --credential-dir
+            - /var/lib/eden/credentials
             - --session-secret
             - $(EDEN_SESSION_SECRET)
             - --artifacts-dir

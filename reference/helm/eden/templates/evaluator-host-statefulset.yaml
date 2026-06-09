@@ -37,7 +37,7 @@ spec:
       affinity: {{- toYaml . | nindent 8 }}
       {{- end }}
       initContainers:
-        {{- include "eden.identityInitContainer" (dict "ctx" . "workerId" $id.workerId "component" "evaluator-host") | nindent 8 }}
+        {{- include "eden.identityInitContainer" (dict "ctx" . "workerId" $id.workerId "key" "evaluatorHost") | nindent 8 }}
       containers:
         - name: evaluator-host
           image: {{ include "eden.image" . | quote }}

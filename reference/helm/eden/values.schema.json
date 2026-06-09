@@ -38,6 +38,10 @@
       "properties": {
         "id": { "type": "string", "minLength": 1 },
         "config": { "type": "object" },
+        "configRaw": {
+          "type": "string",
+          "description": "Raw experiment-config YAML as a string (takes precedence over `config` when non-empty). Set by setup-experiment-helm.sh via --set-file."
+        },
         "baseCommitSha": { "type": "string" }
       }
     },
@@ -135,7 +139,7 @@
       }
     },
     "identity": {
-      "description": "Per-service minted opaque worker identities (#128). Filled by setup-experiment-helm.sh after the task-store-server mints them. Each service renders only once its workerId is set.",
+      "description": "Per-service minted opaque worker identities (#128). Filled by setup-experiment-helm.sh after the task-store-server mints them. Each service renders only once BOTH its workerId and token are set (they must be supplied together).",
       "type": "object",
       "properties": {
         "orchestrator": { "$ref": "#/definitions/serviceIdentity" },
@@ -144,15 +148,54 @@
         "executorHost": { "$ref": "#/definitions/serviceIdentity" },
         "evaluatorHost": { "$ref": "#/definitions/serviceIdentity" }
       }
-    }
+    },
+    "postgres": {
+      "type": "object",
+      "properties": {
+        "image": { "type": "string", "minLength": 1 },
+        "pullPolicy": { "type": "string", "enum": ["Always", "IfNotPresent", "Never"] },
+        "database": { "type": "string", "minLength": 1 },
+        "controlPlaneDatabase": { "type": "string", "minLength": 1 },
+        "user": { "type": "string", "minLength": 1 },
+        "resources": { "type": "object" }
+      }
+    },
+    "forgejo": {
+      "type": "object",
+      "properties": {
+        "image": { "type": "string", "minLength": 1 },
+        "pullPolicy": { "type": "string", "enum": ["Always", "IfNotPresent", "Never"] },
+        "resources": { "type": "object" }
+      }
+    },
+    "resources": { "type": "object" },
+    "nodeSelector": { "type": "object" },
+    "tolerations": { "type": "array" },
+    "affinity": { "type": "object" }
   },
   "definitions": {
     "serviceIdentity": {
       "type": "object",
+      "description": "A minted worker identity. workerId and token MUST be supplied together — set both (provisioned) or leave both empty (not yet provisioned). A half-set state renders neither the identity Secret nor the workload.",
       "properties": {
         "workerId": { "type": "string" },
         "token": { "type": "string" }
-      }
+      },
+      "oneOf": [
+        {
+          "properties": {
+            "workerId": { "const": "" },
+            "token": { "const": "" }
+          }
+        },
+        {
+          "required": ["workerId", "token"],
+          "properties": {
+            "workerId": { "minLength": 1 },
+            "token": { "minLength": 1 }
+          }
+        }
+      ]
     }
   }
 }

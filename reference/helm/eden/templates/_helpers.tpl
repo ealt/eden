@@ -143,13 +143,30 @@ Per-service identity Secret name. Call with (dict "ctx" . "component" "orchestra
 {{- end -}}
 
 {{/*
+The on-disk path the per-service credential bootstrap reads its token from,
+relative to the /var/lib/eden/credentials mount. The worker hosts + orchestrator
+use eden_service_common.auth.bootstrap_worker_credential, which reads
+<dir>/<workerId>.token. The web-ui resolves through its own BearerCache, which
+namespaces per experiment: <dir>/<experimentId>/<workerId>.token. Call with
+(dict "ctx" . "key" <values-key> "workerId" <id>).
+*/}}
+{{- define "eden.identityTokenPath" -}}
+{{- if eq .key "webUi" -}}
+/var/lib/eden/credentials/{{ .ctx.Values.experiment.id }}/{{ .workerId }}.token
+{{- else -}}
+/var/lib/eden/credentials/{{ .workerId }}.token
+{{- end -}}
+{{- end -}}
+
+{{/*
 The per-service credential-provisioning initContainer: installs the minted
 worker's token (from its identity Secret) into the writable credentials emptyDir
-at /var/lib/eden/credentials/<workerId>.token (mode 0600), so the service's
-startup credential-bootstrap verifies it via /whoami without an admin reissue.
-Call with (dict "ctx" . "workerId" <id> "component" <component>).
+at the path the service's credential bootstrap reads (mode 0600), so startup
+verifies it via /whoami without an admin reissue. Call with
+(dict "ctx" . "key" <values-key> "workerId" <id>).
 */}}
 {{- define "eden.identityInitContainer" -}}
+{{- $tokenPath := include "eden.identityTokenPath" (dict "ctx" .ctx "key" .key "workerId" .workerId) -}}
 - name: provision-credential
   image: {{ include "eden.image" .ctx | quote }}
   imagePullPolicy: {{ .ctx.Values.image.pullPolicy }}
@@ -159,7 +176,9 @@ Call with (dict "ctx" . "workerId" <id> "component" <component>).
     - |
       set -e
       umask 077
-      cp /etc/eden/identity/token "/var/lib/eden/credentials/{{ .workerId }}.token"
+      dest="{{ $tokenPath }}"
+      mkdir -p "$(dirname "$dest")"
+      cp /etc/eden/identity/token "$dest"
   volumeMounts:
     - name: identity-token
       mountPath: /etc/eden/identity
