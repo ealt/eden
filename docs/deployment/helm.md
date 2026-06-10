@@ -238,9 +238,11 @@ The managed database must be **empty** on first install; the task-store-server
 runs the schema bootstrap (`ensure_schema`) on first connect — there is no
 separate "run migrations" step. See §4.5.
 
-**TLS.** `postgres.tls.enabled=false` by default (plaintext embedded;
-accommodates the GCP Cloud SQL Auth Proxy, which is itself the secure
-transport). For a managed provider over the network, enable it:
+**TLS** (mode=external only — the embedded StatefulSet runs stock Postgres with
+no server-side TLS, so the schema rejects `tls.enabled=true` for `embedded`).
+`postgres.tls.enabled=false` by default (also accommodates the GCP Cloud SQL Auth
+Proxy, which is itself the secure transport). For a managed provider over the
+network, enable it:
 
 ```yaml
 postgres:
@@ -252,10 +254,13 @@ postgres:
 ```
 
 The chart appends `?sslmode=<mode>[&sslrootcert=/etc/eden/postgres-ca/<key>]` to
-the DSNs it composes and mounts the CA bundle into the task-store-server pod.
-For `external` + `existingSecret` + TLS the chart cannot edit a Secret it does
-not read, so you encode the TLS params into your own DSN and set
-`postgres.external.tlsAlreadyEncodedInSecret: true` (the schema requires it).
+the DSN it composes and mounts the CA bundle into the task-store-server pod. The
+chart can only append the suffix when it composes the DSN itself
+(`external.connectionString` with chart-managed secrets). When the DSN lives in a
+Secret the chart does not render — `postgres.external.existingSecret` **or** the
+whole-chart `secrets.existingSecret` — you encode the TLS params into that DSN
+yourself and set `postgres.external.tlsAlreadyEncodedInSecret: true` (the schema
+requires the acknowledgement in both cases).
 
 **Migration from embedded to external** (drain → `pg_dump` → `pg_restore` →
 swap the value → `helm upgrade`), provider-specific CA-bundle guidance, the

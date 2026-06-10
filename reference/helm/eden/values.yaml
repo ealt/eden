@@ -291,13 +291,15 @@ postgres:
     # values.schema.json for that combination (avoids a silent suffix mismatch).
     tlsAlreadyEncodedInSecret: false
 
-  # --- TLS posture (both modes; usually on for external managed providers) -
+  # --- TLS posture (mode=external only) -----------------------------------
   # When enabled, the chart appends ?sslmode=<mode>[&sslrootcert=<path>] to the
-  # DSNs it composes (embedded, or external+connectionString). For
-  # external+existingSecret the operator encodes TLS themselves (see
-  # tlsAlreadyEncodedInSecret). Default off preserves embedded plaintext and
-  # accommodates the GCP Cloud SQL Auth Proxy case (the proxy IS the secure
-  # transport; sslmode must stay off). See the runbook §"TLS".
+  # DSN it composes (external+connectionString). For external+existingSecret OR a
+  # whole-chart secrets.existingSecret the chart cannot edit the Secret, so the
+  # operator encodes TLS into their DSN and sets tlsAlreadyEncodedInSecret=true.
+  # Rejected for mode=embedded: the in-cluster StatefulSet runs stock Postgres
+  # with no server-side TLS, so enabling it would break the connection.
+  # Default off accommodates the GCP Cloud SQL Auth Proxy case (the proxy IS the
+  # secure transport; sslmode must stay off). See the runbook §"TLS".
   tls:
     enabled: false
     # libpq sslmode. Weak modes (disable/allow/prefer) are rejected by the

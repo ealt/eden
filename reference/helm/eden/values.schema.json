@@ -297,6 +297,40 @@
           }
         }
       }
+    },
+    {
+      "$comment": "TLS is only supported for mode=external. The embedded StatefulSet runs the stock Postgres image with no server-side TLS, so appending sslmode to its DSN would make the task-store-server fail to connect. Reject tls.enabled=true unless mode=external.",
+      "if": {
+        "required": ["postgres"],
+        "properties": {
+          "postgres": { "required": ["tls"], "properties": { "tls": { "required": ["enabled"], "properties": { "enabled": { "const": true } } } } }
+        }
+      },
+      "then": {
+        "properties": {
+          "postgres": { "required": ["mode"], "properties": { "mode": { "const": "external" } } }
+        }
+      }
+    },
+    {
+      "$comment": "mode=external + TLS with a whole-chart secrets.existingSecret: the chart-managed Secret does not render, so the chart cannot append the sslmode/sslrootcert suffix — the operator must encode TLS into the EDEN_STORE_URL inside that Secret and acknowledge it. Mirrors the postgres.external.existingSecret guard for the whole-chart-secret path.",
+      "if": {
+        "required": ["postgres", "secrets"],
+        "properties": {
+          "postgres": { "required": ["mode", "tls"], "properties": { "mode": { "const": "external" }, "tls": { "required": ["enabled"], "properties": { "enabled": { "const": true } } } } },
+          "secrets": { "required": ["existingSecret"], "properties": { "existingSecret": { "minLength": 1 } } }
+        }
+      },
+      "then": {
+        "properties": {
+          "postgres": {
+            "required": ["external"],
+            "properties": {
+              "external": { "required": ["tlsAlreadyEncodedInSecret"], "properties": { "tlsAlreadyEncodedInSecret": { "const": true } } }
+            }
+          }
+        }
+      }
     }
   ],
   "definitions": {

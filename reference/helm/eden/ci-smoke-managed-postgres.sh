@@ -44,11 +44,15 @@ value = ((int(time.time() * 1000) & ((1 << 48) - 1)) << 80) | secrets.randbits(8
 print("exp_" + "".join(alphabet[(value >> (5 * i)) & 31] for i in range(26))[::-1])
 ')"
 
-# Only tear down what THIS script created.
+# Only tear down what THIS script created — never a pre-existing local cluster
+# or container that happens to share the name.
 CREATED_CLUSTER=0
+CREATED_PG_CONTAINER=0
 cleanup() {
     local rc=$?
-    docker rm -f "$PG_CONTAINER" >/dev/null 2>&1 || true
+    if [[ "$CREATED_PG_CONTAINER" -eq 1 ]]; then
+        docker rm -f "$PG_CONTAINER" >/dev/null 2>&1 || true
+    fi
     if [[ "$CREATED_CLUSTER" -eq 1 ]]; then
         echo "--- tearing down kind cluster ${CLUSTER} ---" >&2
         kind delete cluster --name "$CLUSTER" >/dev/null 2>&1 || true
@@ -62,6 +66,11 @@ if kind get clusters 2>/dev/null | grep -qx "$CLUSTER"; then
     echo "Delete it yourself or set EDEN_KIND_CLUSTER to a fresh name." >&2
     exit 2
 fi
+if docker inspect "$PG_CONTAINER" >/dev/null 2>&1; then
+    echo "container '${PG_CONTAINER}' already exists; refusing to reuse/delete it." >&2
+    echo "Delete it yourself (docker rm -f ${PG_CONTAINER}) and re-run." >&2
+    exit 2
+fi
 echo "--- creating kind cluster ${CLUSTER} ---" >&2
 kind create cluster --name "$CLUSTER" --wait 120s
 CREATED_CLUSTER=1
@@ -70,12 +79,12 @@ CREATED_CLUSTER=1
 # kind connects every node container to the shared 'kind' Docker network; a
 # sibling on the same network is routable from pods by IP.
 echo "--- starting sibling Postgres ${PG_CONTAINER} on the kind network ---" >&2
-docker rm -f "$PG_CONTAINER" >/dev/null 2>&1 || true
 docker run -d --name "$PG_CONTAINER" --network kind \
     -e POSTGRES_USER="$PG_USER" \
     -e POSTGRES_PASSWORD="$PG_PASSWORD" \
     -e POSTGRES_DB="$PG_DB" \
     postgres:16.6-alpine >/dev/null
+CREATED_PG_CONTAINER=1
 for _ in $(seq 1 30); do
     if docker exec "$PG_CONTAINER" pg_isready -U "$PG_USER" -d "$PG_DB" >/dev/null 2>&1; then
         break
