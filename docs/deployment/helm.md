@@ -363,8 +363,13 @@ clones) are retained across upgrades, so experiment state survives. The
 - **PVC `Pending`** — no default `StorageClass`, or the requested size exceeds
   the provisioner's limit. `kubectl get pvc -n <ns>` and `kubectl describe pvc`.
 - **task-store-server `CrashLoopBackOff`** — usually a Postgres connectivity or
-  DSN issue. Check the `eden-postgres-0` pod is `Ready` and that
-  `EDEN_STORE_URL` (in the Secret) matches the Postgres credentials.
+  DSN issue. In `postgres.mode=embedded`, check the `eden-postgres-0` pod is
+  `Ready` and that `EDEN_STORE_URL` (in the Secret) matches the Postgres
+  credentials. In `mode=external` there is **no** `eden-postgres-0` pod — verify
+  the managed instance is reachable from the cluster, the DSN/credentials are
+  correct, TLS params match the provider (`sslmode`/`sslrootcert` + the CA bundle
+  Secret), and check the task-store-server logs
+  (`kubectl logs deployment/eden-task-store-server -n <ns>`).
 - **No `variant.integrated` events** — confirm the orchestrator is running
   (`kubectl logs statefulset/eden-orchestrator -n <ns>`) and that each
   identity-consuming pod's `provision-credential` initContainer succeeded
@@ -375,12 +380,14 @@ clones) are retained across upgrades, so experiment state survives. The
 - **Reproduce the CI smoke locally** — with kind + helm + kubectl + docker + jq +
   python3 installed, run `bash reference/helm/eden/ci-smoke.sh`.
 
-## 9. What 13a does not cover
+## 9. What this chart does not cover yet
 
-GPU executor as a k8s Job (13b), managed external Postgres (13c), S3/GCS blob
-backend (13d), Forgejo auth + per-branch ACLs + native PR review (13e), and
-`--mode subprocess` + DooD worker hosts (a later 13 sub-chunk). The artifact
-store is a web-ui-owned `ReadWriteOnce` PVC; cross-service artifact serving needs
-a `ReadWriteMany` or external blob backend (13d). Operators who need
-user-supplied LLM workers via subprocess + DooD stay on the Compose stack until
-13b lands.
+GPU executor as a k8s Job (13b), S3/GCS blob backend (13d), Forgejo auth +
+per-branch ACLs + native PR review (13e), and `--mode subprocess` + DooD worker
+hosts (a later 13 sub-chunk). The artifact store is a web-ui-owned
+`ReadWriteOnce` PVC; cross-service artifact serving needs a `ReadWriteMany` or
+external blob backend (13d). Operators who need user-supplied LLM workers via
+subprocess + DooD stay on the Compose stack until 13b lands.
+
+Managed external Postgres **is** covered as of 13c — see §4.4 and the
+[managed-Postgres runbook](migrating-to-managed-postgres.md).
