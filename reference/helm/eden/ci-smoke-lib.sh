@@ -109,8 +109,11 @@ eden_wait_for_integrated() {
 }
 
 eden_assert_end_state() {
-    # The compose-smoke-equivalent end-state: >= 3 variant.integrated, >= 9
-    # task.completed, >= 3 ideation-task task.completed events.
+    # eden_assert_end_state [min-integrated] [min-completed] [min-ideation] —
+    # defaults are the compose-smoke-equivalent end-state for the 3-variant
+    # fixture: >= 3 variant.integrated, >= 9 task.completed, >= 3
+    # ideation-task task.completed events.
+    local min_integrated="${1:-3}" min_completed="${2:-9}" min_ideation="${3:-3}"
     local events integrated completed ideation_completed
     events="$(eden_fetch_events)"
     integrated="$(eden_count_type "$events" "variant.integrated")"
@@ -118,7 +121,7 @@ eden_assert_end_state() {
     ideation_completed="$(eden_count_type "$events" "task.completed" "ideation-")"
 
     echo "--- final counts: variant.integrated=${integrated} task.completed=${completed} ideation=${ideation_completed} ---" >&2
-    test "${integrated:-0}" -ge 3 || { echo "expected >= 3 variant.integrated; got ${integrated}" >&2; exit 1; }
-    test "${completed:-0}" -ge 9 || { echo "expected >= 9 task.completed; got ${completed}" >&2; exit 1; }
-    test "${ideation_completed:-0}" -ge 3 || { echo "expected >= 3 ideation task.completed; got ${ideation_completed}" >&2; exit 1; }
+    test "${integrated:-0}" -ge "$min_integrated" || { echo "expected >= ${min_integrated} variant.integrated; got ${integrated}" >&2; exit 1; }
+    test "${completed:-0}" -ge "$min_completed" || { echo "expected >= ${min_completed} task.completed; got ${completed}" >&2; exit 1; }
+    test "${ideation_completed:-0}" -ge "$min_ideation" || { echo "expected >= ${min_ideation} ideation task.completed; got ${ideation_completed}" >&2; exit 1; }
 }
