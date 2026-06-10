@@ -801,7 +801,7 @@ s3 = [
 [package.metadata]
 requires-dist = [
     { name = "argon2-cffi", specifier = ">=23.1,<24" },
-    { name = "boto3", marker = "extra == 's3'", specifier = ">=1.34,<2" },
+    { name = "boto3", marker = "extra == 's3'", specifier = ">=1.36,<2" },
     { name = "eden-checkpoint", editable = "reference/packages/eden-checkpoint" },
     { name = "eden-contracts", editable = "reference/packages/eden-contracts" },
     { name = "google-cloud-storage", marker = "extra == 'gcs'", specifier = ">=2.18,<3" },

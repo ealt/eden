@@ -36,25 +36,47 @@ def _client_error(code: str, status: int, op: str) -> ClientError:
 
 
 class _FakeS3Client:
-    """Duck-typed boto3 S3 client: head_object / put_object / get_object."""
+    """Duck-typed boto3 S3 client: put_object / get_object.
 
-    def __init__(self, *, transport_error: bool = False) -> None:
+    Mirrors real S3 semantics for the paths the backend relies on:
+    ``IfNoneMatch="*"`` is the create-only conditional write (412
+    PreconditionFailed on an existing key), a missing bucket is
+    ``NoSuchBucket`` (also HTTP 404 — distinct from a missing KEY), and a
+    missing key on GET is ``NoSuchKey``.
+    """
+
+    def __init__(
+        self, *, transport_error: bool = False, bucket_missing: bool = False
+    ) -> None:
         self.objects: dict[tuple[str, str], bytes] = {}
         self._transport_error = transport_error
+        self._bucket_missing = bucket_missing
 
-    def head_object(self, *, Bucket: str, Key: str) -> dict[str, Any]:  # noqa: N803
+    def put_object(
+        self,
+        *,
+        Bucket: str,  # noqa: N803
+        Key: str,  # noqa: N803
+        Body: bytes,  # noqa: N803
+        IfNoneMatch: str | None = None,  # noqa: N803
+    ) -> None:
         if self._transport_error:
-            raise _client_error("InternalError", 500, "HeadObject")
-        if (Bucket, Key) not in self.objects:
-            raise _client_error("404", 404, "HeadObject")
-        return {}
-
-    def put_object(self, *, Bucket: str, Key: str, Body: bytes) -> None:  # noqa: N803
+            raise _client_error("InternalError", 500, "PutObject")
+        if self._bucket_missing:
+            raise _client_error("NoSuchBucket", 404, "PutObject")
+        if IfNoneMatch != "*":
+            # The create-only precondition IS the §5.4 no-overwrite
+            # guarantee; a PUT without it would silently overwrite.
+            raise AssertionError("store must put with IfNoneMatch='*'")
+        if (Bucket, Key) in self.objects:
+            raise _client_error("PreconditionFailed", 412, "PutObject")
         self.objects[(Bucket, Key)] = bytes(Body)
 
     def get_object(self, *, Bucket: str, Key: str) -> dict[str, Any]:  # noqa: N803
         if self._transport_error:
             raise _client_error("InternalError", 500, "GetObject")
+        if self._bucket_missing:
+            raise _client_error("NoSuchBucket", 404, "GetObject")
         if (Bucket, Key) not in self.objects:
             raise _client_error("NoSuchKey", 404, "GetObject")
         return {"Body": io.BytesIO(self.objects[(Bucket, Key)])}
@@ -98,6 +120,16 @@ class TestS3Backend:
             backend.load(_HEX)
         with pytest.raises(ClientError):
             backend.store(_HEX2, b"x")
+
+    def test_missing_bucket_propagates_not_notfound(self) -> None:
+        # NoSuchBucket is ALSO an HTTP 404, but it means the deployment is
+        # misconfigured — presenting it as "artifact absent" would hide the
+        # breakage behind client-facing 404s (codex round-0 P1).
+        backend = S3Backend(bucket="b", client=_FakeS3Client(bucket_missing=True))
+        with pytest.raises(ClientError, match="NoSuchBucket"):
+            backend.load(_HEX)
+        with pytest.raises(ClientError, match="NoSuchBucket"):
+            backend.store(_HEX, b"x")
 
     @pytest.mark.parametrize("bad_id", ["", "UPPER", "../../etc", "ab", _HEX + "0"])
     def test_invalid_opaque_id_rejected(self, bad_id: str) -> None:
@@ -146,22 +178,46 @@ class _FakeGcsBlob:
 
 
 class _FakeGcsBucket:
-    def __init__(self, objects: dict[str, bytes], name: str) -> None:
+    def __init__(
+        self, objects: dict[str, bytes], name: str, *, missing: bool = False
+    ) -> None:
         self._objects = objects
         self.name = name
+        self._missing = missing
 
     def blob(self, name: str) -> _FakeGcsBlob:
+        if self._missing:
+            # A missing BUCKET surfaces as the same google.api_core NotFound
+            # the missing-object path raises — only at download time.
+            return _FakeGcsMissingBucketBlob(name)
         return _FakeGcsBlob(self._objects, name)
+
+    def exists(self) -> bool:
+        return not self._missing
+
+
+class _FakeGcsMissingBucketBlob:
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+    def upload_from_string(
+        self, data: bytes | str, if_generation_match: int | None = None
+    ) -> None:
+        raise GcsNotFound("The specified bucket does not exist")
+
+    def download_as_bytes(self) -> bytes:
+        raise GcsNotFound("The specified bucket does not exist")
 
 
 class _FakeGcsClient:
-    def __init__(self) -> None:
+    def __init__(self, *, bucket_missing: bool = False) -> None:
         self.objects: dict[str, bytes] = {}
         self.bucket_names: list[str] = []
+        self._bucket_missing = bucket_missing
 
     def bucket(self, name: str) -> _FakeGcsBucket:
         self.bucket_names.append(name)
-        return _FakeGcsBucket(self.objects, name)
+        return _FakeGcsBucket(self.objects, name, missing=self._bucket_missing)
 
 
 class TestGcsBackend:
@@ -191,6 +247,15 @@ class TestGcsBackend:
     def test_load_absent_raises_not_found(self) -> None:
         backend = GcsBackend(bucket="b", client=_FakeGcsClient())
         with pytest.raises(NotFound):
+            backend.load(_HEX)
+
+    def test_missing_bucket_propagates_not_notfound(self) -> None:
+        # google.api_core's NotFound covers bucket-level 404s too; the
+        # backend disambiguates via bucket.exists() and propagates the
+        # deployment error instead of reporting a missing artifact
+        # (codex round-0 P1).
+        backend = GcsBackend(bucket="b", client=_FakeGcsClient(bucket_missing=True))
+        with pytest.raises(GcsNotFound, match="bucket"):
             backend.load(_HEX)
 
     @pytest.mark.parametrize("bad_id", ["", "UPPER", "../../etc", "ab", _HEX + "0"])

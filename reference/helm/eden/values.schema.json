@@ -48,7 +48,12 @@
     "replicas": {
       "type": "object",
       "properties": {
-        "taskStoreServer": { "type": "integer", "minimum": 0 },
+        "taskStoreServer": {
+          "description": "Operator-singleton in v0: one minted worker-facing endpoint per experiment, and file-mode blob storage (blob.backend=file) mounts a single ReadWriteOnce PVC. Capped at 1 until a multi-replica task-store/blob design exists.",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1
+        },
         "controlPlane": { "type": "integer", "minimum": 0 },
         "orchestrator": { "type": "integer", "minimum": 0 },
         "ideatorHost": {

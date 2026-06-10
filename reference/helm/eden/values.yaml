@@ -83,7 +83,9 @@ experiment:
 # Per-service replica counts.
 # ---------------------------------------------------------------------------
 replicas:
-  taskStoreServer: 1      # singleton in v0 (clustered Postgres is 13c)
+  taskStoreServer: 1      # singleton in v0 (clustered Postgres is 13c); capped at 1
+                          # by values.schema.json — file-mode blob storage mounts a
+                          # single RWO PVC, and >1 replica has no design yet (#174)
   controlPlane: 1         # singleton SPOF per chapter 11 §3.9 (only deployed when
                           # orchestrator.leaseMode.enabled — see below)
   # Default 1: the single-experiment path runs ONE orchestrator under a minted

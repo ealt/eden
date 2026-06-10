@@ -198,11 +198,13 @@ class S3Backend:
     them from a Secret). Either way the literal secret never reaches a CLI
     argv — only the bucket / region / prefix / endpoint do.
 
-    **No-overwrite (``08-storage.md`` §5.4).** :meth:`store` HEADs the key
-    first and raises ``FileExistsError`` if it already exists. The
-    server-minted opaque id is 128 bits of randomness, so the HEAD→PUT
-    window is a negligible collision surface — the same non-atomic
-    check-then-write posture :class:`InMemoryArtifactBackend` takes.
+    **No-overwrite (``08-storage.md`` §5.4).** :meth:`store` PUTs with
+    ``IfNoneMatch="*"`` — S3's native create-only conditional write — so a
+    reuse raises ``FileExistsError`` atomically server-side (no
+    check-then-write window). AWS S3 and current MinIO (≥ RELEASE.2024-08)
+    support the precondition; an S3-compatible service that doesn't will
+    surface its ``NotImplemented`` error loudly rather than silently
+    overwriting.
     """
 
     def __init__(
@@ -245,15 +247,23 @@ class S3Backend:
         _require_valid_opaque_id(opaque_id)
         from botocore.exceptions import ClientError  # noqa: PLC0415
 
-        key = self._key(opaque_id)
         try:
-            self._client.head_object(Bucket=self._bucket, Key=key)
+            self._client.put_object(
+                Bucket=self._bucket,
+                Key=self._key(opaque_id),
+                Body=data,
+                IfNoneMatch="*",
+            )
         except ClientError as exc:
-            if not _s3_is_absent(exc):
-                raise
-        else:
-            raise FileExistsError(f"artifact {opaque_id!r} already exists")
-        self._client.put_object(Bucket=self._bucket, Key=key, Body=data)
+            # 412 PreconditionFailed is S3's "the key already exists" under
+            # If-None-Match: * — the §5.4 no-overwrite guarantee, enforced
+            # atomically server-side. Anything else (NoSuchBucket, auth,
+            # 5xx) propagates: those are deployment errors, not reuse.
+            if _s3_error_code(exc) == "PreconditionFailed":
+                raise FileExistsError(
+                    f"artifact {opaque_id!r} already exists"
+                ) from exc
+            raise
 
     def load(self, opaque_id: str) -> bytes:
         """Return the bytes at ``<prefix>/<opaque_id>``; ``NotFound`` if absent."""
@@ -263,19 +273,25 @@ class S3Backend:
         try:
             resp = self._client.get_object(Bucket=self._bucket, Key=self._key(opaque_id))
         except ClientError as exc:
-            if _s3_is_absent(exc):
+            # ONLY NoSuchKey is "this artifact is absent" — it implies the
+            # bucket exists and the request was authorized. A bucket-level
+            # 404 (NoSuchBucket) or any other failure is a deployment error
+            # and must NOT be presented as a missing artifact (the AGENTS.md
+            # narrow-exception-on-store-reads pitfall).
+            if _s3_error_code(exc) == "NoSuchKey":
                 raise NotFound(f"artifact {opaque_id!r}") from exc
             raise
-        return resp["Body"].read()
+        body = resp["Body"]
+        try:
+            return body.read()
+        finally:
+            body.close()
 
 
-def _s3_is_absent(exc: object) -> bool:
-    """True iff a botocore ``ClientError`` means "object not present" (404)."""
+def _s3_error_code(exc: object) -> str:
+    """The ``Error.Code`` string of a botocore ``ClientError`` (or ``""``)."""
     response = getattr(exc, "response", None) or {}
-    error_code = response.get("Error", {}).get("Code", "")
-    status = response.get("ResponseMetadata", {}).get("HTTPStatusCode")
-    # head_object surfaces a bare "404"; get_object surfaces "NoSuchKey".
-    return error_code in {"404", "NoSuchKey", "NotFound"} or status == 404
+    return response.get("Error", {}).get("Code", "")
 
 
 class GcsBackend:
@@ -339,4 +355,11 @@ class GcsBackend:
         try:
             return blob.download_as_bytes()
         except GcsNotFound as exc:
+            # google.api_core's NotFound covers BOTH object-level and
+            # bucket-level 404s. Disambiguate with one extra round-trip on
+            # the absent path: a missing BUCKET is a deployment error and
+            # must propagate, not masquerade as a missing artifact (the
+            # AGENTS.md narrow-exception-on-store-reads pitfall).
+            if not self._bucket.exists():
+                raise
             raise NotFound(f"artifact {opaque_id!r}") from exc
