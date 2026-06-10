@@ -278,4 +278,5 @@ Units and chunking to be named closer to execution. Scope:
 - Executor as a k8s Job (GPU node selection) — 13b.
 - [13c](plans/eden-phase-13c-managed-postgres.md) — Managed Postgres migration (`postgres.mode={embedded,external}`) — **shipped 2026-06-10** (see [CHANGELOG](../CHANGELOG.md))
 - [13d](plans/eden-phase-13d-blob-backend.md) — S3/GCS blob backend — **shipped 2026-06-09** (see [CHANGELOG](../CHANGELOG.md))
+- [#284](https://github.com/ealt/eden/pull/311) — helm-upgrade-smoke CI job (13a §6.3 deferral) — **shipped 2026-06-10** (see [CHANGELOG](../CHANGELOG.md))
 - Forgejo with auth + per-branch ACLs + native PR review enabled — 13e.
