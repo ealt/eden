@@ -15,9 +15,12 @@ from eden_contracts import ExperimentConfig
 from eden_git import GitError, GitRepo
 from eden_service_common import load_experiment_config
 from eden_storage import (
+    ArtifactBackend,
     FileArtifactBackend,
+    GcsBackend,
     InMemoryStore,
     PostgresStore,
+    S3Backend,
     SqliteStore,
     Store,
     ensure_readonly_role,
@@ -32,6 +35,7 @@ log = logging.getLogger(__name__)
 # source of truth.
 __all__ = [
     "build_app",
+    "build_artifact_backend",
     "build_store",
     "build_tree_resolver",
     "load_experiment_config",
@@ -154,13 +158,86 @@ def _reject_blob_dir_overlap(
         )
 
 
+def build_artifact_backend(
+    *,
+    blob_backend: str = "file",
+    artifact_blob_dir: Path | str | None = None,
+    artifacts_dir: Path | str | None = None,
+    s3_bucket: str = "",
+    s3_region: str = "",
+    s3_prefix: str = "",
+    s3_endpoint_url: str = "",
+    gcs_bucket: str = "",
+    gcs_prefix: str = "",
+) -> ArtifactBackend | None:
+    """Build the §16 artifact blob backend from CLI-shaped config (issue #174).
+
+    ``blob_backend`` selects among the reference backends:
+
+    - ``file`` (default) — ``FileArtifactBackend`` rooted at
+      ``artifact_blob_dir``. Returns ``None`` when the dir is unset, in
+      which case eden-wire falls back to the NON-DURABLE in-memory
+      backend (the CLI warns loudly). ``artifacts_dir`` is consulted
+      only for the overlap rejection (the legacy ``/_reference`` route
+      serves it unauthenticated; a nested blob dir would bypass the
+      §16.2 fetch ACL).
+    - ``s3`` — ``S3Backend`` against ``s3_bucket`` (required).
+      Credentials come from boto3's default chain (IRSA / instance
+      profile / ``AWS_ACCESS_KEY_ID`` env), never from argv.
+    - ``gcs`` — ``GcsBackend`` against ``gcs_bucket`` (required).
+      Credentials come from the GCP default chain (Workload Identity /
+      ``GOOGLE_APPLICATION_CREDENTIALS`` env).
+
+    Per-backend flags are rejected under any other mode, so a values
+    typo (e.g. an S3 bucket with ``--blob-backend file``) fails at
+    startup instead of silently running on the wrong backend.
+    """
+    s3_flags = {
+        "--blob-s3-bucket": s3_bucket,
+        "--blob-s3-region": s3_region,
+        "--blob-s3-prefix": s3_prefix,
+        "--blob-s3-endpoint-url": s3_endpoint_url,
+    }
+    gcs_flags = {"--blob-gcs-bucket": gcs_bucket, "--blob-gcs-prefix": gcs_prefix}
+    if blob_backend != "s3" and any(s3_flags.values()):
+        stray = ", ".join(name for name, value in s3_flags.items() if value)
+        raise SystemExit(f"{stray} require(s) --blob-backend s3 (got {blob_backend!r}).")
+    if blob_backend != "gcs" and any(gcs_flags.values()):
+        stray = ", ".join(name for name, value in gcs_flags.items() if value)
+        raise SystemExit(f"{stray} require(s) --blob-backend gcs (got {blob_backend!r}).")
+    if blob_backend != "file" and artifact_blob_dir is not None:
+        raise SystemExit(
+            "--artifact-blob-dir is the file backend's root and is meaningless "
+            f"with --blob-backend {blob_backend}; remove it."
+        )
+    if blob_backend == "s3":
+        if not s3_bucket:
+            raise SystemExit("--blob-s3-bucket is required with --blob-backend s3.")
+        return S3Backend(
+            bucket=s3_bucket,
+            region=s3_region or None,
+            prefix=s3_prefix,
+            endpoint_url=s3_endpoint_url or None,
+        )
+    if blob_backend == "gcs":
+        if not gcs_bucket:
+            raise SystemExit("--blob-gcs-bucket is required with --blob-backend gcs.")
+        return GcsBackend(bucket=gcs_bucket, prefix=gcs_prefix)
+    if blob_backend != "file":
+        raise SystemExit(f"unknown --blob-backend {blob_backend!r} (file|s3|gcs).")
+    if artifact_blob_dir is None:
+        return None
+    _reject_blob_dir_overlap(artifact_blob_dir, artifacts_dir)
+    return FileArtifactBackend(artifact_blob_dir)
+
+
 def build_app(
     *,
     store: Store,
     admin_token: str | None = None,
     subscribe_timeout: float = 30.0,
     artifacts_dir: Path | str | None = None,
-    artifact_blob_dir: Path | str | None = None,
+    artifact_backend: ArtifactBackend | None = None,
     max_artifact_bytes: int | None = None,
     checkpoint_experiment_config: str | None = None,
     checkpoint_repo_path: Path | str | None = None,
@@ -207,14 +284,13 @@ def build_app(
         # Issue #166: the §16.1 deposit size cap. When unset, make_app's
         # DEFAULT_MAX_ARTIFACT_BYTES applies.
         make_app_kwargs["max_artifact_bytes"] = max_artifact_bytes
-    if artifact_blob_dir is not None:
-        # Issue #166: the §16 blob backend's server-PRIVATE writable root,
-        # distinct from --artifacts-dir (which backs the read-only legacy
-        # /_reference serve route). Without it the deposit endpoint falls
-        # back to a non-durable in-memory backend — see the warning the
-        # CLI logs.
-        _reject_blob_dir_overlap(artifact_blob_dir, artifacts_dir)
-        make_app_kwargs["artifact_backend"] = FileArtifactBackend(artifact_blob_dir)
+    if artifact_backend is not None:
+        # Issue #166 / #174: the §16 blob backend, built by
+        # build_artifact_backend (which owns the per-mode validation and
+        # the blob-dir/artifacts-dir overlap rejection). Without it the
+        # deposit endpoint falls back to a non-durable in-memory backend
+        # — see the warning the CLI logs.
+        make_app_kwargs["artifact_backend"] = artifact_backend
     return make_app(
         store,
         admin_token=admin_token,

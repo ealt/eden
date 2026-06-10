@@ -18,7 +18,13 @@ import uvicorn
 from eden_service_common import configure_logging, get_logger, parse_log_level
 from eden_storage import PostgresStore, SqliteStore
 
-from .app import build_app, build_store, load_experiment_config, provision_readonly
+from .app import (
+    build_app,
+    build_artifact_backend,
+    build_store,
+    load_experiment_config,
+    provision_readonly,
+)
 
 
 # slop-allow: argparse builder; one add_argument per CLI flag with no
@@ -133,16 +139,71 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--blob-backend",
+        default="file",
+        choices=["file", "s3", "gcs"],
+        help=(
+            "Which §16 artifact blob backend persists deposited bytes "
+            "(07-wire-protocol.md §16; issue #174). 'file' (default) writes "
+            "under --artifact-blob-dir; 's3' targets --blob-s3-bucket via "
+            "boto3 (credentials from the SDK default chain: IRSA / instance "
+            "profile / AWS_ACCESS_KEY_ID env — never argv); 'gcs' targets "
+            "--blob-gcs-bucket via google-cloud-storage (Workload Identity / "
+            "GOOGLE_APPLICATION_CREDENTIALS). Backend choice is invisible on "
+            "the wire — the deposit endpoint always returns "
+            "eden://artifacts/<id>."
+        ),
+    )
+    parser.add_argument(
         "--artifact-blob-dir",
         default=None,
         help=(
             "Server-PRIVATE, writable directory for the §16 artifact blob "
-            "backend (07-wire-protocol.md §16; issue #166). Distinct from "
-            "--artifacts-dir (which backs the read-only legacy /_reference "
-            "serve route). When set, deposits persist durably here; when "
-            "unset, the deposit endpoint falls back to a NON-DURABLE "
-            "in-memory backend (a warning is logged). Issue #166."
+            "backend (07-wire-protocol.md §16; issue #166). Only meaningful "
+            "with --blob-backend file. Distinct from --artifacts-dir (which "
+            "backs the read-only legacy /_reference serve route). When set, "
+            "deposits persist durably here; when unset, the deposit endpoint "
+            "falls back to a NON-DURABLE in-memory backend (a warning is "
+            "logged). Issue #166."
         ),
+    )
+    parser.add_argument(
+        "--blob-s3-bucket",
+        default="",
+        help="S3 bucket for --blob-backend s3 (required in that mode). Issue #174.",
+    )
+    parser.add_argument(
+        "--blob-s3-region",
+        default="",
+        help=(
+            "AWS region for --blob-backend s3. Optional: when unset the SDK "
+            "default chain applies (AWS_REGION env / IRSA metadata), or "
+            "'us-east-1' is used as a placeholder when --blob-s3-endpoint-url "
+            "points at an S3-compatible service that ignores regions (MinIO)."
+        ),
+    )
+    parser.add_argument(
+        "--blob-s3-prefix",
+        default="",
+        help="Optional key prefix namespacing EDEN's objects within the S3 bucket.",
+    )
+    parser.add_argument(
+        "--blob-s3-endpoint-url",
+        default="",
+        help=(
+            "Optional S3 endpoint URL for S3-compatible services (e.g. "
+            "http://minio:9000). Empty means the AWS-default regional endpoint."
+        ),
+    )
+    parser.add_argument(
+        "--blob-gcs-bucket",
+        default="",
+        help="GCS bucket for --blob-backend gcs (required in that mode). Issue #174.",
+    )
+    parser.add_argument(
+        "--blob-gcs-prefix",
+        default="",
+        help="Optional object-name prefix namespacing EDEN's objects within the GCS bucket.",
     )
     parser.add_argument(
         "--max-artifact-bytes",
@@ -245,28 +306,41 @@ def _resolve_store_url(args: argparse.Namespace, log: Any) -> str:
     return str(args.store_url)
 
 
-def _resolve_artifact_blob_dir(raw: str | None, log: Any) -> Path | None:
-    """Resolve the §16 artifact blob dir, warning loudly when absent (issue #166).
+def _resolve_artifact_backend(args: argparse.Namespace, log: Any) -> Any:
+    """Build the §16 blob backend from argv, warning loudly when non-durable.
 
-    Without ``--artifact-blob-dir`` the deposit endpoint falls back to a
-    non-durable in-memory backend: deposited bytes are lost on restart while
-    their metadata row persists, so a previously-returned ``artifacts_uri``
-    then fetches as 404. Acceptable only for tests / ``:memory:`` stores; a
-    durable deployment MUST set the flag (a server-private writable dir,
-    distinct from ``--artifacts-dir``).
+    Delegates per-mode validation (required buckets, stray per-backend
+    flags, blob-dir/artifacts-dir overlap) to
+    :func:`eden_task_store_server.app.build_artifact_backend`. Without
+    ``--artifact-blob-dir`` in file mode the deposit endpoint falls back to
+    a non-durable in-memory backend: deposited bytes are lost on restart
+    while their metadata row persists, so a previously-returned
+    ``artifacts_uri`` then fetches as 404. Acceptable only for tests /
+    ``:memory:`` stores; a durable deployment MUST pass a writable dir
+    (distinct from ``--artifacts-dir``) or select a cloud backend.
     """
-    if raw:
-        return Path(raw)
-    log.warning(
-        "no --artifact-blob-dir set: the §16 artifact deposit endpoint will "
-        "use a NON-DURABLE in-memory backend — deposited bytes are lost on "
-        "restart while their metadata row persists, so a previously-returned "
-        "artifacts_uri then fetches as 404. A durable deployment MUST pass "
-        "--artifact-blob-dir. The reference Compose stack wires this as part "
-        "of the #290 cutover, since no writer deposits over the wire yet "
-        "(issue #166)."
+    backend = build_artifact_backend(
+        blob_backend=args.blob_backend,
+        artifact_blob_dir=args.artifact_blob_dir,
+        artifacts_dir=args.artifacts_dir,
+        s3_bucket=args.blob_s3_bucket,
+        s3_region=args.blob_s3_region,
+        s3_prefix=args.blob_s3_prefix,
+        s3_endpoint_url=args.blob_s3_endpoint_url,
+        gcs_bucket=args.blob_gcs_bucket,
+        gcs_prefix=args.blob_gcs_prefix,
     )
-    return None
+    if backend is None:
+        log.warning(
+            "no --artifact-blob-dir set: the §16 artifact deposit endpoint will "
+            "use a NON-DURABLE in-memory backend — deposited bytes are lost on "
+            "restart while their metadata row persists, so a previously-returned "
+            "artifacts_uri then fetches as 404. A durable deployment MUST pass "
+            "--artifact-blob-dir (or select --blob-backend s3|gcs). The "
+            "reference Compose stack wires this as part of the #290 cutover, "
+            "since no writer deposits over the wire yet (issue #166)."
+        )
+    return backend
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -314,13 +388,13 @@ def main(argv: list[str] | None = None) -> int:
             if args.checkpoint_import_credentials_dir
             else None
         )
-        artifact_blob_dir = _resolve_artifact_blob_dir(args.artifact_blob_dir, log)
+        artifact_backend = _resolve_artifact_backend(args, log)
         app = build_app(
             store=store,
             admin_token=args.admin_token,
             subscribe_timeout=args.subscribe_timeout,
             artifacts_dir=artifacts_dir,
-            artifact_blob_dir=artifact_blob_dir,
+            artifact_backend=artifact_backend,
             max_artifact_bytes=args.max_artifact_bytes,
             checkpoint_experiment_config=experiment_config_text,
             checkpoint_repo_path=args.repo_path,

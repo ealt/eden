@@ -9,7 +9,10 @@ dependencies = [
     "eden-contracts",
     "eden-git",
     "eden-service-common",
-    "eden-storage",
+    # [s3,gcs] pulls boto3 + google-cloud-storage in so the shared image can
+    # serve --blob-backend s3|gcs (issue #174); the SDKs are lazily imported,
+    # so --blob-backend file never touches them.
+    "eden-storage[s3,gcs]",
     "eden-wire",
     "pyyaml>=6.0",
     "uvicorn>=0.30,<1",

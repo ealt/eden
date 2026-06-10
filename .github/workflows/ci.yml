@@ -835,6 +835,48 @@ jobs:
             exit 1
           fi
 
+      # Issue #174: the s3 / gcs blob-backend modes must render (positive)
+      # and must fail closed when the operator-required bucket or auth
+      # config is missing (negative). The kind-based helm-smoke stays on
+      # the default file mode — exercising a real S3 wire needs an
+      # in-cluster MinIO (deferred; see issue filed at chunk completion).
+      - name: helm template renders the s3 blob-backend mode
+        run: |
+          helm template eden reference/helm/eden \
+            -f reference/helm/eden/ci-values.yaml \
+            --set experiment.baseCommitSha=0123456789abcdef0123456789abcdef01234567 \
+            --set blob.backend=s3 \
+            --set blob.s3.bucket=ci-bucket \
+            --set blob.s3.region=us-east-1 \
+            --set blob.s3.irsa.enabled=true \
+            --set blob.s3.irsa.roleArn=arn:aws:iam::000000000000:role/eden-ci \
+            | grep -q -- '--blob-s3-bucket'
+
+      - name: helm template renders the gcs blob-backend mode
+        run: |
+          helm template eden reference/helm/eden \
+            -f reference/helm/eden/ci-values.yaml \
+            --set experiment.baseCommitSha=0123456789abcdef0123456789abcdef01234567 \
+            --set blob.backend=gcs \
+            --set blob.gcs.bucket=ci-bucket \
+            --set blob.gcs.existingSecret=eden-gcs-key \
+            | grep -q -- '--blob-gcs-bucket'
+
+      - name: helm template fails closed on a cloud blob backend without bucket/auth
+        run: |
+          if helm template eden reference/helm/eden \
+               -f reference/helm/eden/ci-values.yaml \
+               --set blob.backend=s3 >/dev/null 2>&1; then
+            echo "expected helm template to fail with blob.backend=s3 and no bucket" >&2
+            exit 1
+          fi
+          if helm template eden reference/helm/eden \
+               -f reference/helm/eden/ci-values.yaml \
+               --set blob.backend=gcs --set blob.gcs.bucket=b >/dev/null 2>&1; then
+            echo "expected helm template to fail with blob.backend=gcs and no auth path" >&2
+            exit 1
+          fi
+
   # helm-smoke: the Helm analogue of compose-smoke. Spins up kind, builds +
   # loads the reference image, runs setup-experiment-helm.sh against the
   # fixture, and asserts the same integration end-state. Not required by branch

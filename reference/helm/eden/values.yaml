@@ -160,6 +160,92 @@ storage:
   artifactsSize: 50Gi
 
 # ---------------------------------------------------------------------------
+# Artifact blob backend (issue #174).
+#
+# Selects where the task-store-server's §16 artifact deposit endpoint
+# (07-wire-protocol.md §16; issue #166) persists deposited bytes. The choice
+# is invisible on the wire — the deposit endpoint always returns
+# eden://artifacts/<id> — and only the task-store-server pod ever touches the
+# backend (workers deposit/fetch over the wire), so credentials are wired to
+# that one pod only.
+#
+#   * file (DEFAULT): a chart-managed PVC mounted into the task-store-server
+#     pod; --artifact-blob-dir points at it. No operator values required —
+#     upgrading from a pre-#174 chart keeps working without edits (and gains
+#     durable deposits; previously the server fell back to the non-durable
+#     in-memory backend because no blob dir was wired).
+#   * s3: AWS S3 or any S3-compatible service (MinIO via s3.endpointUrl).
+#     REQUIRES s3.bucket plus exactly one auth path: s3.irsa (pod identity,
+#     production posture) or s3.existingSecret (static keys, fallback).
+#   * gcs: Google Cloud Storage. REQUIRES gcs.bucket plus exactly one auth
+#     path: gcs.workloadIdentity (pod identity, production posture) or
+#     gcs.existingSecret (service-account key JSON, fallback).
+#
+# values.schema.json enforces the per-mode requirements at lint/template time
+# (same no-fictional-defaults posture as image.* — a missing bucket fails
+# `helm install` with a clear message, not at pod runtime).
+#
+# Migrating an existing deployment between backends: see
+# docs/deployment/migrating-to-blob-backend.md (copy the blob PVC's contents
+# to the bucket with `aws s3 sync` / `gcloud storage cp -r`; objects are
+# keyed by opaque id, so the layout maps 1:1).
+# ---------------------------------------------------------------------------
+blob:
+  backend: file               # ∈ {file, s3, gcs}
+
+  file:
+    # Active when backend=file: a dedicated PVC (annotated
+    # helm.sh/resource-policy: keep so `helm uninstall` preserves deposited
+    # bytes, matching the StatefulSet-PVC durability posture elsewhere in
+    # the chart) mounted into the task-store-server pod.
+    size: 10Gi
+    className: ""             # cluster default StorageClass if empty
+    mountPath: /var/lib/eden/blob
+
+  s3:
+    # Active when backend=s3. bucket is REQUIRED; region is recommended
+    # (without it the AWS SDK falls back to AWS_REGION / the IRSA-injected
+    # region, and MinIO deployments may omit it when endpointUrl is set).
+    bucket: ""
+    region: ""
+    prefix: ""                # optional key prefix namespacing EDEN's objects
+    endpointUrl: ""           # optional; set for MinIO / S3-compatible services
+
+    # Pod-identity auth (EKS IRSA) — the production posture. The chart
+    # renders a dedicated ServiceAccount for the task-store-server annotated
+    # eks.amazonaws.com/role-arn: <roleArn>; the operator creates the IAM
+    # role + trust policy out-of-band.
+    irsa:
+      enabled: false
+      roleArn: ""
+
+    # Static-credentials fallback (clusters without IRSA; local dev against
+    # MinIO). The referenced Secret must carry the access-key id + secret
+    # under the named keys; they are injected as AWS_ACCESS_KEY_ID /
+    # AWS_SECRET_ACCESS_KEY env vars (never argv).
+    existingSecret: ""
+    accessKeyIdKey: "AWS_ACCESS_KEY_ID"
+    secretAccessKeyKey: "AWS_SECRET_ACCESS_KEY"
+
+  gcs:
+    # Active when backend=gcs. bucket is REQUIRED.
+    bucket: ""
+    prefix: ""                # optional object-name prefix
+
+    # Pod-identity auth (GKE Workload Identity) — the production posture.
+    # The chart renders a dedicated ServiceAccount annotated
+    # iam.gke.io/gcp-service-account: <serviceAccount>; the operator binds
+    # the GCP SA out-of-band.
+    workloadIdentity:
+      enabled: false
+      serviceAccount: ""
+
+    # Service-account-key fallback: the referenced Secret's key is mounted
+    # read-only and GOOGLE_APPLICATION_CREDENTIALS points at it.
+    existingSecret: ""
+    serviceAccountKeyKey: "google-credentials.json"
+
+# ---------------------------------------------------------------------------
 # Networking. Services are ClusterIP. The Web UI optionally exposes an Ingress.
 # ---------------------------------------------------------------------------
 ingress:

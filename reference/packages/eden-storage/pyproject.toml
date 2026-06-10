@@ -13,6 +13,14 @@ dependencies = [
     "pydantic>=2.9,<3",
 ]
 
+# Optional cloud blob backends (issue #174). Kept out of the base deps so
+# plain installs (conformance, in-memory test posture, deployments that stay
+# on --blob-backend file) pull in neither SDK. S3Backend / GcsBackend lazily
+# import their SDK and raise install-guidance if the extra is absent.
+[project.optional-dependencies]
+s3 = ["boto3>=1.34,<2"]
+gcs = ["google-cloud-storage>=2.18,<3"]
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
