@@ -13,7 +13,9 @@ from ._ops.events import iter_events_by_type
 from .artifact_backend import (
     ArtifactBackend,
     FileArtifactBackend,
+    GcsBackend,
     InMemoryArtifactBackend,
+    S3Backend,
 )
 from .errors import (
     AlreadyExists,
@@ -54,9 +56,11 @@ __all__ = [
     "DispatchError",
     "EvaluationSubmission",
     "FileArtifactBackend",
+    "GcsBackend",
     "IllegalTransition",
     "VariantSubmission",
     "InMemoryArtifactBackend",
+    "S3Backend",
     "InMemoryStore",
     "InvalidName",
     "InvalidPrecondition",

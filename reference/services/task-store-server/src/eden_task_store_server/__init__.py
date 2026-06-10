@@ -2,6 +2,16 @@
 
 from __future__ import annotations
 
-from .app import build_app, build_store, load_experiment_config
+from .app import (
+    build_app,
+    build_artifact_backend,
+    build_store,
+    load_experiment_config,
+)
 
-__all__ = ["build_app", "build_store", "load_experiment_config"]
+__all__ = [
+    "build_app",
+    "build_artifact_backend",
+    "build_store",
+    "load_experiment_config",
+]

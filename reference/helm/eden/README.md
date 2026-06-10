@@ -104,6 +104,10 @@ bootstrap — a plain `helm install` cannot mint the server-side identities.
 | `secrets.*` | `""` | Dev: inline; prod: `secrets.existingSecret`. |
 | `storage.className` | `""` | Cluster default `StorageClass` if empty. |
 | `storage.*Size` | see values | PVC sizes (Postgres, Forgejo, per-service clones, artifacts). |
+| `blob.backend` | `file` | Where the §16 artifact deposit endpoint persists bytes: `file` (chart-managed PVC), `s3`, or `gcs` (issue #174). Invisible on the wire (`eden://artifacts/<id>`); only the task-store-server pod touches the backend. |
+| `blob.file.size` / `.className` / `.mountPath` | `10Gi` / `""` / `/var/lib/eden/blob` | File-mode blob PVC (annotated `helm.sh/resource-policy: keep`). |
+| `blob.s3.bucket` | `""` (required when `backend=s3`) | Plus exactly one auth path: `blob.s3.irsa.{enabled,roleArn}` (pod identity) or `blob.s3.existingSecret` (static keys). `blob.s3.endpointUrl` targets MinIO / S3-compatibles. |
+| `blob.gcs.bucket` | `""` (required when `backend=gcs`) | Plus exactly one auth path: `blob.gcs.workloadIdentity.{enabled,serviceAccount}` or `blob.gcs.existingSecret` (key JSON). |
 | `ingress.enabled` | `false` | Web UI Ingress; operator picks the controller. |
 | `config.maxQuiescentIterations` | `0` | `0` = never exit on quiescence (k8s; Decision 9). |
 | `config.workerMode` | `scripted` | Only `scripted` in 13a (Decision 10). |
@@ -141,12 +145,18 @@ See [`values.yaml`](values.yaml) for the full annotated surface and
   orchestrator; while its pod restarts no dispatch happens (sub-second to a few
   seconds on a StatefulSet rollout). Standby-replica failover needs lease mode,
   which is deferred behind #281.
+- **Blob backend migration.** Switching `blob.backend` between `file` and a
+  bucket (or between buckets) requires copying the deposited bytes first —
+  objects are keyed by opaque id, so the layout maps 1:1. See
+  [`docs/deployment/migrating-to-blob-backend.md`](../../../docs/deployment/migrating-to-blob-backend.md).
 
 ## Scope (13a)
 
 In scope: the base chart + the `--mode scripted` worker hosts + an embedded
-Postgres / Forgejo. Out of scope (later 13 sub-chunks): GPU executor as a k8s
-Job (13b), managed Postgres (13c), S3/GCS blob backend (13d), Forgejo auth +
-per-branch ACLs (13e), and `--mode subprocess` + DooD worker hosts. The artifact
-store is a web-ui-owned RWO PVC in 13a; cross-service artifact serving needs a
-RWX/blob backend (13d).
+Postgres / Forgejo. The 13d S3/GCS blob backend has since landed (issue #174;
+the `blob.*` values above). Still out of scope (later 13 sub-chunks): GPU
+executor as a k8s Job (13b), managed Postgres (13c), Forgejo auth +
+per-branch ACLs (13e), and `--mode subprocess` + DooD worker hosts. The legacy
+`--artifacts-dir` store remains a web-ui-owned RWO PVC; the §16 deposit
+endpoint's blob store is the task-store-server-owned `blob.*` backend, and
+cross-service artifact access goes over the wire (`eden://artifacts/<id>`).

@@ -277,5 +277,5 @@ Units and chunking to be named closer to execution. Scope:
 - [13a](plans/eden-phase-13a-helm-base-chart.md) — Base Helm chart for the reference services — **shipped 2026-06-04** (see [CHANGELOG](../CHANGELOG.md))
 - Executor as a k8s Job (GPU node selection) — 13b.
 - Managed Postgres migration — 13c.
-- S3/GCS blob backend — 13d.
+- [13d](plans/eden-phase-13d-blob-backend.md) — S3/GCS blob backend — **shipped 2026-06-09** (see [CHANGELOG](../CHANGELOG.md))
 - Forgejo with auth + per-branch ACLs + native PR review enabled — 13e.
