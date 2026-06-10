@@ -349,11 +349,25 @@ tool sees it up front.)
 
 ## 7. Upgrades
 
-`helm upgrade eden reference/helm/eden -n eden-prod --reuse-values` rolls the
-workloads with the new chart/image. The PVCs (Postgres, Forgejo, per-service
-clones) are retained across upgrades, so experiment state survives. The
-`appVersion` in `Chart.yaml` is documentation only; the actual image is whatever
-`image.tag` points at — keep them in sync to avoid drift.
+`helm upgrade eden reference/helm/eden -n eden-prod --reset-then-reuse-values`
+(helm ≥ 3.14) rolls the workloads with the new chart/image. The PVCs (Postgres,
+Forgejo, per-service clones) are retained across upgrades, so experiment state
+survives. The `appVersion` in `Chart.yaml` is documentation only; the actual
+image is whatever `image.tag` points at — keep them in sync to avoid drift.
+
+Use `--reset-then-reuse-values`, **not** plain `--reuse-values`, when the chart
+itself changed: `--reset-then-reuse-values` re-applies your previously supplied
+values on top of the **new** chart's defaults, while `--reuse-values` discards
+the new chart's `values.yaml` entirely — any value the new chart added (and its
+templates reference) renders empty and the upgrade breaks. Plain
+`--reuse-values` is fine for same-chart values tweaks (e.g. the §4.3 registry
+example).
+
+This procedure is validated in CI: the `helm-upgrade-smoke` job
+([`ci-upgrade-smoke.sh`](../../reference/helm/eden/ci-upgrade-smoke.sh))
+installs the chart at the merge-base with `main`, drives a live experiment,
+upgrades in place to the PR's chart with the command above, and asserts the
+experiment state survived.
 
 ## 8. Troubleshooting
 

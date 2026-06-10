@@ -1020,3 +1020,58 @@ jobs:
 
       - name: Run helm smoke (managed external Postgres)
         run: bash reference/helm/eden/ci-smoke-managed-postgres.sh
+
+  # helm-upgrade-smoke: issue #284 (Phase 13a §6.3 deferral). Installs the
+  # chart at the merge-base with origin/main (on a PR: main's chart; falls
+  # back to HEAD~1 when the merge-base is HEAD itself), drives a
+  # doubled-total fixture derivative to a first integration, then
+  # `helm upgrade`s in place to the PR's chart per the documented operator
+  # procedure (docs/deployment/helm.md §7) and asserts no immutable-field
+  # errors, no experiment-state loss (event counts never regress), strict
+  # post-upgrade progress, and the 6-variant end-state. Catches "chart
+  # change breaks upgrade-in-place" (immutable StatefulSet fields, PVC
+  # reclaim mistakes, render breaks against a live release's values). A PR
+  # that deliberately breaks upgrade-in-place (legal pre-user) can pin
+  # EDEN_UPGRADE_BASELINE_REF=HEAD on the run step below — in the same PR,
+  # with the reason called out in the PR body. Not required by branch
+  # protection (same posture helm-smoke took in 13a); bump to required
+  # after it stays clean on main for ~2 weeks.
+  helm-upgrade-smoke:
+    name: helm-upgrade-smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    needs: changes
+    if: >-
+      !cancelled() && (
+      needs.changes.result != 'success' ||
+      needs.changes.outputs.run_all == 'true' ||
+      needs.changes.outputs.helm == 'true' )
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The upgrade baseline is resolved via merge-base with origin/main
+          # and extracted via git archive, so full history is needed.
+          fetch-depth: 0
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: 'v3.16.2'
+
+      - name: Set up kind
+        uses: helm/kind-action@v1
+        with:
+          install_only: true
+
+      # The setup script + ci-upgrade-smoke.sh use only stdlib python3 (json,
+      # string) plus jq — no pip install needed.
+      - name: Verify tooling
+        run: |
+          kind version
+          kubectl version --client
+          helm version
+          jq --version
+          python3 --version
+
+      - name: Run helm upgrade smoke
+        run: bash reference/helm/eden/ci-upgrade-smoke.sh
