@@ -259,10 +259,27 @@ helm upgrade eden ./reference/helm/eden -n eden-prod --reuse-values \
 ### Rollback
 
 If verification fails, you have not lost the embedded data — its PVC is still
-attached. Run the step-4 upgrade again with `--set postgres.mode=embedded` (drop
-the `external`/`tls` overrides) and the app-tier replicas restored; the original
-`StatefulSet` reattaches to the retained PVC. Investigate the divergence before
-retrying the migration.
+attached. Flip back to embedded with an explicit upgrade. Because step 4 used
+`--reuse-values`, the release still carries `postgres.tls.enabled=true` and the
+`external` values; you **must reset them** in the same command — TLS is rejected
+for `mode=embedded` (the schema guard), so a bare `--set postgres.mode=embedded`
+would fail validation:
+
+```bash
+helm upgrade eden ./reference/helm/eden -n eden-prod --reuse-values \
+  --set postgres.mode=embedded \
+  --set postgres.tls.enabled=false \
+  --set-string postgres.external.existingSecret="" \
+  --set-string postgres.external.connectionString="" \
+  --set postgres.external.tlsAlreadyEncodedInSecret=false \
+  --set replicas.orchestrator=1 --set replicas.ideatorHost=1 \
+  --set replicas.executorHost=1 --set replicas.evaluatorHost=1 \
+  --set replicas.webUi=1 \
+  --wait
+```
+
+The original `StatefulSet` reattaches to the retained PVC. Investigate the
+divergence before retrying the migration.
 
 ## Backup and disaster recovery
 
