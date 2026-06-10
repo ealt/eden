@@ -151,16 +151,30 @@ kubectl scale statefulset -n eden-prod \
 kubectl scale deployment -n eden-prod eden-ideator-host --replicas=0
 ```
 
+`kubectl scale` only sets the desired count — it returns **before** the pods
+exit. Wait for the worker pods to actually terminate (so none can still submit or
+integrate) before reclaiming:
+
+```bash
+kubectl wait --for=delete pod -n eden-prod --timeout=120s \
+  -l 'app.kubernetes.io/component in (executor-host,evaluator-host,ideator-host)'
+```
+
 Then reclaim any task still `state=claimed` (Web UI admin "reclaim" button, or
 the wire `reclaim` endpoint with the admin bearer), confirm none remain, and
-scale the orchestrator + web-ui to zero:
+scale the orchestrator + web-ui to zero — again waiting for them to terminate:
 
 ```bash
 kubectl scale statefulset -n eden-prod \
   eden-orchestrator eden-web-ui --replicas=0
+kubectl wait --for=delete pod -n eden-prod --timeout=120s \
+  -l 'app.kubernetes.io/component in (orchestrator,web-ui)'
 ```
 
 Leave the **task-store-server running** for the consistency check in step 2.
+Confirm every other workload is at zero before snapshotting
+(`kubectl get pods -n eden-prod` should show only `task-store-server`, `postgres`,
+and `forgejo` running).
 
 > Do **not** snapshot with workers running: `pg_dump` captures a consistent SQL
 > snapshot, but the Forgejo-side git refs workers push during the dump are not
