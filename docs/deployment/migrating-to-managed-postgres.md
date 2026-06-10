@@ -84,14 +84,20 @@ Google's docs.
 
 1. Create an **empty** database + an account with the privileges above via your
    provider's console/CLI. URI-encode any reserved chars in the password.
-2. Store the DSN in a Kubernetes Secret:
+2. Store the DSN in a Kubernetes Secret. When you reference a Secret via
+   `external.existingSecret`, the chart cannot edit it, so **encode the TLS
+   params into the DSN yourself** (`?sslmode=…` + `sslrootcert=` pointing at the
+   CA path the chart mounts — `/etc/eden/postgres-ca/<caBundleKey>`):
 
    ```bash
    kubectl create secret generic eden-managed-postgres -n eden-prod \
-     --from-literal=EDEN_STORE_URL='postgresql://eden:<encoded-pw>@<host>:5432/eden'
+     --from-literal=EDEN_STORE_URL='postgresql://eden:<encoded-pw>@<host>:5432/eden?sslmode=verify-full&sslrootcert=/etc/eden/postgres-ca/ca.crt'
    ```
 
-3. Set chart values (`values.yaml`):
+3. Set chart values (`values.yaml`). `tlsAlreadyEncodedInSecret: true`
+   acknowledges that TLS lives in your DSN (required by `values.schema.json` for
+   `existingSecret` + `tls.enabled`); `caBundleSecret` still mounts the CA file
+   at the path your DSN references:
 
    ```yaml
    postgres:
@@ -99,11 +105,16 @@ Google's docs.
      external:
        existingSecret: eden-managed-postgres
        connectionStringKey: EDEN_STORE_URL
+       tlsAlreadyEncodedInSecret: true
      tls:
        enabled: true
        mode: verify-full
        caBundleSecret: eden-rds-ca   # or your provider's
    ```
+
+   > Prefer to let the chart compose the TLS suffix for you? Use inline
+   > `external.connectionString` (without `existingSecret`) instead — then set
+   > `tls.enabled`/`mode`/`caBundleSecret` and the chart appends the suffix.
 
 4. Bootstrap the experiment exactly as for embedded mode — the setup script is
    mode-agnostic (it skips the embedded-Postgres readiness wait when
@@ -187,15 +198,17 @@ target.
 
 ### 4. Swap the chart value + `helm upgrade`
 
-Create the DSN Secret (Path A step 2), then flip `postgres.mode` and re-run
-`setup-experiment-helm.sh` with the **same** `--experiment-id` (it reads back the
-seed SHA + minted identities, so the app tier comes back unchanged):
+Create the DSN Secret (Path A step 2 — encode the TLS params into the DSN), then
+flip `postgres.mode` and re-run `setup-experiment-helm.sh` with the **same**
+`--experiment-id` (it reads back the seed SHA + minted identities, so the app
+tier comes back unchanged):
 
 ```yaml
 postgres:
   mode: external
   external:
     existingSecret: eden-managed-postgres
+    tlsAlreadyEncodedInSecret: true   # TLS is in the DSN (Path A step 2)
   tls:
     enabled: true
     mode: verify-full
