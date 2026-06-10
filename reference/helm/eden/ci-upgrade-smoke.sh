@@ -169,22 +169,24 @@ eden_wait_for_integrated "$UPGRADE_TOTAL" "$DEADLINE_SECONDS" || true
 # Strict post-upgrade progress, keyed on variant.integrated — the LAST stage
 # of the task chain, so it is the slowest to saturate and the strongest
 # post-upgrade signal (task.completed saturates while integrations are still
-# in flight in-orchestrator). When integrations remained at the snapshot (the
-# doubled total makes this the overwhelmingly common case), the final count
-# must strictly exceed the pre-upgrade one — pods that come back Ready but
-# never integrate another variant fail here. When every variant had already
-# integrated pre-upgrade (slow pre-wait poll on a fast machine), progress is
+# in flight in-orchestrator). The baseline is INTEGRATED_POST — the snapshot
+# taken AFTER the rollout settled — so the progress proven here is the
+# upgraded-and-ready stack's, not work absorbed into the upgrade window
+# itself. When integrations remain at that snapshot (the doubled total makes
+# this the common case), the final count must strictly exceed it — pods that
+# come back Ready but never integrate another variant fail here. When every
+# variant integrated before the rollout settled (fast machine), progress is
 # unprovable; the no-regress + end-state + helm-test assertions still hold,
 # so note it rather than flake.
 events="$(eden_fetch_events)"
 INTEGRATED_FINAL="$(eden_count_type "$events" "variant.integrated")"
-if [[ "$INTEGRATED_PRE" -lt "$UPGRADE_TOTAL" ]]; then
-    test "${INTEGRATED_FINAL:-0}" -gt "$INTEGRATED_PRE" || {
-        echo "no post-upgrade progress: variant.integrated stuck at ${INTEGRATED_PRE} (target ${UPGRADE_TOTAL})" >&2
+if [[ "$INTEGRATED_POST" -lt "$UPGRADE_TOTAL" ]]; then
+    test "${INTEGRATED_FINAL:-0}" -gt "$INTEGRATED_POST" || {
+        echo "no post-upgrade progress: variant.integrated stuck at ${INTEGRATED_POST} (target ${UPGRADE_TOTAL})" >&2
         exit 1
     }
 else
-    echo "NOTE: all ${UPGRADE_TOTAL} variants already integrated pre-upgrade; strict progress assertion skipped" >&2
+    echo "NOTE: all ${UPGRADE_TOTAL} variants integrated by the time the upgrade rollout settled; strict progress assertion skipped" >&2
 fi
 
 eden_assert_end_state "$UPGRADE_TOTAL" "$UPGRADE_COMPLETED_TARGET" "$UPGRADE_TOTAL"
