@@ -152,13 +152,111 @@
     "postgres": {
       "type": "object",
       "properties": {
+        "mode": {
+          "description": "Postgres provisioning mode. embedded (default) = in-cluster StatefulSet (13a). external = operator-supplied managed Postgres DSN; the chart deploys no Postgres.",
+          "type": "string",
+          "enum": ["embedded", "external"]
+        },
         "image": { "type": "string", "minLength": 1 },
         "pullPolicy": { "type": "string", "enum": ["Always", "IfNotPresent", "Never"] },
         "database": { "type": "string", "minLength": 1 },
         "controlPlaneDatabase": { "type": "string", "minLength": 1 },
         "user": { "type": "string", "minLength": 1 },
-        "resources": { "type": "object" }
-      }
+        "resources": { "type": "object" },
+        "external": {
+          "type": "object",
+          "properties": {
+            "connectionString": { "type": "string" },
+            "existingSecret": { "type": "string" },
+            "connectionStringKey": { "type": "string" },
+            "tlsAlreadyEncodedInSecret": { "type": "boolean" }
+          }
+        },
+        "tls": {
+          "type": "object",
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "mode": {
+              "description": "libpq sslmode. Weak modes (disable/allow/prefer) are intentionally not allowed for a managed deployment.",
+              "type": "string",
+              "enum": ["require", "verify-ca", "verify-full"]
+            },
+            "caBundleSecret": { "type": "string" },
+            "caBundleKey": { "type": "string" }
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "mode": { "const": "external" } }, "required": ["mode"] },
+          "then": {
+            "properties": {
+              "external": {
+                "anyOf": [
+                  {
+                    "properties": {
+                      "connectionString": {
+                        "type": "string",
+                        "minLength": 1,
+                        "pattern": "^postgres(ql)?://"
+                      }
+                    },
+                    "required": ["connectionString"]
+                  },
+                  {
+                    "properties": {
+                      "existingSecret": { "type": "string", "minLength": 1 },
+                      "connectionStringKey": { "type": "string", "minLength": 1 }
+                    },
+                    "required": ["existingSecret", "connectionStringKey"]
+                  }
+                ]
+              }
+            },
+            "required": ["external"]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "tls": {
+                "properties": {
+                  "enabled": { "const": true },
+                  "mode": { "enum": ["verify-ca", "verify-full"] }
+                },
+                "required": ["enabled", "mode"]
+              }
+            },
+            "required": ["tls"]
+          },
+          "then": {
+            "properties": {
+              "tls": {
+                "properties": { "caBundleSecret": { "type": "string", "minLength": 1 } },
+                "required": ["caBundleSecret"]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "mode": { "const": "external" },
+              "tls": { "properties": { "enabled": { "const": true } }, "required": ["enabled"] },
+              "external": { "properties": { "existingSecret": { "type": "string", "minLength": 1 } }, "required": ["existingSecret"] }
+            },
+            "required": ["mode", "tls", "external"]
+          },
+          "then": {
+            "properties": {
+              "external": {
+                "properties": { "tlsAlreadyEncodedInSecret": { "const": true } },
+                "required": ["tlsAlreadyEncodedInSecret"]
+              }
+            }
+          }
+        }
+      ]
     },
     "forgejo": {
       "type": "object",

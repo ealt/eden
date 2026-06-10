@@ -835,6 +835,63 @@ jobs:
             exit 1
           fi
 
+      # --- Phase 13c: managed (external) Postgres mode ---------------------
+      - name: helm template renders mode=external (no in-cluster Postgres)
+        # mode=external must omit the Postgres StatefulSet/Service and carry the
+        # operator DSN as EDEN_STORE_URL. Render with a seeded SHA so the
+        # task-store-server (the DSN consumer) renders too.
+        run: |
+          out="$(helm template eden reference/helm/eden \
+            -f reference/helm/eden/ci-values.yaml \
+            --set experiment.baseCommitSha=0123456789abcdef0123456789abcdef01234567 \
+            --set postgres.mode=external \
+            --set-string postgres.external.connectionString=postgresql://u:pw@db.example.com:5432/eden)"
+          echo "$out" | grep -q 'name: eden-postgres' && { echo "external mode rendered a postgres resource" >&2; exit 1; }
+          echo "$out" | grep -q 'EDEN_STORE_URL: "postgresql://u:pw@db.example.com:5432/eden"' || { echo "external DSN not written to Secret" >&2; exit 1; }
+
+      - name: helm template renders mode=external + TLS verify-full (CA mount + sslmode suffix)
+        run: |
+          out="$(helm template eden reference/helm/eden \
+            -f reference/helm/eden/ci-values.yaml \
+            --set experiment.baseCommitSha=0123456789abcdef0123456789abcdef01234567 \
+            --set postgres.mode=external \
+            --set-string postgres.external.connectionString=postgresql://u:pw@db.example.com:5432/eden \
+            --set postgres.tls.enabled=true \
+            --set postgres.tls.mode=verify-full \
+            --set-string postgres.tls.caBundleSecret=eden-rds-ca)"
+          echo "$out" | grep -q 'sslmode=verify-full&sslrootcert=/etc/eden/postgres-ca/ca.crt' || { echo "TLS suffix not appended to DSN" >&2; exit 1; }
+          echo "$out" | grep -q 'name: postgres-ca' || { echo "CA bundle volume not mounted" >&2; exit 1; }
+
+      - name: helm template renders mode=external + existingSecret (env override, no DSN in chart Secret)
+        run: |
+          out="$(helm template eden reference/helm/eden \
+            -f reference/helm/eden/ci-values.yaml \
+            --set experiment.baseCommitSha=0123456789abcdef0123456789abcdef01234567 \
+            --set postgres.mode=external \
+            --set-string postgres.external.existingSecret=eden-managed-pg)"
+          echo "$out" | grep -q 'eden-managed-pg' || { echo "external existingSecret not referenced via secretKeyRef" >&2; exit 1; }
+          echo "$out" | grep -q '^  EDEN_STORE_URL:' && { echo "chart-managed Secret should omit EDEN_STORE_URL when external.existingSecret is set" >&2; exit 1; }
+
+      - name: helm template fails closed on invalid external/TLS values
+        # Each of these MUST be rejected by values.schema.json at template time —
+        # the AGENTS.md substrate-plan pitfall on operator-required values.
+        run: |
+          base="helm template eden reference/helm/eden -f reference/helm/eden/ci-values.yaml"
+          assert_reject() {
+            local desc="$1"; shift
+            if $base "$@" >/dev/null 2>&1; then
+              echo "expected rejection: ${desc}" >&2
+              exit 1
+            fi
+            echo "rejected (ok): ${desc}"
+          }
+          assert_reject "mode=external without a DSN" --set postgres.mode=external
+          assert_reject "mode=external with a non-URL connectionString" --set postgres.mode=external --set-string postgres.external.connectionString=foo
+          assert_reject "mode=external with a libpq keyword DSN" --set postgres.mode=external --set-string 'postgres.external.connectionString=host=h dbname=eden user=eden'
+          assert_reject "tls.mode=disable (weak mode)" --set postgres.tls.mode=disable
+          assert_reject "tls verify-full without a caBundleSecret" --set postgres.mode=external --set-string postgres.external.connectionString=postgresql://u:p@h/eden --set postgres.tls.enabled=true
+          assert_reject "external+existingSecret+tls without tlsAlreadyEncodedInSecret" --set postgres.mode=external --set-string postgres.external.existingSecret=s --set-string postgres.external.connectionStringKey=K --set postgres.tls.enabled=true --set postgres.tls.mode=require
+
   # helm-smoke: the Helm analogue of compose-smoke. Spins up kind, builds +
   # loads the reference image, runs setup-experiment-helm.sh against the
   # fixture, and asserts the same integration end-state. Not required by branch
@@ -875,3 +932,45 @@ jobs:
 
       - name: Run helm smoke
         run: bash reference/helm/eden/ci-smoke.sh
+
+  # helm-smoke-managed-postgres (13c): the external-Postgres analogue of
+  # helm-smoke. Stands up postgres:16.6-alpine as a sibling container on the kind
+  # Docker network (NOT chart-managed), installs the chart with
+  # postgres.mode=external pointing at it by IP, and asserts the SAME integration
+  # end-state — proving the managed-Postgres path drives an experiment to
+  # quiescence identically. Does NOT replace helm-smoke (embedded); 13c runs
+  # both. Not required by branch protection yet (same posture newly-added smoke
+  # jobs took); bump after it stays clean on main for ~2 weeks.
+  helm-smoke-managed-postgres:
+    name: helm-smoke-managed-postgres
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: changes
+    if: >-
+      !cancelled() && (
+      needs.changes.result != 'success' ||
+      needs.changes.outputs.run_all == 'true' ||
+      needs.changes.outputs.helm == 'true' )
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: 'v3.16.2'
+
+      - name: Set up kind
+        uses: helm/kind-action@v1
+        with:
+          install_only: true
+
+      - name: Verify tooling
+        run: |
+          kind version
+          kubectl version --client
+          helm version
+          jq --version
+          python3 --version
+
+      - name: Run helm smoke (managed external Postgres)
+        run: bash reference/helm/eden/ci-smoke-managed-postgres.sh

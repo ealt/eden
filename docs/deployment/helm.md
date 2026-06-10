@@ -154,6 +154,8 @@ groups:
 - **`storage`** — `className` + per-PVC sizes.
 - **`ingress`** — Web UI Ingress, off by default (§4.2).
 - **`config`** — Compose-mirror knobs (lease duration, quiescence, worker mode).
+- **`postgres.mode`** — `embedded` (default, in-cluster StatefulSet) or
+  `external` (operator-managed Postgres via DSN); see §4.4.
 
 ### 4.1 Secrets
 
@@ -191,6 +193,105 @@ kubectl -n eden-prod create secret docker-registry regcred \
 helm upgrade eden reference/helm/eden -n eden-prod --reuse-values \
   --set image.pullSecrets[0].name=regcred
 ```
+
+### 4.4 Postgres mode (embedded vs external)
+
+`postgres.mode` selects how the task-store-server's Postgres is provisioned
+(Phase 13c). Both modes are first-class; pick per release.
+
+**`embedded` (default).** The chart deploys an in-cluster Postgres
+`StatefulSet` + headless `Service` and composes the DSNs from `postgres.user` /
+`postgres.database` + `secrets.postgresPassword`. This is exactly 13a's
+behavior — upgrading a 13a release to 13c without touching `values.yaml`
+renders byte-for-byte the same and triggers no rollout. Best for greenfield
+clusters and test environments.
+
+**`external`.** The chart deploys **no** Postgres; you point the
+task-store-server at a managed Postgres you provisioned out-of-band (RDS, Cloud
+SQL, AlloyDB, Supabase, Neon, Crunchy Bridge, …) via a libqp **URL-form** DSN
+(`postgresql://user:pass@host:5432/dbname`; the libpq keyword form is not
+accepted). The embedded-only knobs (`postgres.image`, `postgres.database`,
+`postgres.user`, …) are ignored.
+
+Supply the DSN one of two ways — `values.schema.json` fails `helm install` at
+template time if mode is `external` and **neither** is set (no fictional default
+host):
+
+```yaml
+# (a) inline — convenient for dev; URI-encode reserved chars in the password
+postgres:
+  mode: external
+  external:
+    connectionString: "postgresql://eden:s3cr3t@db.example.com:5432/eden"
+```
+
+```yaml
+# (b) reference a pre-created Secret — recommended for production
+postgres:
+  mode: external
+  external:
+    existingSecret: eden-managed-postgres   # holds key EDEN_STORE_URL
+    connectionStringKey: EDEN_STORE_URL
+```
+
+The managed database must be **empty** on first install; the task-store-server
+runs the schema bootstrap (`ensure_schema`) on first connect — there is no
+separate "run migrations" step. See §4.5.
+
+**TLS.** `postgres.tls.enabled=false` by default (plaintext embedded;
+accommodates the GCP Cloud SQL Auth Proxy, which is itself the secure
+transport). For a managed provider over the network, enable it:
+
+```yaml
+postgres:
+  tls:
+    enabled: true
+    mode: verify-full            # ∈ {require, verify-ca, verify-full}; weak modes rejected
+    caBundleSecret: eden-rds-ca  # Secret with the provider CA bundle (PEM)
+    caBundleKey: ca.crt
+```
+
+The chart appends `?sslmode=<mode>[&sslrootcert=/etc/eden/postgres-ca/<key>]` to
+the DSNs it composes and mounts the CA bundle into the task-store-server pod.
+For `external` + `existingSecret` + TLS the chart cannot edit a Secret it does
+not read, so you encode the TLS params into your own DSN and set
+`postgres.external.tlsAlreadyEncodedInSecret: true` (the schema requires it).
+
+**Migration from embedded to external** (drain → `pg_dump` → `pg_restore` →
+swap the value → `helm upgrade`), provider-specific CA-bundle guidance, the
+Cloud SQL Auth Proxy combination, and the rollback path live in the
+[managed-Postgres runbook](migrating-to-managed-postgres.md).
+
+**Single-DSN posture (v0).** External mode points all three DSN keys
+(`EDEN_STORE_URL`, `EDEN_READONLY_STORE_URL`, `EDEN_CONTROL_PLANE_STORE_URL`) at
+the one operator DSN — separate readonly-role / control-plane-database
+provisioning on a managed instance is the operator's concern, tracked in
+[#299](https://github.com/ealt/eden/issues/299). External + lease mode is not a
+supported v0 combination (lease mode is deferred behind #281).
+
+**Connection pooler threshold.** 13c ships no pooler and needs none: the
+task-store-server is single-replica with one psycopg connection per process, far
+below any managed provider's connection limit. A pooler (PgBouncer in
+transaction mode) becomes load-bearing only if `replicas.taskStoreServer` ever
+exceeds 1 (out of scope for the 13-series). When you reach that point, point the
+DSN at the pooler instead of the upstream — no chart change needed.
+
+### 4.5 Schema management and the future migration-tool hand-off
+
+The reference impl manages the Postgres schema with `ensure_schema` on
+first connect: it creates a `schema_version` table, applies the linear migration
+list, and is idempotent on re-run. v0 has one schema version, so both modes
+bootstrap identically — and a `pg_dump`/`pg_restore` migration carries the
+`schema_version` table across, so the next start sees the version up-to-date and
+skips re-bootstrap.
+
+This is deliberately **not** a standalone migration tool (Alembic/sqitch); that
+lands with the first non-trivial schema migration. **Load-bearing constraint on
+that future tool:** it MUST recognize a populated `schema_version` table as
+"v1 already applied" and import the `ensure_schema`-applied state rather than
+re-migrating — otherwise 13c-era deployments that never ran the operator-side
+tool would break. (Tracked as a constraint here so the chunk introducing the
+tool sees it up front.)
 
 ## 5. Operational notes
 

@@ -270,8 +270,14 @@ if [[ -n "$EXISTING_SECRET" ]]; then
     SECRET_NAME="$EXISTING_SECRET"
 fi
 LEASE_MODE="$(merged_get 'str(bool((v.get("orchestrator") or {}).get("leaseMode",{}).get("enabled"))).lower()')"
+# postgres.mode=external (13c) deploys NO in-cluster Postgres StatefulSet — the
+# operator supplies a managed DSN — so there is nothing to wait on. Default
+# embedded keeps the 13a behavior.
+POSTGRES_MODE="$(merged_get 'v.get("postgres",{}).get("mode") or "embedded"')"
 
-kubectl rollout status "statefulset/${FULLNAME}-postgres" -n "$NAMESPACE" --timeout="$TIMEOUT"
+if [[ "$POSTGRES_MODE" != "external" ]]; then
+    kubectl rollout status "statefulset/${FULLNAME}-postgres" -n "$NAMESPACE" --timeout="$TIMEOUT"
+fi
 kubectl rollout status "statefulset/${FULLNAME}-forgejo" -n "$NAMESPACE" --timeout="$TIMEOUT"
 if [[ "$LEASE_MODE" == "true" ]]; then
     kubectl rollout status "deployment/${FULLNAME}-control-plane" -n "$NAMESPACE" --timeout="$TIMEOUT"

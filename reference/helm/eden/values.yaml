@@ -232,9 +232,30 @@ identity:
     token: ""
 
 # ---------------------------------------------------------------------------
-# Postgres (embedded StatefulSet; managed external Postgres is 13c).
+# Postgres.
+#
+# `mode` selects the provisioning shape (13c):
+#   * embedded (DEFAULT, 13a behavior): the chart deploys an in-cluster Postgres
+#     StatefulSet and composes the DSNs from postgres.user/database +
+#     secrets.postgresPassword. Upgrading a 13a release to 13c without touching
+#     values.yaml is a no-op — the embedded path renders byte-for-byte the same.
+#   * external: the chart deploys NO Postgres; the operator points the
+#     task-store-server at a managed Postgres they provisioned out-of-band (RDS,
+#     Cloud SQL, AlloyDB, Supabase, Neon, Crunchy Bridge, …) via a DSN. The
+#     embedded-only knobs below (image, pullPolicy, database, controlPlaneDatabase,
+#     user, resources) are ignored; the database/user/etc. are encoded in the DSN.
+#
+# values.schema.json fails `helm install`/`helm template` at lint time when
+# mode=external and NEITHER external.connectionString NOR
+# external.existingSecret is supplied — there is no fictional default host.
+#
+# See docs/deployment/helm.md "Postgres mode" and
+# docs/deployment/migrating-to-managed-postgres.md.
 # ---------------------------------------------------------------------------
 postgres:
+  mode: embedded                  # ∈ {embedded, external}
+
+  # --- Embedded-mode knobs (mode=embedded only) ---------------------------
   image: postgres:16.6-alpine
   # Pull policy for the upstream Postgres image. Kept separate from
   # image.pullPolicy: a kind-loaded eden-reference image uses Never, but the
@@ -245,6 +266,50 @@ postgres:
   controlPlaneDatabase: eden_control_plane
   user: eden
   resources: {}
+
+  # --- External-mode knobs (mode=external only) ---------------------------
+  # Required when mode=external (unless existingSecret is used). MUST be a
+  # libpq URL-form DSN: postgresql://[user[:pass]@]host[:port][/db][?param=…]
+  # (or postgres://…). The keyword form (host=… dbname=… user=…) is NOT
+  # accepted — the task-store-server dispatches store URLs by scheme prefix, so
+  # a keyword DSN would be misread. values.schema.json enforces the URL prefix.
+  #
+  # The operator owns password URI-encoding (URI-encode @ : / ? # in the
+  # password). Prefer existingSecret over inlining a production DSN here.
+  external:
+    connectionString: ""
+    # Reference an existing Secret (created out-of-band) holding the DSN instead
+    # of inlining it. The Secret MUST carry a key (default EDEN_STORE_URL) whose
+    # value is the full libpq URL DSN. When set, connectionString is ignored and
+    # the task-store-server sources EDEN_STORE_URL directly from this Secret.
+    existingSecret: ""
+    connectionStringKey: "EDEN_STORE_URL"
+    # Acknowledgement flag: when tls.enabled=true AND external.existingSecret is
+    # set, the chart cannot append the sslmode/sslrootcert suffix (it does not
+    # read the operator's Secret at template time), so the operator MUST encode
+    # TLS params into their pre-supplied DSN and set this true. Required by
+    # values.schema.json for that combination (avoids a silent suffix mismatch).
+    tlsAlreadyEncodedInSecret: false
+
+  # --- TLS posture (both modes; usually on for external managed providers) -
+  # When enabled, the chart appends ?sslmode=<mode>[&sslrootcert=<path>] to the
+  # DSNs it composes (embedded, or external+connectionString). For
+  # external+existingSecret the operator encodes TLS themselves (see
+  # tlsAlreadyEncodedInSecret). Default off preserves embedded plaintext and
+  # accommodates the GCP Cloud SQL Auth Proxy case (the proxy IS the secure
+  # transport; sslmode must stay off). See the runbook §"TLS".
+  tls:
+    enabled: false
+    # libpq sslmode. Weak modes (disable/allow/prefer) are rejected by the
+    # schema — a managed deployment should verify. verify-full (CN + chain) is
+    # the recommended default; verify-ca skips hostname; require encrypts only.
+    mode: "verify-full"
+    # Secret holding the provider CA bundle (PEM). Required by the schema when
+    # mode ∈ {verify-ca, verify-full}. Mounted at /etc/eden/postgres-ca/<key>
+    # in the task-store-server pod; the appended DSN references it via
+    # sslrootcert=/etc/eden/postgres-ca/<caBundleKey>.
+    caBundleSecret: ""
+    caBundleKey: "ca.crt"
 
 # ---------------------------------------------------------------------------
 # Forgejo (embedded StatefulSet; auth + ACLs are 13e).

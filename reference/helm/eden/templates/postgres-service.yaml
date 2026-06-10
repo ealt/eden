@@ -1,3 +1,5 @@
+{{- /* Embedded Postgres only — see postgres-statefulset.yaml. */ -}}
+{{- if eq .Values.postgres.mode "embedded" }}
 {{- $fullName := include "eden.fullname" . }}
 apiVersion: v1
 kind: Service
@@ -15,3 +17,4 @@ spec:
     - name: postgres
       port: 5432
       targetPort: postgres
+{{- end }}
