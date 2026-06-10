@@ -157,7 +157,7 @@ echo "--- asserting expected substrate bind-mounts exist ---"
 # layered on later), so the existence assertion covers ALL of them
 # even though scripted-mode skips evaluator-repo at runtime.
 for sub in postgres forgejo orchestrator-repo web-ui-repo executor-repo \
-           evaluator-repo artifacts \
+           evaluator-repo task-store-repo artifacts \
            credentials/orchestrator credentials/ideator \
            credentials/executor credentials/evaluator credentials/web-ui \
            logs/task-store-server logs/orchestrator logs/ideator-host \

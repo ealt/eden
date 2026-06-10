@@ -16,6 +16,9 @@ $EDEN_EXPERIMENT_DATA_ROOT/
 ├── executor-repo/         # executor-host's per-host bare clone
 ├── evaluator-repo/        # evaluator-host's bare clone (subprocess mode)
 ├── web-ui-repo/           # web-ui's per-host bare clone
+├── task-store-repo/       # task-store-server's bare clone, synced from
+│                          # Forgejo per checkpoint export (issue #294);
+│                          # DERIVED — re-cloned on the next export
 └── credentials/
     ├── orchestrator/      # persisted per-worker registration token
     ├── ideator/

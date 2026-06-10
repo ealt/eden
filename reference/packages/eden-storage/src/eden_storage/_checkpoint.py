@@ -44,7 +44,7 @@ directory; the storage layer itself is substrate-agnostic).
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -263,6 +263,7 @@ def export_checkpoint(
     *,
     experiment_config: str | bytes = "",
     repo_bundle: bytes = b"",
+    repo_bundle_provider: Callable[[], bytes] | None = None,
     exporter_info: ExporterInfo | None = None,
 ) -> CheckpointManifest:
     """Write a portable-checkpoint archive of ``store``'s state to ``stream``.
@@ -274,6 +275,20 @@ def export_checkpoint(
     memory and serialized into the archive; ``experiment_config`` and
     ``repo_bundle`` are caller-supplied substrate-external pieces.
 
+    ``repo_bundle_provider``, when set, supersedes ``repo_bundle``: it
+    is invoked exactly once, AFTER the store snapshot is taken (issue
+    #294). The ordering is load-bearing for §6 consistency: roles
+    publish git refs to the remote of record BEFORE committing the
+    corresponding store row (chapter 6 §3 step 2 → step 3), so a
+    bundle captured at-or-after the snapshot instant is a superset of
+    every commit the snapshot references — and a superset bundle is
+    explicitly permitted by §12. A bundle captured BEFORE the snapshot
+    could miss commits referenced by rows committed in between, which
+    the receiver's §12 cross-reference validation would reject. The
+    provider runs outside the snapshot transaction so a slow fetch
+    from the git remote never holds the store's write lock; a raise
+    propagates to the caller before any archive bytes are written.
+
     Returns the :class:`CheckpointManifest` written into the archive so
     callers can inspect the resulting ``exported_at`` (for the §10
     recovery-probe anchor) or per-component counts.
@@ -283,6 +298,9 @@ def export_checkpoint(
     """
     with store._atomic_operation():
         snapshot = _snapshot_store(store)
+
+    if repo_bundle_provider is not None:
+        repo_bundle = repo_bundle_provider()
 
     exporter = exporter_info or ExporterInfo(
         implementation=_REFERENCE_IMPL_TAG,

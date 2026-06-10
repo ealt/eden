@@ -16,6 +16,8 @@ set -euo pipefail
 #      counts + id sets) for post-import comparison.
 #   4. Export via `POST /v0/experiments/<id>/checkpoint` (admin-gated
 #      per chapter 7 §13.1). Save the tar archive to a host path.
+#      Assert the archive's repo.bundle verifies and carries main +
+#      the integrated variant/* refs (issue #294 regression guard).
 #   5. `compose down -v` + wipe the substrate bind-mount data root.
 #      Recreate the substrate dirs so the receiver-side bind-mounts
 #      resolve.
@@ -33,7 +35,7 @@ set -euo pipefail
 
 # Tooling preflight — fail fast with a clear message if a required
 # binary is missing.
-for tool in docker jq curl python3; do
+for tool in docker jq curl python3 git; do
     command -v "$tool" >/dev/null || {
         echo "smoke-checkpoint.sh requires '$tool' on PATH" >&2
         exit 2
@@ -74,6 +76,7 @@ cleanup() {
     rm -f "$ENV_FILE"
     rm -f "$CHECKPOINT_TAR"
     rm -f "$IMPORT_BODY"
+    rm -rf "${BUNDLE_SCRATCH:-}"
     rm -f "${COMPOSE_DIR}/experiment-config.yaml"
     # Same posture as smoke.sh: substrate bind-mount subdirs contain
     # files owned by container uids the host doesn't match. Delete
@@ -232,6 +235,53 @@ tar -tf "$CHECKPOINT_TAR" | grep -q 'manifest\.json$' || {
     exit 1
 }
 
+# Issue #294: the archive's repo.bundle must be a complete, verifiable
+# bundle of the Forgejo repo of record — not the pre-#294 zero-byte
+# placeholder the no-repo-path task-store-server used to emit. Extract
+# it, `git bundle verify` it against a scratch repo, and assert the
+# ref set carries the seed branch (main) plus one variant/* branch per
+# integrated variant (the integrator pushes each to Forgejo before the
+# store row commits, so >= PRE_VARIANT_INTEGRATED of them must be in
+# the bundle).
+BUNDLE_SCRATCH="$(mktemp -d -t eden-bundle-check-XXXXXX)"
+bundle_member="$(tar -tf "$CHECKPOINT_TAR" | grep -E 'repo\.bundle$' | head -1 || true)"
+test -n "$bundle_member" || {
+    echo "checkpoint tar missing repo.bundle" >&2
+    tar -tf "$CHECKPOINT_TAR" >&2
+    exit 1
+}
+tar -xf "$CHECKPOINT_TAR" -C "$BUNDLE_SCRATCH" "$bundle_member"
+BUNDLE_FILE="${BUNDLE_SCRATCH}/${bundle_member}"
+BUNDLE_BYTES="$(wc -c < "$BUNDLE_FILE" | tr -d '[:space:]')"
+test "$BUNDLE_BYTES" -gt 0 || {
+    echo "repo.bundle is EMPTY (issue #294 regression): the export ran" >&2
+    echo "without git-substrate access; the archive is non-resumable" >&2
+    exit 1
+}
+# `git bundle verify` checks prerequisites against a repository; a
+# `bundle create --all` of a full clone is self-contained, so an empty
+# scratch repo satisfies it.
+git init -q --bare "${BUNDLE_SCRATCH}/scratch.git"
+git -C "${BUNDLE_SCRATCH}/scratch.git" bundle verify "$BUNDLE_FILE" >/dev/null || {
+    echo "git bundle verify failed for the exported repo.bundle" >&2
+    exit 1
+}
+BUNDLE_HEADS="$(git -C "${BUNDLE_SCRATCH}/scratch.git" bundle list-heads "$BUNDLE_FILE")"
+echo "$BUNDLE_HEADS" | grep -q ' refs/heads/main$' || {
+    echo "repo.bundle missing refs/heads/main (seed branch):" >&2
+    echo "$BUNDLE_HEADS" >&2
+    exit 1
+}
+BUNDLE_VARIANT_REFS="$(echo "$BUNDLE_HEADS" | grep -c ' refs/heads/variant/' || true)"
+test "$BUNDLE_VARIANT_REFS" -ge "$PRE_VARIANT_INTEGRATED" || {
+    echo "repo.bundle carries ${BUNDLE_VARIANT_REFS} variant/* refs;" >&2
+    echo "expected >= ${PRE_VARIANT_INTEGRATED} (one per variant.integrated):" >&2
+    echo "$BUNDLE_HEADS" >&2
+    exit 1
+}
+echo "repo.bundle OK: ${BUNDLE_BYTES} bytes, ${BUNDLE_VARIANT_REFS} variant refs"
+rm -rf "$BUNDLE_SCRATCH"
+
 echo "=== Phase 4: tear down sender, wipe data root, bring up receiver ==="
 
 echo "--- compose down -v ---"
@@ -252,7 +302,7 @@ fi
 # anger (forgejo, etc.) — because their absence would 4xx any later
 # compose-config validation and silently shift symptoms.
 for sub in postgres forgejo forgejo-etc orchestrator-repo web-ui-repo executor-repo \
-           evaluator-repo artifacts \
+           evaluator-repo task-store-repo artifacts \
            credentials/orchestrator credentials/ideator \
            credentials/executor credentials/evaluator credentials/web-ui; do
     mkdir -p "${SMOKE_DATA_ROOT}/${sub}"

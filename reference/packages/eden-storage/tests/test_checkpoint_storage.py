@@ -639,3 +639,74 @@ def test_event_counter_reseeded_after_import(
 # Hint for ruff that `Any` is intentionally imported for the test
 # fixture annotation surface; silences F401 in case ruff reorders.
 _: Any = None
+
+
+# ----------------------------------------------------------------------
+# repo_bundle_provider (issue #294)
+# ----------------------------------------------------------------------
+
+
+def _read_archive_member(archive: io.BytesIO, suffix: str) -> bytes:
+    """Extract the first member whose name ends with ``suffix``."""
+    import tarfile
+
+    archive.seek(0)
+    with tarfile.open(fileobj=archive) as tf:
+        for member in tf.getmembers():
+            if member.name.endswith(suffix):
+                extracted = tf.extractfile(member)
+                assert extracted is not None
+                return extracted.read()
+    raise AssertionError(f"no archive member ends with {suffix!r}")
+
+
+def test_repo_bundle_provider_supersedes_bytes() -> None:
+    """When a provider is set, its return value wins over ``repo_bundle``."""
+    store = InMemoryStore(experiment_id=_eid("exp-bundleprov"))
+    archive = io.BytesIO()
+    store.export_checkpoint(
+        archive,
+        repo_bundle=b"static-bytes-must-lose",
+        repo_bundle_provider=lambda: b"provider-bytes-win",
+    )
+    assert _read_archive_member(archive, "repo.bundle") == b"provider-bytes-win"
+
+
+def test_repo_bundle_provider_runs_after_snapshot() -> None:
+    """The provider is invoked AFTER the store snapshot (issue #294).
+
+    Roles publish git refs before committing the store row, so
+    snapshot-then-bundle yields a bundle that is a superset of what the
+    snapshot references (chapter 10 §12 permits supersets); the reverse
+    order can produce an import-rejecting archive. The provider here
+    mutates the store; the mutation must NOT appear in the exported
+    snapshot, and the provider's bundle bytes must.
+    """
+    store = InMemoryStore(experiment_id=_eid("exp-bundleorder"))
+
+    def _mutating_provider() -> bytes:
+        _ready_idea(store, "idea-after-snapshot")
+        return b"post-snapshot-bundle"
+
+    archive = io.BytesIO()
+    manifest = store.export_checkpoint(
+        archive, repo_bundle_provider=_mutating_provider
+    )
+    assert manifest.counts.ideas == 0
+    assert b"idea-after-snapshot" not in _read_archive_member(
+        archive, "ideas.jsonl"
+    )
+    assert _read_archive_member(archive, "repo.bundle") == b"post-snapshot-bundle"
+
+
+def test_repo_bundle_provider_failure_writes_nothing() -> None:
+    """A provider raise aborts the export before any archive bytes land."""
+    store = InMemoryStore(experiment_id=_eid("exp-bundleboom"))
+
+    def _boom() -> bytes:
+        raise RuntimeError("remote unreachable")
+
+    archive = io.BytesIO()
+    with pytest.raises(RuntimeError, match="remote unreachable"):
+        store.export_checkpoint(archive, repo_bundle_provider=_boom)
+    assert archive.getvalue() == b""

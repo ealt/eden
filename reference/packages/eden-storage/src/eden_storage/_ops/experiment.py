@@ -8,6 +8,7 @@ because it references the experiment-scoped ``_evaluation_schema``.
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, cast
 
 from eden_contracts import DispatchMode, Experiment, ExperimentState
@@ -264,14 +265,16 @@ class _ExperimentOpsMixin(_StoreCore):
         *,
         experiment_config: str | bytes = "",
         repo_bundle: bytes = b"",
+        repo_bundle_provider: Callable[[], bytes] | None = None,
         exporter_info: Any | None = None,
     ) -> Any:
         """Write a portable-checkpoint archive of the store's state.
 
         Delegates to :func:`eden_storage._checkpoint.export_checkpoint`;
-        see that function's docstring for the full contract. Runs inside
-        :meth:`_atomic_operation` so the snapshot is transactionally
-        consistent per ``spec/v0/10-checkpoints.md`` §6.
+        see that function's docstring for the full contract (including
+        the ``repo_bundle_provider`` post-snapshot ordering from issue
+        #294). Runs inside :meth:`_atomic_operation` so the snapshot is
+        transactionally consistent per ``spec/v0/10-checkpoints.md`` §6.
 
         Returns the :class:`CheckpointManifest` written into the archive.
         """
@@ -286,6 +289,7 @@ class _ExperimentOpsMixin(_StoreCore):
             stream,
             experiment_config=experiment_config,
             repo_bundle=repo_bundle,
+            repo_bundle_provider=repo_bundle_provider,
             exporter_info=exporter_info,
         )
 

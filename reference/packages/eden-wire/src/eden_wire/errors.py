@@ -43,6 +43,7 @@ __all__ = [
     "ArtifactServingDisabled",
     "ArtifactTooLarge",
     "BadRequest",
+    "CheckpointRepoUnavailable",
     "ExperimentIdMismatch",
     "Forbidden",
     "InvalidPath",
@@ -150,6 +151,23 @@ class ArtifactServingDisabled(WireReferenceError):
     deployment opted out of artifact serving (returning 404 would
     be ambiguous with "file not found"). Maps to HTTP 503
     ``eden://reference-error/artifact-serving-disabled``.
+    """
+
+
+class CheckpointRepoUnavailable(WireReferenceError):
+    """The checkpoint export's git-repo refresh from the remote failed.
+
+    Raised by the export route (issue #294) when the deployment
+    configured a git remote for the checkpoint repo (Compose:
+    ``--forgejo-url`` on the task-store-server) but the
+    pre-bundle clone/fetch from that remote failed. Failing the
+    export loudly is deliberate: proceeding would emit an archive
+    whose bundle is stale relative to the store snapshot — exactly
+    the silent-degradation failure mode #294 closes (the receiver's
+    chapter 10 §12 cross-reference validation would reject the
+    import, but only after the operator relied on the archive).
+    Maps to HTTP 503
+    ``eden://reference-error/checkpoint-repo-unavailable``.
     """
 
 
@@ -303,6 +321,11 @@ _REF_TYPE_BY_EXC: dict[type[Exception], tuple[str, int, str]] = {
         "eden://reference-error/artifact-serving-disabled",
         503,
         "Artifact Serving Disabled",
+    ),
+    CheckpointRepoUnavailable: (
+        "eden://reference-error/checkpoint-repo-unavailable",
+        503,
+        "Checkpoint Repo Unavailable",
     ),
 }
 """Reference-only error vocabulary.

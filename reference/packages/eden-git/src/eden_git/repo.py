@@ -817,6 +817,44 @@ class GitRepo:
         return result
 
 
+def ensure_local_clone(
+    *,
+    url: str,
+    path: Path | str,
+    credential_helper: str | None = None,
+) -> GitRepo:
+    """Materialize / refresh a local clone of the remote at ``url``.
+
+    The shared "remote-of-record sync" step per Phase 10d follow-up B
+    §D.5, used by every service that keeps a private clone of the
+    Forgejo-hosted repo (integrator at startup; checkpoint export per
+    request):
+
+    - if ``path`` is not yet a git repo, ``git clone --bare`` from the
+      remote (creating parent directories as needed);
+    - otherwise, :meth:`GitRepo.fetch_all_heads` to refresh every
+      branch ref + prune local heads the remote no longer has.
+
+    Returns the ready :class:`GitRepo`. Raises
+    :class:`~eden_git.errors.GitTransportError` when the remote is
+    unreachable and :class:`~eden_git.errors.GitError` on other git
+    failures — callers decide whether that's fatal (integrator
+    startup) or maps to a service-unavailable response (checkpoint
+    export).
+    """
+    target = Path(path)
+    if (target / "HEAD").is_file() or (target / ".git" / "HEAD").is_file():
+        repo = GitRepo(target)
+        repo.fetch_all_heads()
+        return repo
+    return GitRepo.clone_from(
+        url=url,
+        dest=target,
+        bare=True,
+        credential_helper=credential_helper,
+    )
+
+
 def _sanitized_git_env() -> dict[str, str]:
     """Build a child environment stripped of repo-redirecting git vars.
 

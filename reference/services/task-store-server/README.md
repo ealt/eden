@@ -30,6 +30,19 @@ when it is used.
 
 On startup the first stdout line is `EDEN_TASK_STORE_LISTENING host=<host> port=<port>` so a supervisor / test harness can read the ephemeral port (`--port 0` to bind any).
 
+## Checkpoint-export repo
+
+`--repo-path <dir>` names the local bare git repo the chapter-10 checkpoint
+export bundles into every archive's `repo.bundle` (it also deepens the
+chapter-3 §3.3 tree-identity check). Pair it with `--forgejo-url <url>`
+(plus optional `--credential-helper <script>`) so each export first syncs
+the clone from the deployment's git remote of record — clone on first
+export, `fetch --prune` thereafter (issue
+[#294](https://github.com/ealt/eden/issues/294)). The sync is lazy:
+startup never touches the remote, so a checkpoint-import receiver runs
+fine without its git remote up. A failed sync fails the export with 503
+`eden://reference-error/checkpoint-repo-unavailable`.
+
 ## Auth
 
 `--shared-token <T>` enables the reference-only bearer-token middleware from [`spec/v0/07-wire-protocol.md`](../../../spec/v0/07-wire-protocol.md) §12. Without it, the server accepts anonymous requests.

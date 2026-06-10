@@ -24,7 +24,7 @@ from fastapi.responses import JSONResponse, Response
 
 from .._dependencies import RouterDeps, check_experiment
 from ..auth import require_admin
-from ..errors import BadRequest, ExperimentIdMismatch
+from ..errors import BadRequest, CheckpointRepoUnavailable, ExperimentIdMismatch
 
 
 def build_router(deps: RouterDeps) -> APIRouter:
@@ -47,46 +47,30 @@ def _export_checkpoint(deps: RouterDeps):
 
         Admin-gated (literal ``admin`` principal per §13.1). Returns the
         tar bytes with ``Content-Type: application/x-eden-checkpoint+tar``.
-        The wave-4 binding materializes the archive to an in-memory
-        buffer; future revisions MAY switch to a streaming temp-file
-        model for very large experiments (chapter 10 §6 leaves the
-        materialization strategy implementation-defined).
+        The binding materializes the archive to an in-memory buffer;
+        future revisions MAY switch to a streaming temp-file model for
+        very large experiments (chapter 10 §6 leaves the materialization
+        strategy implementation-defined).
 
-        Caller-supplied substrate-external pieces (``experiment_config``
-        text and ``repo_bundle`` bytes) are NOT carried on this wave-4
-        endpoint — wave 4 surfaces only the Store-managed JSONL data plus
-        zero-byte placeholders for those fields. Wave 5 wires the
-        substrate-external integration.
+        The substrate-external pieces (chapter 10 §6 category 2) come
+        from the deployment configuration: ``experiment_config`` text
+        verbatim, and the ``repo_bundle`` composed per export by
+        :func:`_compose_repo_bundle` (synced from the deployment's git
+        remote of record when one is configured — issue #294). A
+        deployment with neither configured emits zero-byte placeholders
+        (structurally valid, non-resumable, per chapter 10 §6).
         """
         check_experiment(deps, experiment_id, x_eden_experiment_id)
         if deps.admin_token is not None:
             require_admin(request)
-        # Compose substrate-external pieces. The bundle is generated
-        # per-request inside a temp file (git bundle is a write-then-read
-        # flow; can't stream directly to the export buffer). When the
-        # repo path is unset (e.g. test fixtures) the bundle stays empty
-        # — the resulting archive is structurally valid but receiver-side
-        # resume requires both substrate pieces.
-        bundle_bytes = b""
-        if deps.checkpoint_repo_root is not None:
-            from eden_checkpoint.repo_bundle import create_bundle
-
-            with tempfile.TemporaryDirectory(prefix="eden-checkpoint-bundle-") as td:
-                bundle_path = Path(td) / "repo.bundle"
-                try:
-                    create_bundle(deps.checkpoint_repo_root, bundle_path)
-                    bundle_bytes = bundle_path.read_bytes()
-                except CheckpointInvalid:
-                    # Empty repo / unreachable bundle: emit a zero-byte
-                    # placeholder rather than 5xx-ing. The receiver's
-                    # chapter-10 §12 cross-reference validation will
-                    # surface any inconsistency at import time.
-                    bundle_bytes = b""
         buffer = io.BytesIO()
         deps.store.export_checkpoint(
             buffer,
             experiment_config=deps.checkpoint_config_text,
-            repo_bundle=bundle_bytes,
+            # Provider (not pre-computed bytes) so the bundle is captured
+            # AFTER the store snapshot — see the ordering rationale on
+            # eden_storage._checkpoint.export_checkpoint (issue #294).
+            repo_bundle_provider=lambda: _compose_repo_bundle(deps),
         )
         return Response(
             content=buffer.getvalue(),
@@ -94,6 +78,47 @@ def _export_checkpoint(deps: RouterDeps):
         )
 
     return export_checkpoint
+
+
+def _compose_repo_bundle(deps: RouterDeps) -> bytes:
+    """Sync + bundle the deployment's checkpoint repo (chapter 10 §6 piece 2).
+
+    When a ``checkpoint_repo_refresh`` callable is configured (issue
+    #294), it runs first to sync the local repo from the deployment's
+    git remote of record; a refresh failure raises
+    :class:`CheckpointRepoUnavailable` (503) — failing the export loudly
+    beats emitting an archive whose bundle is silently stale relative to
+    the store snapshot.
+
+    The bundle is generated per-request inside a temp file (git bundle
+    is a write-then-read flow; can't stream directly to the export
+    buffer). When the repo path is unset (e.g. test fixtures) the bundle
+    stays empty — the resulting archive is structurally valid but
+    receiver-side resume requires both substrate pieces.
+    """
+    if deps.checkpoint_repo_root is None:
+        return b""
+    if deps.checkpoint_repo_refresh is not None:
+        try:
+            deps.checkpoint_repo_refresh()
+        except Exception as exc:
+            raise CheckpointRepoUnavailable(
+                "checkpoint repo refresh from the deployment's git remote "
+                f"failed: {exc}"
+            ) from exc
+    from eden_checkpoint.repo_bundle import create_bundle
+
+    with tempfile.TemporaryDirectory(prefix="eden-checkpoint-bundle-") as td:
+        bundle_path = Path(td) / "repo.bundle"
+        try:
+            create_bundle(deps.checkpoint_repo_root, bundle_path)
+            return bundle_path.read_bytes()
+        except CheckpointInvalid:
+            # Empty repo (no refs to bundle): emit a zero-byte
+            # placeholder rather than 5xx-ing. The receiver's
+            # chapter-10 §12 cross-reference validation will
+            # surface any inconsistency at import time.
+            return b""
 
 
 def _import_checkpoint(deps: RouterDeps):

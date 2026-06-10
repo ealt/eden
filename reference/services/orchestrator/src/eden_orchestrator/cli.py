@@ -369,28 +369,24 @@ def _ensure_repo(
 ) -> GitRepo:
     """Materialize the integrator's local repo per Phase 10d follow-up B §D.5.
 
-    When ``forgejo_url`` is set:
-      - if ``repo_path`` is not yet a git repo, clone --bare from the remote;
-      - otherwise, fetch_all_heads to refresh + prune.
-
-    When ``forgejo_url`` is None, return a plain ``GitRepo(repo_path)``
-    over the existing local bare repo (chunk-10d behavior, no remote).
+    When ``forgejo_url`` is set, delegates to
+    :func:`eden_git.ensure_local_clone` (clone --bare if ``repo_path``
+    is not yet a git repo; otherwise fetch_all_heads to refresh +
+    prune). When ``forgejo_url`` is None, return a plain
+    ``GitRepo(repo_path)`` over the existing local bare repo
+    (chunk-10d behavior, no remote).
     """
     from pathlib import Path
+
+    from eden_git import ensure_local_clone
 
     path = Path(repo_path)
     if forgejo_url is None:
         return GitRepo(path)
-    if (path / "HEAD").is_file() or (path / ".git" / "HEAD").is_file():
-        log.info("fetching_remote_heads", url=forgejo_url)
-        repo = GitRepo(path)
-        repo.fetch_all_heads()
-        return repo
-    log.info("cloning_from_remote", url=forgejo_url, dest=str(path))
-    return GitRepo.clone_from(
+    log.info("syncing_clone_from_remote", url=forgejo_url, dest=str(path))
+    return ensure_local_clone(
         url=forgejo_url,
-        dest=path,
-        bare=True,
+        path=path,
         credential_helper=credential_helper,
     )
 

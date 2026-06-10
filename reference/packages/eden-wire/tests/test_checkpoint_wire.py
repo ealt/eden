@@ -16,6 +16,8 @@ Covers:
 from __future__ import annotations
 
 import io
+import shutil
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +28,7 @@ from eden_checkpoint import (
     ExperimentIdConflict,
     extract_checkpoint,
 )
+from eden_checkpoint.repo_bundle import list_bundle_refs
 from eden_storage import InMemoryStore
 from eden_wire import StoreClient, make_app
 from eden_wire.client import IndeterminateImport
@@ -860,3 +863,122 @@ def test_import_recovery_probe_indeterminate_when_readback_fails(
     sc.close()
 
 
+
+
+# ----------------------------------------------------------------------
+# Export repo refresh + bundling (issue #294)
+# ----------------------------------------------------------------------
+
+_git_available = shutil.which("git") is not None
+
+
+def _init_repo_with_commit(path: Path) -> str:
+    """Create a non-bare repo, make one commit, return the commit SHA."""
+    subprocess.run(["git", "init", str(path)], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(path), "-c", "user.email=t@t.invalid",
+         "-c", "user.name=t", "commit", "--allow-empty", "-m", "seed"],
+        check=True,
+        capture_output=True,
+    )
+    rc = subprocess.run(
+        ["git", "-C", str(path), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return rc.stdout.strip()
+
+
+@pytest.mark.skipif(not _git_available, reason="git not installed")
+def test_export_runs_repo_refresh_before_bundling(
+    store: InMemoryStore, tmp_path: Path
+) -> None:
+    """The refresh callable runs per export, before the bundle is cut.
+
+    The refresh here plays the role of the Compose deployment's
+    fetch-from-Forgejo: it adds a ref to the local repo. That ref must
+    appear in the exported bundle — proving the route refreshed first
+    and bundled second (issue #294).
+    """
+    repo_path = tmp_path / "repo"
+    sha = _init_repo_with_commit(repo_path)
+    refresh_calls: list[int] = []
+
+    def _refresh() -> None:
+        refresh_calls.append(1)
+        subprocess.run(
+            ["git", "-C", str(repo_path), "branch", "added-by-refresh", sha],
+            check=True,
+            capture_output=True,
+        )
+
+    app = make_app(
+        store,
+        admin_token=ADMIN_TOKEN,
+        checkpoint_repo_path=repo_path,
+        checkpoint_repo_refresh=_refresh,
+    )
+    client = TestClient(app)
+    resp = client.post(
+        f"/v0/experiments/{EXPERIMENT_ID}/checkpoint",
+        headers=_admin_headers(),
+    )
+    assert resp.status_code == 200, resp.text
+    assert refresh_calls == [1]
+    extract_dir = tmp_path / "extract"
+    extract_dir.mkdir()
+    reader = extract_checkpoint(io.BytesIO(resp.content), extract_dir)
+    bundle_path = reader.root / reader.manifest.files.repo_bundle
+    refs = list_bundle_refs(bundle_path)
+    assert "refs/heads/added-by-refresh" in refs, refs
+
+
+def test_export_refresh_failure_maps_to_503(
+    store: InMemoryStore, tmp_path: Path
+) -> None:
+    """A failed remote sync fails the export loudly (no stale bundle)."""
+
+    def _refresh() -> None:
+        raise RuntimeError("forgejo unreachable")
+
+    app = make_app(
+        store,
+        admin_token=ADMIN_TOKEN,
+        checkpoint_repo_path=tmp_path / "repo",
+        checkpoint_repo_refresh=_refresh,
+    )
+    client = TestClient(app)
+    resp = client.post(
+        f"/v0/experiments/{EXPERIMENT_ID}/checkpoint",
+        headers=_admin_headers(),
+    )
+    assert resp.status_code == 503, resp.text
+    body = resp.json()
+    assert body["type"] == "eden://reference-error/checkpoint-repo-unavailable"
+    assert "forgejo unreachable" in body["detail"]
+
+
+def test_export_without_repo_path_skips_refresh(
+    store: InMemoryStore, tmp_path: Path
+) -> None:
+    """No repo path → empty-bundle placeholder; the refresh never runs."""
+    refresh_calls: list[int] = []
+
+    app = make_app(
+        store,
+        admin_token=ADMIN_TOKEN,
+        checkpoint_repo_refresh=lambda: refresh_calls.append(1),
+    )
+    client = TestClient(app)
+    resp = client.post(
+        f"/v0/experiments/{EXPERIMENT_ID}/checkpoint",
+        headers=_admin_headers(),
+    )
+    assert resp.status_code == 200, resp.text
+    assert refresh_calls == []
+    extract_dir = tmp_path / "extract"
+    extract_dir.mkdir()
+    reader = extract_checkpoint(io.BytesIO(resp.content), extract_dir)
+    bundle_path = reader.root / reader.manifest.files.repo_bundle
+    assert bundle_path.stat().st_size == 0
