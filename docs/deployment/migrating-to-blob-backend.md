@@ -69,7 +69,7 @@ blob:
 
 Exactly **one** auth path:
 
-- **Workload Identity (preferred).** Create a GCP service account with `roles/storage.objectCreator` + `roles/storage.objectViewer` on the bucket, bind it to the Kubernetes ServiceAccount (`gcloud iam service-accounts add-iam-policy-binding ... --role roles/iam.workloadIdentityUser --member "serviceAccount:<project>.svc.id.goog[<ns>/<release>-task-store-server]"`), and set `blob.gcs.workloadIdentity.{enabled,serviceAccount}`.
+- **Workload Identity (preferred).** Create a GCP service account with `roles/storage.objectCreator` + `roles/storage.objectViewer` on the bucket, bind it to the Kubernetes ServiceAccount (`gcloud iam service-accounts add-iam-policy-binding ... --role roles/iam.workloadIdentityUser --member "serviceAccount:<project>.svc.id.goog[<ns>/<release>-task-store-server]"`), and set `blob.gcs.workloadIdentity.{enabled,serviceAccount}`. Additionally granting `storage.buckets.get` (e.g. `roles/storage.legacyBucketReader`, or a custom role) is recommended: the backend uses it to distinguish "artifact absent" from "bucket missing/misconfigured" on the 404 path — without it the backend still works but reports a missing bucket as a missing artifact.
 - **Service-account key (fallback).** Pre-create a Secret carrying the key JSON under the `blob.gcs.serviceAccountKeyKey` key (default `google-credentials.json`) and set `blob.gcs.existingSecret`. The chart mounts it read-only and points `GOOGLE_APPLICATION_CREDENTIALS` at it.
 
 ### 2.4 Outside Helm

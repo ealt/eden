@@ -247,23 +247,33 @@ class S3Backend:
         _require_valid_opaque_id(opaque_id)
         from botocore.exceptions import ClientError  # noqa: PLC0415
 
-        try:
-            self._client.put_object(
-                Bucket=self._bucket,
-                Key=self._key(opaque_id),
-                Body=data,
-                IfNoneMatch="*",
-            )
-        except ClientError as exc:
-            # 412 PreconditionFailed is S3's "the key already exists" under
-            # If-None-Match: * — the §5.4 no-overwrite guarantee, enforced
-            # atomically server-side. Anything else (NoSuchBucket, auth,
-            # 5xx) propagates: those are deployment errors, not reuse.
-            if _s3_error_code(exc) == "PreconditionFailed":
-                raise FileExistsError(
-                    f"artifact {opaque_id!r} already exists"
-                ) from exc
-            raise
+        # One retry on 409 ConditionalRequestConflict: AWS documents it as
+        # the retryable "another conditional write to this key is in
+        # flight" response. After the retry the competing write has either
+        # landed (412 → FileExistsError) or failed (our PUT succeeds).
+        for attempt in (0, 1):
+            try:
+                self._client.put_object(
+                    Bucket=self._bucket,
+                    Key=self._key(opaque_id),
+                    Body=data,
+                    IfNoneMatch="*",
+                )
+                return
+            except ClientError as exc:
+                code = _s3_error_code(exc)
+                # 412 PreconditionFailed is S3's "the key already exists"
+                # under If-None-Match: * — the §5.4 no-overwrite guarantee,
+                # enforced atomically server-side. Anything else
+                # (NoSuchBucket, auth, 5xx) propagates: those are
+                # deployment errors, not reuse.
+                if code == "PreconditionFailed":
+                    raise FileExistsError(
+                        f"artifact {opaque_id!r} already exists"
+                    ) from exc
+                if code == "ConditionalRequestConflict" and attempt == 0:
+                    continue
+                raise
 
     def load(self, opaque_id: str) -> bytes:
         """Return the bytes at ``<prefix>/<opaque_id>``; ``NotFound`` if absent."""
@@ -360,6 +370,17 @@ class GcsBackend:
             # the absent path: a missing BUCKET is a deployment error and
             # must propagate, not masquerade as a missing artifact (the
             # AGENTS.md narrow-exception-on-store-reads pitfall).
-            if not self._bucket.exists():
+            from google.api_core.exceptions import Forbidden  # noqa: PLC0415
+
+            try:
+                bucket_exists = self._bucket.exists()
+            except Forbidden:
+                # Least-privilege deployments (object-only roles) lack
+                # storage.buckets.get. Can't disambiguate; assume the
+                # common case (object-level absence) rather than turning
+                # every absent artifact into a 403. The runbook recommends
+                # granting buckets.get for better misconfig diagnostics.
+                bucket_exists = True
+            if not bucket_exists:
                 raise
             raise NotFound(f"artifact {opaque_id!r}") from exc

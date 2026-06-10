@@ -18,8 +18,8 @@ from typing import Any
 import pytest
 from botocore.exceptions import ClientError
 from eden_storage import GcsBackend, NotFound, S3Backend
+from google.api_core.exceptions import Forbidden, PreconditionFailed
 from google.api_core.exceptions import NotFound as GcsNotFound
-from google.api_core.exceptions import PreconditionFailed
 
 _HEX = "0123456789abcdef0123456789abcdef"
 _HEX2 = "fedcba9876543210fedcba9876543210"
@@ -46,11 +46,16 @@ class _FakeS3Client:
     """
 
     def __init__(
-        self, *, transport_error: bool = False, bucket_missing: bool = False
+        self,
+        *,
+        transport_error: bool = False,
+        bucket_missing: bool = False,
+        conflicts: int = 0,
     ) -> None:
         self.objects: dict[tuple[str, str], bytes] = {}
         self._transport_error = transport_error
         self._bucket_missing = bucket_missing
+        self._conflicts = conflicts
 
     def put_object(
         self,
@@ -64,6 +69,11 @@ class _FakeS3Client:
             raise _client_error("InternalError", 500, "PutObject")
         if self._bucket_missing:
             raise _client_error("NoSuchBucket", 404, "PutObject")
+        if self._conflicts > 0:
+            # AWS's retryable "another conditional write to this key is in
+            # flight" response to an If-None-Match PUT.
+            self._conflicts -= 1
+            raise _client_error("ConditionalRequestConflict", 409, "PutObject")
         if IfNoneMatch != "*":
             # The create-only precondition IS the §5.4 no-overwrite
             # guarantee; a PUT without it would silently overwrite.
@@ -131,6 +141,19 @@ class TestS3Backend:
         with pytest.raises(ClientError, match="NoSuchBucket"):
             backend.store(_HEX, b"x")
 
+    def test_conditional_conflict_retries_once_then_succeeds(self) -> None:
+        # 409 ConditionalRequestConflict is AWS's retryable response to a
+        # concurrent If-None-Match write (codex round-1 P3).
+        client = _FakeS3Client(conflicts=1)
+        backend = S3Backend(bucket="b", client=client)
+        backend.store(_HEX, b"payload")
+        assert backend.load(_HEX) == b"payload"
+
+    def test_persistent_conditional_conflict_propagates(self) -> None:
+        backend = S3Backend(bucket="b", client=_FakeS3Client(conflicts=5))
+        with pytest.raises(ClientError, match="ConditionalRequestConflict"):
+            backend.store(_HEX, b"payload")
+
     @pytest.mark.parametrize("bad_id", ["", "UPPER", "../../etc", "ab", _HEX + "0"])
     def test_invalid_opaque_id_rejected(self, bad_id: str) -> None:
         backend = S3Backend(bucket="b", client=_FakeS3Client())
@@ -179,13 +202,19 @@ class _FakeGcsBlob:
 
 class _FakeGcsBucket:
     def __init__(
-        self, objects: dict[str, bytes], name: str, *, missing: bool = False
+        self,
+        objects: dict[str, bytes],
+        name: str,
+        *,
+        missing: bool = False,
+        exists_forbidden: bool = False,
     ) -> None:
         self._objects = objects
         self.name = name
         self._missing = missing
+        self._exists_forbidden = exists_forbidden
 
-    def blob(self, name: str) -> _FakeGcsBlob:
+    def blob(self, name: str) -> _FakeGcsBlob | _FakeGcsMissingBucketBlob:
         if self._missing:
             # A missing BUCKET surfaces as the same google.api_core NotFound
             # the missing-object path raises — only at download time.
@@ -193,6 +222,8 @@ class _FakeGcsBucket:
         return _FakeGcsBlob(self._objects, name)
 
     def exists(self) -> bool:
+        if self._exists_forbidden:
+            raise Forbidden("missing storage.buckets.get")
         return not self._missing
 
 
@@ -210,14 +241,22 @@ class _FakeGcsMissingBucketBlob:
 
 
 class _FakeGcsClient:
-    def __init__(self, *, bucket_missing: bool = False) -> None:
+    def __init__(
+        self, *, bucket_missing: bool = False, exists_forbidden: bool = False
+    ) -> None:
         self.objects: dict[str, bytes] = {}
         self.bucket_names: list[str] = []
         self._bucket_missing = bucket_missing
+        self._exists_forbidden = exists_forbidden
 
     def bucket(self, name: str) -> _FakeGcsBucket:
         self.bucket_names.append(name)
-        return _FakeGcsBucket(self.objects, name, missing=self._bucket_missing)
+        return _FakeGcsBucket(
+            self.objects,
+            name,
+            missing=self._bucket_missing,
+            exists_forbidden=self._exists_forbidden,
+        )
 
 
 class TestGcsBackend:
@@ -256,6 +295,17 @@ class TestGcsBackend:
         # (codex round-0 P1).
         backend = GcsBackend(bucket="b", client=_FakeGcsClient(bucket_missing=True))
         with pytest.raises(GcsNotFound, match="bucket"):
+            backend.load(_HEX)
+
+    def test_exists_forbidden_falls_back_to_not_found(self) -> None:
+        # Least-privilege roles (object-only) lack storage.buckets.get, so
+        # bucket.exists() raises Forbidden. The backend must NOT turn every
+        # absent artifact into a 403 in that posture; it assumes the common
+        # case (object-level absence) instead (codex round-1 P2).
+        backend = GcsBackend(
+            bucket="b", client=_FakeGcsClient(exists_forbidden=True)
+        )
+        with pytest.raises(NotFound):
             backend.load(_HEX)
 
     @pytest.mark.parametrize("bad_id", ["", "UPPER", "../../etc", "ab", _HEX + "0"])
