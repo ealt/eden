@@ -331,6 +331,24 @@
           }
         }
       }
+    },
+    {
+      "$comment": "external + lease mode is unsupported in v0 (deferred behind #281; control-plane provisioning on a managed instance is tracked in #299). The control-plane Deployment would start with --store-url $(EDEN_CONTROL_PLANE_STORE_URL), which external mode does not wire to a valid control-plane database. Reject the combination so it fails at lint time rather than crash-looping the control-plane.",
+      "if": {
+        "required": ["postgres"],
+        "properties": {
+          "postgres": { "required": ["mode"], "properties": { "mode": { "const": "external" } } }
+        }
+      },
+      "then": {
+        "properties": {
+          "orchestrator": {
+            "properties": {
+              "leaseMode": { "properties": { "enabled": { "const": false } } }
+            }
+          }
+        }
+      }
     }
   ],
   "definitions": {

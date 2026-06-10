@@ -894,6 +894,7 @@ jobs:
           assert_reject "external + whole-chart secrets.existingSecret + inline connectionString (silently dropped)" --set postgres.mode=external --set-string secrets.existingSecret=my-secret --set-string postgres.external.connectionString=postgresql://u:p@h/eden
           assert_reject "tls.enabled with mode=embedded (no server-side TLS on the embedded StatefulSet)" --set postgres.tls.enabled=true --set postgres.tls.mode=require
           assert_reject "external + whole-chart secrets.existingSecret + tls without tlsAlreadyEncodedInSecret" --set postgres.mode=external --set-string secrets.existingSecret=my-secret --set postgres.tls.enabled=true --set postgres.tls.mode=require
+          assert_reject "external + lease mode (unsupported in v0)" --set postgres.mode=external --set-string postgres.external.connectionString=postgresql://u:p@h/eden --set orchestrator.leaseMode.enabled=true
 
   # helm-smoke: the Helm analogue of compose-smoke. Spins up kind, builds +
   # loads the reference image, runs setup-experiment-helm.sh against the
