@@ -1,3 +1,6 @@
+{{- /* Embedded Postgres only. mode=external deploys no in-cluster Postgres
+       (the operator supplies a managed DSN; see values.yaml postgres.mode). */ -}}
+{{- if eq .Values.postgres.mode "embedded" }}
 {{- $fullName := include "eden.fullname" . }}
 apiVersion: apps/v1
 kind: StatefulSet
@@ -89,3 +92,4 @@ spec:
         resources:
           requests:
             storage: {{ .Values.storage.postgresSize | quote }}
+{{- end }}

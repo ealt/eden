@@ -210,13 +210,82 @@
     "postgres": {
       "type": "object",
       "properties": {
+        "mode": {
+          "description": "Postgres provisioning mode. embedded (default) = in-cluster StatefulSet (13a). external = operator-supplied managed Postgres DSN; the chart deploys no Postgres.",
+          "type": "string",
+          "enum": ["embedded", "external"]
+        },
         "image": { "type": "string", "minLength": 1 },
         "pullPolicy": { "type": "string", "enum": ["Always", "IfNotPresent", "Never"] },
         "database": { "type": "string", "minLength": 1 },
         "controlPlaneDatabase": { "type": "string", "minLength": 1 },
         "user": { "type": "string", "minLength": 1 },
-        "resources": { "type": "object" }
-      }
+        "resources": { "type": "object" },
+        "external": {
+          "type": "object",
+          "properties": {
+            "connectionString": { "type": "string" },
+            "existingSecret": { "type": "string" },
+            "connectionStringKey": { "type": "string" },
+            "tlsAlreadyEncodedInSecret": { "type": "boolean" }
+          }
+        },
+        "tls": {
+          "type": "object",
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "mode": {
+              "description": "libpq sslmode. Weak modes (disable/allow/prefer) are intentionally not allowed for a managed deployment.",
+              "type": "string",
+              "enum": ["require", "verify-ca", "verify-full"]
+            },
+            "caBundleSecret": { "type": "string" },
+            "caBundleKey": { "type": "string" }
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "tls": {
+                "properties": {
+                  "enabled": { "const": true },
+                  "mode": { "enum": ["verify-ca", "verify-full"] }
+                },
+                "required": ["enabled", "mode"]
+              }
+            },
+            "required": ["tls"]
+          },
+          "then": {
+            "properties": {
+              "tls": {
+                "properties": { "caBundleSecret": { "type": "string", "minLength": 1 } },
+                "required": ["caBundleSecret"]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "mode": { "const": "external" },
+              "tls": { "properties": { "enabled": { "const": true } }, "required": ["enabled"] },
+              "external": { "properties": { "existingSecret": { "type": "string", "minLength": 1 } }, "required": ["existingSecret"] }
+            },
+            "required": ["mode", "tls", "external"]
+          },
+          "then": {
+            "properties": {
+              "external": {
+                "properties": { "tlsAlreadyEncodedInSecret": { "const": true } },
+                "required": ["tlsAlreadyEncodedInSecret"]
+              }
+            }
+          }
+        }
+      ]
     },
     "forgejo": {
       "type": "object",
@@ -231,32 +300,114 @@
     "tolerations": { "type": "array" },
     "affinity": { "type": "object" }
   },
-  "definitions": {
-    "serviceIdentity": {
-      "type": "object",
-      "description": "A minted worker identity. workerId and token MUST be supplied together — set both (provisioned) or leave both empty (not yet provisioned). A half-set state renders neither the identity Secret nor the workload.",
-      "properties": {
-        "workerId": { "type": "string" },
-        "token": { "type": "string" }
+  "allOf": [
+    {
+      "$comment": "mode=external WITHOUT a whole-chart secrets.existingSecret: the chart-managed Secret must carry the DSN, so require an inline URL connectionString OR an external.existingSecret reference. (When secrets.existingSecret IS set, the DSN comes from that Secret's EDEN_STORE_URL — see the next clause.)",
+      "if": {
+        "required": ["postgres"],
+        "properties": {
+          "postgres": { "required": ["mode"], "properties": { "mode": { "const": "external" } } },
+          "secrets": { "properties": { "existingSecret": { "const": "" } } }
+        }
       },
-      "oneOf": [
-        {
-          "properties": {
-            "workerId": { "const": "" },
-            "token": { "const": "" }
-          }
-        },
-        {
-          "required": ["workerId", "token"],
-          "properties": {
-            "workerId": { "minLength": 1 },
-            "token": { "minLength": 1 }
+      "then": {
+        "properties": {
+          "postgres": {
+            "required": ["external"],
+            "properties": {
+              "external": {
+                "anyOf": [
+                  {
+                    "properties": {
+                      "connectionString": { "type": "string", "minLength": 1, "pattern": "^postgres(ql)?://" }
+                    },
+                    "required": ["connectionString"]
+                  },
+                  {
+                    "properties": {
+                      "existingSecret": { "type": "string", "minLength": 1 },
+                      "connectionStringKey": { "type": "string", "minLength": 1 }
+                    },
+                    "required": ["existingSecret", "connectionStringKey"]
+                  }
+                ]
+              }
+            }
           }
         }
-      ]
-    }
-  },
-  "allOf": [
+      }
+    },
+    {
+      "$comment": "mode=external WITH a whole-chart secrets.existingSecret: that Secret is authoritative for EDEN_STORE_URL and the chart-managed Secret template does not render, so an inline postgres.external.connectionString would be silently dropped. Reject it — put the DSN in the existingSecret, or use postgres.external.existingSecret to point at a dedicated DSN Secret.",
+      "if": {
+        "required": ["postgres", "secrets"],
+        "properties": {
+          "postgres": { "required": ["mode"], "properties": { "mode": { "const": "external" } } },
+          "secrets": { "required": ["existingSecret"], "properties": { "existingSecret": { "minLength": 1 } } }
+        }
+      },
+      "then": {
+        "properties": {
+          "postgres": {
+            "properties": {
+              "external": { "properties": { "connectionString": { "const": "" } } }
+            }
+          }
+        }
+      }
+    },
+    {
+      "$comment": "TLS is only supported for mode=external. The embedded StatefulSet runs the stock Postgres image with no server-side TLS, so appending sslmode to its DSN would make the task-store-server fail to connect. Reject tls.enabled=true unless mode=external.",
+      "if": {
+        "required": ["postgres"],
+        "properties": {
+          "postgres": { "required": ["tls"], "properties": { "tls": { "required": ["enabled"], "properties": { "enabled": { "const": true } } } } }
+        }
+      },
+      "then": {
+        "properties": {
+          "postgres": { "required": ["mode"], "properties": { "mode": { "const": "external" } } }
+        }
+      }
+    },
+    {
+      "$comment": "mode=external + TLS with a whole-chart secrets.existingSecret: the chart-managed Secret does not render, so the chart cannot append the sslmode/sslrootcert suffix — the operator must encode TLS into the EDEN_STORE_URL inside that Secret and acknowledge it. Mirrors the postgres.external.existingSecret guard for the whole-chart-secret path.",
+      "if": {
+        "required": ["postgres", "secrets"],
+        "properties": {
+          "postgres": { "required": ["mode", "tls"], "properties": { "mode": { "const": "external" }, "tls": { "required": ["enabled"], "properties": { "enabled": { "const": true } } } } },
+          "secrets": { "required": ["existingSecret"], "properties": { "existingSecret": { "minLength": 1 } } }
+        }
+      },
+      "then": {
+        "properties": {
+          "postgres": {
+            "required": ["external"],
+            "properties": {
+              "external": { "required": ["tlsAlreadyEncodedInSecret"], "properties": { "tlsAlreadyEncodedInSecret": { "const": true } } }
+            }
+          }
+        }
+      }
+    },
+    {
+      "$comment": "external + lease mode is unsupported in v0 (deferred behind #281; control-plane provisioning on a managed instance is tracked in #299). The control-plane Deployment would start with --store-url $(EDEN_CONTROL_PLANE_STORE_URL), which external mode does not wire to a valid control-plane database. Reject the combination so it fails at lint time rather than crash-looping the control-plane.",
+      "if": {
+        "required": ["postgres"],
+        "properties": {
+          "postgres": { "required": ["mode"], "properties": { "mode": { "const": "external" } } }
+        }
+      },
+      "then": {
+        "properties": {
+          "orchestrator": {
+            "properties": {
+              "leaseMode": { "properties": { "enabled": { "const": false } } }
+            }
+          }
+        }
+      }
+    },
     {
       "if": {
         "required": ["blob"],
@@ -359,5 +510,30 @@
         }
       }
     }
-  ]
+  ],
+  "definitions": {
+    "serviceIdentity": {
+      "type": "object",
+      "description": "A minted worker identity. workerId and token MUST be supplied together — set both (provisioned) or leave both empty (not yet provisioned). A half-set state renders neither the identity Secret nor the workload.",
+      "properties": {
+        "workerId": { "type": "string" },
+        "token": { "type": "string" }
+      },
+      "oneOf": [
+        {
+          "properties": {
+            "workerId": { "const": "" },
+            "token": { "const": "" }
+          }
+        },
+        {
+          "required": ["workerId", "token"],
+          "properties": {
+            "workerId": { "minLength": 1 },
+            "token": { "minLength": 1 }
+          }
+        }
+      ]
+    }
+  }
 }

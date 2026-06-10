@@ -3,7 +3,12 @@ Postgres init hook (chapter 11 §3.4 Option A): create the control-plane's
 second logical database on a fresh data dir. Mounted into
 /docker-entrypoint-initdb.d/ on the upstream postgres image, which runs *.sh
 there exactly once. Mirrors reference/compose/init-control-plane-db.sh.
+
+Embedded Postgres only — mode=external uses the operator's managed instance,
+where database/role provisioning is the operator's responsibility (see the
+migrating-to-managed-postgres runbook).
 */ -}}
+{{- if eq .Values.postgres.mode "embedded" }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -24,3 +29,4 @@ data:
         psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
             -c "CREATE DATABASE \"${DB_NAME}\" OWNER \"$POSTGRES_USER\";"
     fi
+{{- end }}

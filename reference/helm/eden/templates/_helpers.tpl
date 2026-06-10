@@ -103,6 +103,32 @@ when set, else the chart-managed "<fullname>-secrets".
 {{- end -}}
 
 {{/*
+The libpq TLS query suffix appended to a chart-composed DSN when
+postgres.tls.enabled (13c). Empty string when TLS is off. The leading separator
+is `?` for a query-less base DSN (embedded, or an external connectionString with
+no `?`) and `&` when the external connectionString already carries query params.
+For mode ∈ {verify-ca, verify-full} a caBundleSecret is required (values.schema.json),
+so sslrootcert points at the CA file mounted by the task-store-server pod.
+
+This is only appended to DSNs the chart composes itself (embedded, or
+external+connectionString). For external+existingSecret the operator encodes TLS
+into their pre-supplied DSN (acknowledged via external.tlsAlreadyEncodedInSecret).
+*/}}
+{{- define "eden.tlsSuffix" -}}
+{{- if .Values.postgres.tls.enabled -}}
+{{- $sep := "?" -}}
+{{- if and (eq .Values.postgres.mode "external") (contains "?" (.Values.postgres.external.connectionString | default "")) -}}
+{{- $sep = "&" -}}
+{{- end -}}
+{{- $suffix := printf "%ssslmode=%s" $sep .Values.postgres.tls.mode -}}
+{{- if and .Values.postgres.tls.caBundleSecret (or (eq .Values.postgres.tls.mode "verify-ca") (eq .Values.postgres.tls.mode "verify-full")) -}}
+{{- $suffix = printf "%s&sslrootcert=/etc/eden/postgres-ca/%s" $suffix (.Values.postgres.tls.caBundleKey | default "ca.crt") -}}
+{{- end -}}
+{{- $suffix -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
 Whether the store tier renders. The task-store-server needs a seeded base
 commit (it stamps the seed onto the experiment row at first creation); see
 values.yaml "experiment.baseCommitSha".

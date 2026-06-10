@@ -62,7 +62,7 @@ spec:
           envFrom:
             - secretRef:
                 name: {{ include "eden.secretName" . }}
-          {{- if or (and $blobS3 (not $s3Irsa)) $gcsKeyFile }}
+          {{- if or (and $blobS3 (not $s3Irsa)) $gcsKeyFile (eq .Values.postgres.mode "external") }}
           env:
             {{- if and $blobS3 (not $s3Irsa) }}
             # Static-credentials fallback (issue #174): boto3's default
@@ -85,6 +85,28 @@ spec:
             # default chain reads the key file this env var points at.
             - name: GOOGLE_APPLICATION_CREDENTIALS
               value: /var/run/secrets/eden/gcs/{{ .Values.blob.gcs.serviceAccountKeyKey }}
+            {{- end }}
+            {{- if eq .Values.postgres.mode "external" }}
+            # External Postgres: EDEN does NOT provision the eden_readonly role
+            # on a managed instance (no DCL there — see the runbook). The
+            # task-store-server runs ensure_readonly_role only when
+            # EDEN_READONLY_PASSWORD is non-empty; blank it here so that an
+            # operator's whole-chart secrets.existingSecret carrying the key does
+            # not trigger CREATE/ALTER ROLE/GRANT (which fails for provider
+            # accounts without role-management privilege). Tracked: #299.
+            - name: EDEN_READONLY_PASSWORD
+              value: ""
+            {{- if .Values.postgres.external.existingSecret }}
+            # DSN lives in the operator's Secret, not the chart-managed one. This
+            # explicit entry overrides the envFrom import (which omits
+            # EDEN_STORE_URL in this case) so $(EDEN_STORE_URL) below resolves to
+            # the operator-supplied DSN.
+            - name: EDEN_STORE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.postgres.external.existingSecret | quote }}
+                  key: {{ .Values.postgres.external.connectionStringKey | default "EDEN_STORE_URL" | quote }}
+            {{- end }}
             {{- end }}
           {{- end }}
           ports:
@@ -175,6 +197,14 @@ spec:
               mountPath: /var/run/secrets/eden/gcs
               readOnly: true
             {{- end }}
+            {{- if and .Values.postgres.tls.enabled .Values.postgres.tls.caBundleSecret }}
+            # Provider CA bundle for sslmode=verify-ca/verify-full. The DSN
+            # references it via sslrootcert=/etc/eden/postgres-ca/<caBundleKey>
+            # (appended by the eden.tlsSuffix helper).
+            - name: postgres-ca
+              mountPath: /etc/eden/postgres-ca
+              readOnly: true
+            {{- end }}
           {{- with .Values.resources }}
           resources: {{- toYaml . | nindent 12 }}
           {{- end }}
@@ -191,6 +221,11 @@ spec:
         - name: gcs-credentials
           secret:
             secretName: {{ .Values.blob.gcs.existingSecret | quote }}
+        {{- end }}
+        {{- if and .Values.postgres.tls.enabled .Values.postgres.tls.caBundleSecret }}
+        - name: postgres-ca
+          secret:
+            secretName: {{ .Values.postgres.tls.caBundleSecret | quote }}
         {{- end }}
 ---
 apiVersion: v1

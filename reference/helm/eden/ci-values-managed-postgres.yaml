@@ -1,0 +1,58 @@
+# Pinned values for the helm-smoke-managed-postgres CI job (13c). Mirrors
+# ci-values.yaml but selects postgres.mode=external, pointing the
+# task-store-server at a Postgres the chart did NOT create (a sibling Docker
+# container on the kind network — see ci-smoke-managed-postgres.sh). NOT for
+# production — secrets are dev placeholders and storage sizes are minimized.
+image:
+  repository: eden-reference
+  tag: ci
+  pullPolicy: Never
+
+experiment:
+  # A valid opaque exp_* placeholder; setup-experiment-helm.sh overrides it with
+  # --set-string experiment.id=<minted exp_*> at install time.
+  id: exp_0123456789abcdefghjkmnpqrs
+  baseCommitSha: ""
+  config:
+    parallel_variants: 1
+    evaluation_schema:
+      score: real
+    objective:
+      expr: "score"
+      direction: "maximize"
+    ideation_policy:
+      kind: fixed_total
+      total: 3
+
+# Postgres in EXTERNAL mode. The DSN lives in a Secret the smoke script creates
+# out-of-band (eden-managed-pg) pointing at the sibling Postgres' IP — the chart
+# deploys no in-cluster Postgres StatefulSet. tls off: CI uses plaintext on the
+# kind network; the TLS suffix is exercised by the helm-lint template matrix.
+postgres:
+  mode: external
+  external:
+    existingSecret: eden-managed-pg
+    connectionStringKey: EDEN_STORE_URL
+  tls:
+    enabled: false
+
+secrets:
+  adminToken: ci-admin-token
+  sessionSecret: ci-session-secret
+  # postgresPassword / readonlyPassword are intentionally omitted: external mode
+  # composes no embedded DSN, so the chart-managed Secret never references them.
+  forgejoRemotePassword: ciforgejopassword
+  forgejoSecretKey: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcd"
+  forgejoInternalToken: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcd"
+
+storage:
+  forgejoSize: 1Gi
+  orchestratorRepoSize: 1Gi
+  executorRepoSize: 1Gi
+  evaluatorRepoSize: 1Gi
+  webUiRepoSize: 1Gi
+  artifactsSize: 1Gi
+
+config:
+  # Run-forever quiescence per Decision 9 (Kubernetes restartPolicy: Always).
+  maxQuiescentIterations: 0
