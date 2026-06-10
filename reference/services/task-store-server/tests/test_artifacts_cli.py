@@ -114,3 +114,46 @@ def test_artifacts_route_security_properties_preserved_via_build_app(
     resp = client.get(f"/_reference/experiments/exp_0123456789abcdefghjkmnpqrs/artifacts/{path}")
     # Either malformed-path 400 or missing 404, never 200.
     assert resp.status_code in (400, 404)
+
+
+def test_cli_parses_blob_backend_flags() -> None:
+    args = parse_args(
+        [
+            "--store-url",
+            ":memory:",
+            "--experiment-id",
+            "exp_0123456789abcdefghjkmnpqrs",
+            "--experiment-config",
+            str(FIXTURE_CONFIG),
+            "--blob-backend",
+            "s3",
+            "--blob-s3-bucket",
+            "my-bucket",
+            "--blob-s3-region",
+            "us-west-2",
+            "--blob-s3-prefix",
+            "eden/exp-1",
+            "--blob-s3-endpoint-url",
+            "http://minio:9000",
+        ]
+    )
+    assert args.blob_backend == "s3"
+    assert args.blob_s3_bucket == "my-bucket"
+    assert args.blob_s3_region == "us-west-2"
+    assert args.blob_s3_prefix == "eden/exp-1"
+    assert args.blob_s3_endpoint_url == "http://minio:9000"
+
+
+def test_cli_blob_backend_defaults_to_file() -> None:
+    args = parse_args(
+        [
+            "--store-url",
+            ":memory:",
+            "--experiment-id",
+            "exp_0123456789abcdefghjkmnpqrs",
+            "--experiment-config",
+            str(FIXTURE_CONFIG),
+        ]
+    )
+    assert args.blob_backend == "file"
+    assert args.blob_gcs_bucket == ""

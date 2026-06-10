@@ -54,3 +54,8 @@ storage:
 config:
   # Run-forever quiescence per Decision 9 (Kubernetes restartPolicy: Always).
   maxQuiescentIterations: 0
+
+blob:
+  # Default file backend, minimized for the single-node kind cluster.
+  file:
+    size: 1Gi

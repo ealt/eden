@@ -1,0 +1,29 @@
+{{- /*
+Blob storage PVC for the file artifact backend (issue #174). Rendered only
+when blob.backend=file (the default); s3/gcs deployments persist deposits in
+the operator's bucket instead. A standalone PVC (not a StatefulSet
+volumeClaimTemplate — the task-store-server is a Deployment), annotated
+helm.sh/resource-policy: keep so `helm uninstall` preserves deposited bytes:
+the §16 contract (07-wire-protocol.md) keeps artifacts_uri resolvable for the
+experiment's retention window, and a chart-lifecycle delete would silently
+break that. Operators reclaim the space by deleting the PVC explicitly.
+*/}}
+{{- if and (eq (include "eden.appEnabled" .) "true") (eq .Values.blob.backend "file") }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "eden.fullname" . }}-blob-data
+  labels:
+    {{- include "eden.componentLabels" (dict "ctx" . "component" "task-store-server") | nindent 4 }}
+  annotations:
+    helm.sh/resource-policy: keep
+spec:
+  accessModes:
+    - ReadWriteOnce
+  {{- with .Values.blob.file.className }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.blob.file.size }}
+{{- end }}

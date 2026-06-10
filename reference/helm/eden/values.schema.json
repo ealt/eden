@@ -48,7 +48,12 @@
     "replicas": {
       "type": "object",
       "properties": {
-        "taskStoreServer": { "type": "integer", "minimum": 0 },
+        "taskStoreServer": {
+          "description": "Operator-singleton in v0: one minted worker-facing endpoint per experiment, and file-mode blob storage (blob.backend=file) mounts a single ReadWriteOnce PVC. Capped at 1 until a multi-replica task-store/blob design exists.",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1
+        },
         "controlPlane": { "type": "integer", "minimum": 0 },
         "orchestrator": { "type": "integer", "minimum": 0 },
         "ideatorHost": {
@@ -91,6 +96,59 @@
         "evaluatorRepoSize": { "type": "string", "pattern": "^[0-9]+(Mi|Gi|Ti)$" },
         "webUiRepoSize": { "type": "string", "pattern": "^[0-9]+(Mi|Gi|Ti)$" },
         "artifactsSize": { "type": "string", "pattern": "^[0-9]+(Mi|Gi|Ti)$" }
+      }
+    },
+    "blob": {
+      "type": "object",
+      "properties": {
+        "backend": {
+          "description": "Where the §16 artifact deposit endpoint persists bytes (issue #174). 'file' (default) = chart-managed PVC; 's3' / 'gcs' = operator-supplied bucket (see the per-mode required values enforced in allOf).",
+          "type": "string",
+          "enum": ["file", "s3", "gcs"]
+        },
+        "file": {
+          "type": "object",
+          "properties": {
+            "size": { "type": "string", "pattern": "^[0-9]+(Mi|Gi|Ti)$" },
+            "className": { "type": "string" },
+            "mountPath": { "type": "string", "minLength": 1 }
+          }
+        },
+        "s3": {
+          "type": "object",
+          "properties": {
+            "bucket": { "type": "string" },
+            "region": { "type": "string" },
+            "prefix": { "type": "string" },
+            "endpointUrl": { "type": "string" },
+            "irsa": {
+              "type": "object",
+              "properties": {
+                "enabled": { "type": "boolean" },
+                "roleArn": { "type": "string" }
+              }
+            },
+            "existingSecret": { "type": "string" },
+            "accessKeyIdKey": { "type": "string", "minLength": 1 },
+            "secretAccessKeyKey": { "type": "string", "minLength": 1 }
+          }
+        },
+        "gcs": {
+          "type": "object",
+          "properties": {
+            "bucket": { "type": "string" },
+            "prefix": { "type": "string" },
+            "workloadIdentity": {
+              "type": "object",
+              "properties": {
+                "enabled": { "type": "boolean" },
+                "serviceAccount": { "type": "string" }
+              }
+            },
+            "existingSecret": { "type": "string" },
+            "serviceAccountKeyKey": { "type": "string", "minLength": 1 }
+          }
+        }
       }
     },
     "ingress": {
@@ -345,6 +403,108 @@
           "orchestrator": {
             "properties": {
               "leaseMode": { "properties": { "enabled": { "const": false } } }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": ["blob"],
+        "properties": {
+          "blob": {
+            "required": ["backend"],
+            "properties": { "backend": { "const": "s3" } }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "blob": {
+            "required": ["s3"],
+            "properties": {
+              "s3": {
+                "description": "blob.backend=s3 REQUIRES a non-empty bucket plus exactly one auth path: irsa.enabled=true with a roleArn (pod identity), or a non-empty existingSecret (static keys) with IRSA off. No auth at all — or both at once — fails at lint time.",
+                "required": ["bucket"],
+                "properties": {
+                  "bucket": { "type": "string", "minLength": 1 }
+                },
+                "oneOf": [
+                  {
+                    "description": "Pod-identity auth: IRSA enabled with a role ARN, no static secret.",
+                    "required": ["irsa"],
+                    "properties": {
+                      "irsa": {
+                        "required": ["enabled", "roleArn"],
+                        "properties": {
+                          "enabled": { "const": true },
+                          "roleArn": { "type": "string", "minLength": 1 }
+                        }
+                      },
+                      "existingSecret": { "const": "" }
+                    }
+                  },
+                  {
+                    "description": "Static-credentials auth: existingSecret set, IRSA off.",
+                    "required": ["existingSecret"],
+                    "properties": {
+                      "irsa": { "properties": { "enabled": { "const": false } } },
+                      "existingSecret": { "type": "string", "minLength": 1 }
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": ["blob"],
+        "properties": {
+          "blob": {
+            "required": ["backend"],
+            "properties": { "backend": { "const": "gcs" } }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "blob": {
+            "required": ["gcs"],
+            "properties": {
+              "gcs": {
+                "description": "blob.backend=gcs REQUIRES a non-empty bucket plus exactly one auth path: workloadIdentity.enabled=true with a serviceAccount (pod identity), or a non-empty existingSecret (service-account key JSON) with Workload Identity off.",
+                "required": ["bucket"],
+                "properties": {
+                  "bucket": { "type": "string", "minLength": 1 }
+                },
+                "oneOf": [
+                  {
+                    "description": "Pod-identity auth: Workload Identity enabled with a bound GCP service account, no key secret.",
+                    "required": ["workloadIdentity"],
+                    "properties": {
+                      "workloadIdentity": {
+                        "required": ["enabled", "serviceAccount"],
+                        "properties": {
+                          "enabled": { "const": true },
+                          "serviceAccount": { "type": "string", "minLength": 1 }
+                        }
+                      },
+                      "existingSecret": { "const": "" }
+                    }
+                  },
+                  {
+                    "description": "Key-file auth: existingSecret set, Workload Identity off.",
+                    "required": ["existingSecret"],
+                    "properties": {
+                      "workloadIdentity": { "properties": { "enabled": { "const": false } } },
+                      "existingSecret": { "type": "string", "minLength": 1 }
+                    }
+                  }
+                ]
+              }
             }
           }
         }
