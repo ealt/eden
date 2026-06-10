@@ -35,17 +35,28 @@ spec:
           envFrom:
             - secretRef:
                 name: {{ include "eden.secretName" . }}
-          {{- if and (eq .Values.postgres.mode "external") .Values.postgres.external.existingSecret }}
-          # mode=external + existingSecret: the DSN lives in the operator's
-          # Secret, not the chart-managed one. This explicit env entry overrides
-          # the envFrom import (which omits EDEN_STORE_URL in this case) so
-          # $(EDEN_STORE_URL) below resolves to the operator-supplied DSN.
+          {{- if eq .Values.postgres.mode "external" }}
           env:
+            # External Postgres: EDEN does NOT provision the eden_readonly role
+            # on a managed instance (no DCL there — see the runbook). The
+            # task-store-server runs ensure_readonly_role only when
+            # EDEN_READONLY_PASSWORD is non-empty; blank it here so that an
+            # operator's whole-chart secrets.existingSecret carrying the key does
+            # not trigger CREATE/ALTER ROLE/GRANT (which fails for provider
+            # accounts without role-management privilege). Tracked: #299.
+            - name: EDEN_READONLY_PASSWORD
+              value: ""
+            {{- if .Values.postgres.external.existingSecret }}
+            # DSN lives in the operator's Secret, not the chart-managed one. This
+            # explicit entry overrides the envFrom import (which omits
+            # EDEN_STORE_URL in this case) so $(EDEN_STORE_URL) below resolves to
+            # the operator-supplied DSN.
             - name: EDEN_STORE_URL
               valueFrom:
                 secretKeyRef:
                   name: {{ .Values.postgres.external.existingSecret | quote }}
                   key: {{ .Values.postgres.external.connectionStringKey | default "EDEN_STORE_URL" | quote }}
+            {{- end }}
           {{- end }}
           ports:
             - name: http

@@ -196,35 +196,41 @@ the partially-restored objects (or the database), recreate empty, and re-run.
 prefer the explicit drop/recreate when you're new to the flow or unsure of the
 target.
 
-### 4. Swap the chart value + `helm upgrade`
+### 4. Swap the chart value + `helm upgrade` (app tier stays down)
 
 Create the DSN Secret (Path A step 2 — encode the TLS params into the DSN), then
-flip `postgres.mode` and re-run `setup-experiment-helm.sh` with the **same**
-`--experiment-id` (it reads back the seed SHA + minted identities, so the app
-tier comes back unchanged):
+flip `postgres.mode` with a direct `helm upgrade --reuse-values` (retaining the
+seed SHA, minted identities, and other secrets from the live release). **Do not
+re-run `setup-experiment-helm.sh` here** — its phase-3 upgrade brings the app
+tier back up at `replicas: 1`, which would write new events against the restored
+database *before* you verify the snapshot. Pin the app-tier replicas to `0` in
+this upgrade so only the task-store-server comes up against the managed DB:
 
-```yaml
-postgres:
-  mode: external
-  external:
-    existingSecret: eden-managed-postgres
-    tlsAlreadyEncodedInSecret: true   # TLS is in the DSN (Path A step 2)
-  tls:
-    enabled: true
-    mode: verify-full
-    caBundleSecret: eden-rds-ca
+```bash
+helm upgrade eden ./reference/helm/eden -n eden-prod --reuse-values \
+  --set postgres.mode=external \
+  --set-string postgres.external.existingSecret=eden-managed-postgres \
+  --set postgres.external.tlsAlreadyEncodedInSecret=true \
+  --set postgres.tls.enabled=true \
+  --set postgres.tls.mode=verify-full \
+  --set-string postgres.tls.caBundleSecret=eden-rds-ca \
+  --set replicas.orchestrator=0 --set replicas.ideatorHost=0 \
+  --set replicas.executorHost=0 --set replicas.evaluatorHost=0 \
+  --set replicas.webUi=0 \
+  --wait
 ```
 
 The embedded Postgres `StatefulSet` is no longer rendered. Its PVC is **retained**
-on `helm upgrade` (StatefulSet PVCs are never auto-deleted) — keep it until you've
-verified the migration, then delete it manually to reclaim storage:
+(StatefulSet PVCs are never auto-deleted) — keep it until you've verified the
+migration, then delete it manually to reclaim storage:
 `kubectl delete pvc data-eden-postgres-0 -n eden-prod`.
 
-### 5. Verify the round-trip
+### 5. Verify the round-trip, then bring the app tier up
 
 The restored dump carried the `schema_version` table, so the task-store-server
-sees the version up-to-date and skips re-bootstrap. Confirm the event count
-matches the baseline (via the wire, against the new backend):
+sees the version up-to-date and skips re-bootstrap. With the app tier still at
+zero, confirm the event count matches the baseline (via the wire, against the new
+backend):
 
 ```bash
 TS_POD=$(kubectl get pod -n eden-prod \
@@ -237,21 +243,26 @@ kubectl exec -n eden-prod "$TS_POD" -- curl -fsS \
   "http://localhost:8080/v0/experiments/<exp-id>/events" | jq '.events | length'
 ```
 
-It should equal `EVENT_COUNT_BEFORE`. Then scale workers + orchestrator + web-ui
-back up:
+It should equal `EVENT_COUNT_BEFORE`. **Only after it matches**, bring the app
+tier back up with a second `helm upgrade` restoring the replica counts (so the
+chart values and the live state agree — a later `kubectl scale` would drift from
+values):
 
 ```bash
-kubectl scale statefulset -n eden-prod \
-  eden-orchestrator eden-web-ui eden-executor-host eden-evaluator-host --replicas=1
-kubectl scale deployment -n eden-prod eden-ideator-host --replicas=1
+helm upgrade eden ./reference/helm/eden -n eden-prod --reuse-values \
+  --set replicas.orchestrator=1 --set replicas.ideatorHost=1 \
+  --set replicas.executorHost=1 --set replicas.evaluatorHost=1 \
+  --set replicas.webUi=1 \
+  --wait
 ```
 
 ### Rollback
 
 If verification fails, you have not lost the embedded data — its PVC is still
-attached. Flip `postgres.mode` back to `embedded`, re-run
-`setup-experiment-helm.sh`, and the original `StatefulSet` reattaches to the
-retained PVC. Investigate the divergence before retrying the migration.
+attached. Run the step-4 upgrade again with `--set postgres.mode=embedded` (drop
+the `external`/`tls` overrides) and the app-tier replicas restored; the original
+`StatefulSet` reattaches to the retained PVC. Investigate the divergence before
+retrying the migration.
 
 ## Backup and disaster recovery
 

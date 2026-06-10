@@ -188,35 +188,6 @@
       },
       "allOf": [
         {
-          "if": { "properties": { "mode": { "const": "external" } }, "required": ["mode"] },
-          "then": {
-            "properties": {
-              "external": {
-                "anyOf": [
-                  {
-                    "properties": {
-                      "connectionString": {
-                        "type": "string",
-                        "minLength": 1,
-                        "pattern": "^postgres(ql)?://"
-                      }
-                    },
-                    "required": ["connectionString"]
-                  },
-                  {
-                    "properties": {
-                      "existingSecret": { "type": "string", "minLength": 1 },
-                      "connectionStringKey": { "type": "string", "minLength": 1 }
-                    },
-                    "required": ["existingSecret", "connectionStringKey"]
-                  }
-                ]
-              }
-            },
-            "required": ["external"]
-          }
-        },
-        {
           "if": {
             "properties": {
               "tls": {
@@ -271,6 +242,63 @@
     "tolerations": { "type": "array" },
     "affinity": { "type": "object" }
   },
+  "allOf": [
+    {
+      "$comment": "mode=external WITHOUT a whole-chart secrets.existingSecret: the chart-managed Secret must carry the DSN, so require an inline URL connectionString OR an external.existingSecret reference. (When secrets.existingSecret IS set, the DSN comes from that Secret's EDEN_STORE_URL — see the next clause.)",
+      "if": {
+        "required": ["postgres"],
+        "properties": {
+          "postgres": { "required": ["mode"], "properties": { "mode": { "const": "external" } } },
+          "secrets": { "properties": { "existingSecret": { "const": "" } } }
+        }
+      },
+      "then": {
+        "properties": {
+          "postgres": {
+            "required": ["external"],
+            "properties": {
+              "external": {
+                "anyOf": [
+                  {
+                    "properties": {
+                      "connectionString": { "type": "string", "minLength": 1, "pattern": "^postgres(ql)?://" }
+                    },
+                    "required": ["connectionString"]
+                  },
+                  {
+                    "properties": {
+                      "existingSecret": { "type": "string", "minLength": 1 },
+                      "connectionStringKey": { "type": "string", "minLength": 1 }
+                    },
+                    "required": ["existingSecret", "connectionStringKey"]
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "$comment": "mode=external WITH a whole-chart secrets.existingSecret: that Secret is authoritative for EDEN_STORE_URL and the chart-managed Secret template does not render, so an inline postgres.external.connectionString would be silently dropped. Reject it — put the DSN in the existingSecret, or use postgres.external.existingSecret to point at a dedicated DSN Secret.",
+      "if": {
+        "required": ["postgres", "secrets"],
+        "properties": {
+          "postgres": { "required": ["mode"], "properties": { "mode": { "const": "external" } } },
+          "secrets": { "required": ["existingSecret"], "properties": { "existingSecret": { "minLength": 1 } } }
+        }
+      },
+      "then": {
+        "properties": {
+          "postgres": {
+            "properties": {
+              "external": { "properties": { "connectionString": { "const": "" } } }
+            }
+          }
+        }
+      }
+    }
+  ],
   "definitions": {
     "serviceIdentity": {
       "type": "object",
