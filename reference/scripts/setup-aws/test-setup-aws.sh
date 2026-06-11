@@ -105,7 +105,7 @@ probe_eks_vpc_id() { echo vpc-mock; }
 probe_eks_subnet_ids() { echo "subnet-aaa subnet-bbb"; }
 probe_eks_cluster_sg() { echo sg-cluster; }
 probe_oidc_provider() { return 1; }
-probe_eks_addon() { return 1; }
+probe_eks_addon_status() { return 1; }
 probe_ecr_repo() { return 1; }
 probe_ecr_image() { return 1; }
 probe_rds_instance_status() { return 1; }
@@ -117,6 +117,7 @@ probe_db_security_group_id() { return 1; }
 probe_db_sg_ingress() { return 1; }
 probe_s3_bucket() { return 1; }
 probe_iam_policy() { return 1; }
+probe_iam_policy_document() { return 1; }
 probe_iam_role_exists() { return 1; }
 probe_iam_role_trust() { return 1; }
 probe_role_policy_attached() { return 1; }
@@ -131,7 +132,7 @@ probe_eks_vpc_id() { echo vpc-mock; }
 probe_eks_subnet_ids() { echo "subnet-aaa subnet-bbb"; }
 probe_eks_cluster_sg() { echo sg-cluster; }
 probe_oidc_provider() { return 0; }
-probe_eks_addon() { return 0; }
+probe_eks_addon_status() { echo ACTIVE; }
 probe_ecr_repo() { return 0; }
 probe_ecr_image() { return 0; }
 probe_rds_instance_status() { echo available; }
@@ -143,8 +144,9 @@ probe_db_security_group_id() { echo sg-db; }
 probe_db_sg_ingress() { return 0; }
 probe_s3_bucket() { return 0; }
 probe_iam_policy() { return 0; }
+probe_iam_policy_document() { printf '%s' '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["s3:GetObject","s3:PutObject"],"Resource":"arn:aws:s3:::test-eden-blob/*"},{"Effect":"Allow","Action":["s3:ListBucket"],"Resource":"arn:aws:s3:::test-eden-blob"}]}'; }
 probe_iam_role_exists() { return 0; }
-probe_iam_role_trust() { echo '"oidc.eks.us-east-1.amazonaws.com/id/MOCK:sub": "system:serviceaccount:eden:eden-task-store-server"'; }
+probe_iam_role_trust() { printf '%s' '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Federated":"arn:aws:iam::123456789012:oidc-provider/oidc.eks.us-east-1.amazonaws.com/id/MOCK"},"Action":"sts:AssumeRoleWithWebIdentity","Condition":{"StringEquals":{"oidc.eks.us-east-1.amazonaws.com/id/MOCK:sub":"system:serviceaccount:eden:eden-task-store-server","oidc.eks.us-east-1.amazonaws.com/id/MOCK:aud":"sts.amazonaws.com"}}}]}'; }
 probe_role_policy_attached() { return 0; }
 EOF
 
@@ -160,13 +162,14 @@ probe_eks_vpc_id() { echo vpc-mock; }
 probe_eks_subnet_ids() { echo "subnet-aaa subnet-bbb"; }
 probe_eks_cluster_sg() { echo sg-cluster; }
 probe_oidc_provider() { return 0; }
-probe_eks_addon() { return 0; }
+probe_eks_addon_status() { echo ACTIVE; }
 probe_ecr_repo() { return 0; }
 probe_ecr_image() { return 1; }
 probe_s3_bucket() { return 1; }
 probe_iam_policy() { return 0; }
+probe_iam_policy_document() { printf '%s' '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["s3:GetObject","s3:PutObject"],"Resource":"arn:aws:s3:::test-eden-blob/*"},{"Effect":"Allow","Action":["s3:ListBucket"],"Resource":"arn:aws:s3:::test-eden-blob"}]}'; }
 probe_iam_role_exists() { return 0; }
-probe_iam_role_trust() { echo '"oidc.eks.us-east-1.amazonaws.com/id/MOCK:sub": "system:serviceaccount:OTHER-NS:other-task-store-server"'; }
+probe_iam_role_trust() { printf '%s' '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Federated":"arn:aws:iam::123456789012:oidc-provider/oidc.eks.us-east-1.amazonaws.com/id/MOCK"},"Action":"sts:AssumeRoleWithWebIdentity","Condition":{"StringEquals":{"oidc.eks.us-east-1.amazonaws.com/id/MOCK:sub":"system:serviceaccount:OTHER-NS:other-task-store-server","oidc.eks.us-east-1.amazonaws.com/id/MOCK:aud":"sts.amazonaws.com"}}}]}'; }
 probe_role_policy_attached() { return 1; }
 EOF
 
@@ -221,21 +224,23 @@ run_setup "$MOCK_PRESENT" $(base_args) \
 assert_rc "exits 0" "$RC" 0
 assert_contains "cluster skip"  "$OUT" "EKS cluster exists and is ACTIVE — skipping create"
 assert_contains "OIDC skip"     "$OUT" "already associated — skipping"
-assert_contains "addon skip"    "$OUT" "aws-ebs-csi-driver addon already installed — skipping"
+assert_contains "addon skip"    "$OUT" "aws-ebs-csi-driver addon already ACTIVE — skipping"
 assert_contains "ECR repo skip" "$OUT" "ECR repository exists — skipping create"
 assert_contains "image skip"    "$OUT" "already pushed — skipping build + push"
 assert_contains "RDS skip"      "$OUT" "RDS instance exists and is available — skipping create"
 assert_contains "bucket skip"   "$OUT" "S3 bucket exists and is accessible — skipping create"
 assert_contains "policy skip"   "$OUT" "exists — skipping create"
-assert_contains "role skip"     "$OUT" "exists with the expected trust subject — skipping"
+assert_contains "role skip"     "$OUT" "exists with the expected trust policy — skipping"
 assert_contains "attach skip"   "$OUT" "policy already attached to the IRSA role — skipping"
 assert_not_contains "no eksctl mutation"  "$OUT" "DRY-RUN: eksctl"
 assert_not_contains "no docker mutation"  "$OUT" "DRY-RUN: docker"
 assert_not_contains "no create mutation"  "$OUT" "create-db-instance"
 assert_not_contains "no bucket create"    "$OUT" "s3api create-bucket"
 assert_not_contains "no IAM mutation"     "$OUT" "aws iam create-"
-assert_contains "DSN from probed endpoint + percent-encoded managed password" \
-    "$OUT" 'connectionString: "postgresql://eden:p%40ss%20w0rd@db.example.com:5432/eden?sslmode=require"'
+assert_contains "DSN from probed endpoint (userinfo redacted in the preview)" \
+    "$OUT" 'connectionString: "postgresql://<redacted>@db.example.com:5432/eden?sslmode=require"'
+assert_not_contains "managed master password never printed" "$OUT" "p%40ss%20w0rd"
+assert_not_contains "raw master password never printed"     "$OUT" "p@ss w0rd"
 assert_contains "IRSA roleArn emitted" "$OUT" 'roleArn: "arn:aws:iam::123456789012:role/test-eks-eden-blob-irsa"'
 assert_contains "image values emitted" "$OUT" 'repository: "123456789012.dkr.ecr.us-east-1.amazonaws.com/eden-reference"'
 
@@ -253,8 +258,9 @@ run_setup "$MOCK_PRESENT" $(base_args) \
     --db-instance-id test-eden-pg \
     --values-out "$PRESEED"
 assert_rc "exits 0" "$RC" 0
-assert_contains "adminToken preserved, not rotated" \
-    "$OUT" 'adminToken: "deadbeefcafe0000deadbeefcafe0000"'
+assert_contains "adminToken preserved, not rotated" "$OUT" 'adminToken: "<preserved>"'
+assert_contains "absent secrets freshly generated" "$OUT" 'sessionSecret: "<generated>"'
+assert_not_contains "preserved secret value never printed" "$OUT" "deadbeefcafe0000"
 
 # ----------------------------------------------------------------------
 # Case 4: partial state — only the missing pieces are created
@@ -271,8 +277,9 @@ assert_contains "missing tag still builds"   "$OUT" "DRY-RUN: docker build"
 assert_contains "missing tag still pushes"   "$OUT" "DRY-RUN: docker push"
 assert_contains "RDS skipped on DSN"         "$OUT" "RDS — skipped (--postgres-dsn supplied)"
 assert_not_contains "no RDS mutation"        "$OUT" "create-db-instance"
-assert_contains "operator DSN passed through verbatim" \
-    "$OUT" 'connectionString: "postgresql://eden:secret@external-db.example.com:5432/eden?sslmode=require"'
+assert_contains "operator DSN passed through (userinfo redacted in the preview)" \
+    "$OUT" 'connectionString: "postgresql://<redacted>@external-db.example.com:5432/eden?sslmode=require"'
+assert_not_contains "operator DSN credentials never printed" "$OUT" "eden:secret@"
 assert_contains "missing bucket created"     "$OUT" "DRY-RUN: aws s3api create-bucket"
 assert_contains "policy skip"                "$OUT" "exists — skipping create"
 assert_contains "trust drift converged"      "$OUT" "DRY-RUN: aws iam update-assume-role-policy"
@@ -293,7 +300,7 @@ probe_eks_vpc_id() { echo vpc-mock; }
 probe_eks_subnet_ids() { echo "subnet-aaa subnet-bbb"; }
 probe_eks_cluster_sg() { echo sg-cluster; }
 probe_oidc_provider() { return 0; }
-probe_eks_addon() { return 0; }
+probe_eks_addon_status() { echo ACTIVE; }
 probe_ecr_repo() { return 0; }
 probe_ecr_image() { return 0; }
 probe_rds_instance_status() { return 1; }
@@ -305,8 +312,9 @@ probe_db_security_group_id() { return 1; }
 probe_db_sg_ingress() { return 1; }
 probe_s3_bucket() { return 0; }
 probe_iam_policy() { return 0; }
+probe_iam_policy_document() { printf '%s' '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["s3:GetObject","s3:PutObject"],"Resource":"arn:aws:s3:::test-eden-blob/*"},{"Effect":"Allow","Action":["s3:ListBucket"],"Resource":"arn:aws:s3:::test-eden-blob"}]}'; }
 probe_iam_role_exists() { return 0; }
-probe_iam_role_trust() { echo '"oidc.eks.us-east-1.amazonaws.com/id/MOCK:sub": "system:serviceaccount:eden:eden-task-store-server"'; }
+probe_iam_role_trust() { printf '%s' '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Federated":"arn:aws:iam::123456789012:oidc-provider/oidc.eks.us-east-1.amazonaws.com/id/MOCK"},"Action":"sts:AssumeRoleWithWebIdentity","Condition":{"StringEquals":{"oidc.eks.us-east-1.amazonaws.com/id/MOCK:sub":"system:serviceaccount:eden:eden-task-store-server","oidc.eks.us-east-1.amazonaws.com/id/MOCK:aud":"sts.amazonaws.com"}}}]}'; }
 probe_role_policy_attached() { return 0; }
 EOF
 # shellcheck disable=SC2046
@@ -321,7 +329,39 @@ assert_contains "instance class passed through" "$OUT" "--db-instance-class db.t
 assert_not_contains "no cluster mutation" "$OUT" "eksctl create cluster"
 
 # ----------------------------------------------------------------------
-# Case 6: flag validation fails loud, naming the flag
+# Case 6: interrupted creates converge — cluster stuck CREATING is waited
+# on, not failed on and not duplicated
+# ----------------------------------------------------------------------
+echo "case: cluster CREATING (interrupted earlier create)"
+MOCK_CREATING="${WORK}/mock-creating.sh"
+sed 's/probe_eks_cluster_status() { echo ACTIVE; }/probe_eks_cluster_status() { echo CREATING; }/' \
+    "$MOCK_PRESENT" > "$MOCK_CREATING"
+# shellcheck disable=SC2046
+run_setup "$MOCK_CREATING" $(base_args) \
+    --postgres-dsn "postgresql://eden:x@db/eden" \
+    --values-out "${WORK}/values-creating.yaml"
+assert_rc "exits 0" "$RC" 0
+assert_contains "waits for the in-flight create" "$OUT" "DRY-RUN: aws eks wait cluster-active"
+assert_not_contains "does not start a duplicate create" "$OUT" "eksctl create cluster"
+
+# ----------------------------------------------------------------------
+# Case 7: existing same-named IAM policy that does NOT reference the
+# bucket fails loud instead of being silently adopted
+# ----------------------------------------------------------------------
+echo "case: foreign IAM policy under the derived name"
+MOCK_POLICY_DRIFT="${WORK}/mock-policy-drift.sh"
+sed 's|arn:aws:s3:::test-eden-blob|arn:aws:s3:::someone-elses-bucket|g' \
+    "$MOCK_PRESENT" > "$MOCK_POLICY_DRIFT"
+# shellcheck disable=SC2046
+run_setup "$MOCK_POLICY_DRIFT" $(base_args) \
+    --postgres-dsn "postgresql://eden:x@db/eden" \
+    --values-out "${WORK}/values-drift.yaml"
+assert_rc "exits 2" "$RC" 2
+assert_contains "names the conflicting policy" "$OUT" "does not reference"
+assert_contains "points at the escape hatch" "$OUT" "--irsa-policy-name"
+
+# ----------------------------------------------------------------------
+# Case 8: flag validation fails loud, naming the flag
 # ----------------------------------------------------------------------
 echo "case: flag validation"
 

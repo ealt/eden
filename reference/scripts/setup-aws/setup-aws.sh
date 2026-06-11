@@ -262,10 +262,11 @@ probe_oidc_provider() {
         | grep -F -q "${1#https://}"
 }
 
-probe_eks_addon() {
-    # probe_eks_addon <addon-name> — exists?
+probe_eks_addon_status() {
+    # probe_eks_addon_status <addon-name> — prints the addon status
+    # (ACTIVE / CREATING / DEGRADED / CREATE_FAILED / …); fails if absent.
     aws eks describe-addon --cluster-name "$CLUSTER_NAME" --region "$REGION" \
-        --addon-name "$1" >/dev/null 2>&1
+        --addon-name "$1" --query addon.status --output text 2>/dev/null
 }
 
 probe_ecr_repo() {
@@ -321,11 +322,13 @@ probe_db_security_group_id() {
 }
 
 probe_db_sg_ingress() {
-    # probe_db_sg_ingress <sg-id> <source-sg-id> — 5432 rule present?
+    # probe_db_sg_ingress <sg-id> <source-sg-id> — tcp/5432 INGRESS rule
+    # from the source SG present? (Egress / other-proto / partial-port-range
+    # rules must not satisfy the probe.)
     local count
     count="$(aws ec2 describe-security-group-rules --region "$REGION" \
         --filters "Name=group-id,Values=$1" \
-        --query "length(SecurityGroupRules[?FromPort==\`5432\` && ReferencedGroupInfo.GroupId=='$2'])" \
+        --query "length(SecurityGroupRules[?IsEgress==\`false\` && IpProtocol=='tcp' && FromPort==\`5432\` && ToPort==\`5432\` && ReferencedGroupInfo.GroupId=='$2'])" \
         --output text 2>/dev/null)"
     [[ -n "$count" && "$count" != "0" ]]
 }
@@ -346,6 +349,18 @@ probe_s3_bucket() {
 probe_iam_policy() {
     # probe_iam_policy <policy-arn> — exists?
     aws iam get-policy --policy-arn "$1" >/dev/null 2>&1
+}
+
+probe_iam_policy_document() {
+    # probe_iam_policy_document <policy-arn> — prints the policy's DEFAULT
+    # version document (JSON) so the caller can verify it references the
+    # expected bucket (an existing same-named policy may belong to another
+    # deployment).
+    local version
+    version="$(aws iam get-policy --policy-arn "$1" \
+        --query Policy.DefaultVersionId --output text 2>/dev/null)" || return 1
+    aws iam get-policy-version --policy-arn "$1" --version-id "$version" \
+        --query PolicyVersion.Document --output json 2>/dev/null
 }
 
 probe_iam_role_exists() {
@@ -394,6 +409,15 @@ case "$CLUSTER_STATUS" in
     ACTIVE)
         log "EKS cluster exists and is ACTIVE — skipping create"
         CLUSTER_EXISTS="1"
+        ;;
+    CREATING|UPDATING)
+        # An earlier (possibly interrupted) create is still in flight —
+        # converge by waiting for it rather than failing or duplicating.
+        log "EKS cluster is ${CLUSTER_STATUS} — waiting for it to become ACTIVE"
+        run_mutate aws eks wait cluster-active --name "$CLUSTER_NAME" --region "$REGION"
+        if [[ -z "$DRY_RUN" ]]; then
+            CLUSTER_EXISTS="1"
+        fi
         ;;
     ""|None)
         # Creation needed → the node shape becomes required NOW (fail loud
@@ -446,8 +470,17 @@ fi
 # aws-ebs-csi-driver addon: on EKS >= 1.23 the in-tree EBS provisioner is
 # gone, so without this addon every PVC the chart requests stays Pending.
 EBS_CSI_ROLE_NAME="${CLUSTER_NAME}-ebs-csi-driver"
-if probe_eks_addon aws-ebs-csi-driver; then
-    log "aws-ebs-csi-driver addon already installed — skipping"
+ADDON_STATUS="$(probe_eks_addon_status aws-ebs-csi-driver || true)"
+if [[ "$ADDON_STATUS" == "ACTIVE" ]]; then
+    log "aws-ebs-csi-driver addon already ACTIVE — skipping"
+elif [[ "$ADDON_STATUS" == "CREATING" || "$ADDON_STATUS" == "UPDATING" ]]; then
+    log "aws-ebs-csi-driver addon is ${ADDON_STATUS} — waiting"
+    run_mutate aws eks wait addon-active --cluster-name "$CLUSTER_NAME" \
+        --region "$REGION" --addon-name aws-ebs-csi-driver
+elif [[ -n "$ADDON_STATUS" && "$ADDON_STATUS" != "None" ]]; then
+    # DEGRADED / CREATE_FAILED / DELETING etc. — installed-but-broken must
+    # not be skip-converged as if healthy.
+    die "aws-ebs-csi-driver addon exists but is in state '${ADDON_STATUS}' — inspect it ('aws eks describe-addon --cluster-name ${CLUSTER_NAME} --addon-name aws-ebs-csi-driver') and resolve before re-running"
 else
     # Partial-state convergence: a prior run may have created the role but
     # died before the addon (eksctl's iamserviceaccount create is not
@@ -664,9 +697,18 @@ account). Pick a different --s3-bucket."
         ;;
 esac
 
-# IAM policy: object read/write + list on exactly this bucket.
+# IAM policy: object read/write + list on exactly this bucket. An existing
+# same-named policy is accepted only if it actually references the bucket —
+# silently adopting a foreign policy would hand the pod the wrong grants.
 if probe_iam_policy "$IRSA_POLICY_ARN"; then
-    log "IAM policy '${IRSA_POLICY_NAME}' exists — skipping create"
+    if probe_iam_policy_document "$IRSA_POLICY_ARN" \
+            | grep -F -q "arn:aws:s3:::${S3_BUCKET}"; then
+        log "IAM policy '${IRSA_POLICY_NAME}' exists and references the bucket — skipping create"
+    else
+        die "IAM policy '${IRSA_POLICY_NAME}' exists but does not reference
+s3://${S3_BUCKET} — it likely belongs to another deployment. Pass a
+different --irsa-policy-name, or update that policy manually."
+    fi
 else
     POLICY_DOC="$(cat <<EOF
 {
@@ -717,11 +759,40 @@ TRUST_POLICY="$(cat <<EOF
 }
 EOF
 )"
+# Semantic trust comparison (not substring): exactly one Allow statement
+# for sts:AssumeRoleWithWebIdentity, federated to THIS cluster's OIDC
+# provider, with both the :sub and :aud conditions. Extra principals /
+# statements / a missing aud all count as drift and are converged.
+trust_policy_matches() {
+    probe_iam_role_trust | python3 -c '
+import json, sys
+
+sub, host, fed = sys.argv[1], sys.argv[2], sys.argv[3]
+try:
+    doc = json.load(sys.stdin)
+except Exception:
+    sys.exit(1)
+stmts = doc.get("Statement") or []
+if len(stmts) != 1:
+    sys.exit(1)
+s = stmts[0]
+cond = (s.get("Condition") or {}).get("StringEquals") or {}
+ok = (
+    s.get("Effect") == "Allow"
+    and s.get("Action") == "sts:AssumeRoleWithWebIdentity"
+    and (s.get("Principal") or {}).get("Federated") == fed
+    and cond.get(host + ":sub") == sub
+    and cond.get(host + ":aud") == "sts.amazonaws.com"
+)
+sys.exit(0 if ok else 1)
+' "$TRUST_SUB" "$OIDC_HOSTPATH" "arn:aws:iam::${ACCOUNT_ID}:oidc-provider/${OIDC_HOSTPATH}"
+}
+
 if probe_iam_role_exists "$IRSA_ROLE_NAME"; then
-    if probe_iam_role_trust | grep -F "$OIDC_HOSTPATH" | grep -F -q "$TRUST_SUB"; then
-        log "IAM role '${IRSA_ROLE_NAME}' exists with the expected trust subject — skipping"
+    if trust_policy_matches; then
+        log "IAM role '${IRSA_ROLE_NAME}' exists with the expected trust policy — skipping"
     else
-        log "IAM role '${IRSA_ROLE_NAME}' exists but trusts a different subject — converging"
+        log "IAM role '${IRSA_ROLE_NAME}' exists but its trust policy has drifted — converging"
         run_mutate aws iam update-assume-role-policy \
             --role-name "$IRSA_ROLE_NAME" \
             --policy-document "$TRUST_POLICY"
@@ -764,15 +835,56 @@ read_values_secret() {
     fi
 }
 
-ADMIN_TOKEN="$(read_values_secret adminToken)";                  ADMIN_TOKEN="${ADMIN_TOKEN:-$(gen_hex 32)}"
-SESSION_SECRET="$(read_values_secret sessionSecret)";            SESSION_SECRET="${SESSION_SECRET:-$(gen_hex 32)}"
-POSTGRES_PASSWORD="$(read_values_secret postgresPassword)";      POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-$(gen_hex 32)}"
-READONLY_PASSWORD="$(read_values_secret readonlyPassword)";      READONLY_PASSWORD="${READONLY_PASSWORD:-$(gen_hex 32)}"
-FORGEJO_REMOTE_PASSWORD="$(read_values_secret forgejoRemotePassword)"; FORGEJO_REMOTE_PASSWORD="${FORGEJO_REMOTE_PASSWORD:-$(gen_hex 32)}"
-FORGEJO_SECRET_KEY="$(read_values_secret forgejoSecretKey)";     FORGEJO_SECRET_KEY="${FORGEJO_SECRET_KEY:-$(gen_hex 32)}"
-FORGEJO_INTERNAL_TOKEN="$(read_values_secret forgejoInternalToken)"; FORGEJO_INTERNAL_TOKEN="${FORGEJO_INTERNAL_TOKEN:-$(gen_hex 32)}"
+resolve_secret() {
+    # resolve_secret <values-key> — sets RESOLVED_VALUE (existing-or-fresh)
+    # and RESOLVED_DISPLAY (<preserved>/<generated>, used by the dry-run
+    # preview so live secret material never reaches stdout).
+    local existing
+    existing="$(read_values_secret "$1")"
+    if [[ -n "$existing" ]]; then
+        RESOLVED_VALUE="$existing"
+        RESOLVED_DISPLAY="<preserved>"
+    else
+        RESOLVED_VALUE="$(gen_hex 32)"
+        RESOLVED_DISPLAY="<generated>"
+    fi
+}
 
-VALUES_CONTENT="$(cat <<EOF
+resolve_secret adminToken
+ADMIN_TOKEN="$RESOLVED_VALUE";             ADMIN_TOKEN_DISPLAY="$RESOLVED_DISPLAY"
+resolve_secret sessionSecret
+SESSION_SECRET="$RESOLVED_VALUE";          SESSION_SECRET_DISPLAY="$RESOLVED_DISPLAY"
+resolve_secret postgresPassword
+POSTGRES_PASSWORD="$RESOLVED_VALUE";       POSTGRES_PASSWORD_DISPLAY="$RESOLVED_DISPLAY"
+resolve_secret readonlyPassword
+READONLY_PASSWORD="$RESOLVED_VALUE";       READONLY_PASSWORD_DISPLAY="$RESOLVED_DISPLAY"
+resolve_secret forgejoRemotePassword
+FORGEJO_REMOTE_PASSWORD="$RESOLVED_VALUE"; FORGEJO_REMOTE_PASSWORD_DISPLAY="$RESOLVED_DISPLAY"
+resolve_secret forgejoSecretKey
+FORGEJO_SECRET_KEY="$RESOLVED_VALUE";      FORGEJO_SECRET_KEY_DISPLAY="$RESOLVED_DISPLAY"
+resolve_secret forgejoInternalToken
+FORGEJO_INTERNAL_TOKEN="$RESOLVED_VALUE";  FORGEJO_INTERNAL_TOKEN_DISPLAY="$RESOLVED_DISPLAY"
+
+emit_values() {
+    # emit_values real|display — the values-file content. "display" (the
+    # --dry-run preview) swaps every secret for its <preserved>/<generated>
+    # marker and masks the DSN userinfo: dry-run output lands in terminals
+    # and logs, so live credentials must never appear in it.
+    local dsn admin session pg ro fpw fkey ftok
+    if [[ "$1" == "real" ]]; then
+        dsn="$POSTGRES_DSN"
+        admin="$ADMIN_TOKEN";            session="$SESSION_SECRET"
+        pg="$POSTGRES_PASSWORD";         ro="$READONLY_PASSWORD"
+        fpw="$FORGEJO_REMOTE_PASSWORD";  fkey="$FORGEJO_SECRET_KEY"
+        ftok="$FORGEJO_INTERNAL_TOKEN"
+    else
+        dsn="${POSTGRES_DSN/:\/\/*@/://<redacted>@}"
+        admin="$ADMIN_TOKEN_DISPLAY";            session="$SESSION_SECRET_DISPLAY"
+        pg="$POSTGRES_PASSWORD_DISPLAY";         ro="$READONLY_PASSWORD_DISPLAY"
+        fpw="$FORGEJO_REMOTE_PASSWORD_DISPLAY";  fkey="$FORGEJO_SECRET_KEY_DISPLAY"
+        ftok="$FORGEJO_INTERNAL_TOKEN_DISPLAY"
+    fi
+    cat <<EOF
 # Generated by reference/scripts/setup-aws/setup-aws.sh — CONTAINS SECRETS,
 # keep private. Re-running setup-aws.sh preserves the secrets (read back
 # from this file) and refreshes the provisioned-resource values.
@@ -782,7 +894,7 @@ image:
 postgres:
   mode: external
   external:
-    connectionString: "${POSTGRES_DSN}"
+    connectionString: "${dsn}"
 blob:
   backend: s3
   s3:
@@ -792,25 +904,28 @@ blob:
       enabled: true
       roleArn: "${IRSA_ROLE_ARN}"
 secrets:
-  adminToken: "${ADMIN_TOKEN}"
-  sessionSecret: "${SESSION_SECRET}"
-  postgresPassword: "${POSTGRES_PASSWORD}"
-  readonlyPassword: "${READONLY_PASSWORD}"
-  forgejoRemotePassword: "${FORGEJO_REMOTE_PASSWORD}"
-  forgejoSecretKey: "${FORGEJO_SECRET_KEY}"
-  forgejoInternalToken: "${FORGEJO_INTERNAL_TOKEN}"
+  adminToken: "${admin}"
+  sessionSecret: "${session}"
+  postgresPassword: "${pg}"
+  readonlyPassword: "${ro}"
+  forgejoRemotePassword: "${fpw}"
+  forgejoSecretKey: "${fkey}"
+  forgejoInternalToken: "${ftok}"
 EOF
-)"
+}
 
 if [[ -n "$DRY_RUN" ]]; then
-    echo "DRY-RUN: would write ${VALUES_OUT} (mode 0600) with:"
-    echo "$VALUES_CONTENT"
+    echo "DRY-RUN: would write ${VALUES_OUT} (mode 0600; secrets redacted in this preview):"
+    emit_values display
 else
-    umask_prev="$(umask)"
-    umask 077
-    printf '%s\n' "$VALUES_CONTENT" > "$VALUES_OUT"
-    umask "$umask_prev"
-    chmod 0600 "$VALUES_OUT"
+    # Atomic write (tmp + rename in the destination dir): a crash mid-write
+    # must not leave a partial file, or the next run's read-back would
+    # silently regenerate the missing secrets — the documented
+    # rotation-against-retained-PVCs hazard (docs/deployment/helm.md §5).
+    VALUES_TMP="$(mktemp "${VALUES_OUT}.XXXXXX")"
+    chmod 0600 "$VALUES_TMP"
+    emit_values real > "$VALUES_TMP"
+    mv "$VALUES_TMP" "$VALUES_OUT"
     log "wrote ${VALUES_OUT}"
 fi
 
