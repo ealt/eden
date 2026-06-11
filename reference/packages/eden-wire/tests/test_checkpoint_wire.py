@@ -982,3 +982,94 @@ def test_export_without_repo_path_skips_refresh(
     reader = extract_checkpoint(io.BytesIO(resp.content), extract_dir)
     bundle_path = reader.root / reader.manifest.files.repo_bundle
     assert bundle_path.stat().st_size == 0
+
+
+def test_export_accepts_current_format_version(store: InMemoryStore) -> None:
+    client, admin_bearer = _make_admin_worker_client(store)
+    resp = client.post(
+        f"/v0/experiments/{EXPERIMENT_ID}/checkpoint",
+        params={"format_version": "1"},
+        headers={
+            "X-Eden-Experiment-Id": EXPERIMENT_ID,
+            "Authorization": f"Bearer {admin_bearer}",
+        },
+    )
+    assert resp.status_code == 200, resp.text
+
+
+def test_export_rejects_unrecognized_format_version(
+    store: InMemoryStore,
+) -> None:
+    """§14.1: an unrecognized format_version returns 400 bad-request."""
+    client, admin_bearer = _make_admin_worker_client(store)
+    resp = client.post(
+        f"/v0/experiments/{EXPERIMENT_ID}/checkpoint",
+        params={"format_version": "999"},
+        headers={
+            "X-Eden-Experiment-Id": EXPERIMENT_ID,
+            "Authorization": f"Bearer {admin_bearer}",
+        },
+    )
+    assert resp.status_code == 400, resp.text
+    assert resp.json()["type"] == "eden://error/bad-request"
+
+
+@pytest.mark.skipif(not _git_available, reason="git not installed")
+def test_export_bundle_failure_with_remote_maps_to_503(
+    store: InMemoryStore, tmp_path: Path
+) -> None:
+    """With a remote configured, a refs-less repo is an error, not b''.
+
+    Codex round-0 blocking finding on #294: collapsing bundle-creation
+    failure into the zero-byte placeholder re-creates the silent
+    non-resumable-archive failure mode whenever a remote of record is
+    declared. A healthy remote always carries the seed ref, so a
+    post-sync bundle failure must 503.
+    """
+    repo_path = tmp_path / "repo"
+    subprocess.run(
+        ["git", "init", str(repo_path)], check=True, capture_output=True
+    )  # no commits → no refs → `git bundle create --all` fails
+
+    app = make_app(
+        store,
+        admin_token=ADMIN_TOKEN,
+        checkpoint_repo_path=repo_path,
+        checkpoint_repo_refresh=lambda: None,
+    )
+    client = TestClient(app)
+    resp = client.post(
+        f"/v0/experiments/{EXPERIMENT_ID}/checkpoint",
+        headers=_admin_headers(),
+    )
+    assert resp.status_code == 503, resp.text
+    body = resp.json()
+    assert body["type"] == "eden://reference-error/checkpoint-repo-unavailable"
+    assert "bundle creation failed" in body["detail"]
+
+
+@pytest.mark.skipif(not _git_available, reason="git not installed")
+def test_export_empty_local_repo_without_remote_keeps_placeholder(
+    store: InMemoryStore, tmp_path: Path
+) -> None:
+    """No-remote posture: a refs-less local repo still emits b'' (200)."""
+    repo_path = tmp_path / "repo"
+    subprocess.run(
+        ["git", "init", str(repo_path)], check=True, capture_output=True
+    )
+    app = make_app(
+        store,
+        admin_token=ADMIN_TOKEN,
+        checkpoint_repo_path=repo_path,
+    )
+    client = TestClient(app)
+    resp = client.post(
+        f"/v0/experiments/{EXPERIMENT_ID}/checkpoint",
+        headers=_admin_headers(),
+    )
+    assert resp.status_code == 200, resp.text
+    extract_dir = tmp_path / "extract"
+    extract_dir.mkdir()
+    reader = extract_checkpoint(io.BytesIO(resp.content), extract_dir)
+    bundle_path = reader.root / reader.manifest.files.repo_bundle
+    assert bundle_path.stat().st_size == 0

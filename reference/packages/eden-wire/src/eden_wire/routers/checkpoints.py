@@ -17,7 +17,11 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from eden_checkpoint import CHECKPOINT_MEDIA_TYPE, CheckpointInvalid
+from eden_checkpoint import (
+    CHECKPOINT_FORMAT_VERSION,
+    CHECKPOINT_MEDIA_TYPE,
+    CheckpointInvalid,
+)
 from eden_checkpoint import ExperimentIdMismatch as CheckpointExperimentIdMismatch
 from fastapi import APIRouter, Header, Query, Request
 from fastapi.responses import JSONResponse, Response
@@ -41,6 +45,7 @@ def _export_checkpoint(deps: RouterDeps):
     async def export_checkpoint(
         request: Request,
         experiment_id: str,
+        format_version: str | None = Query(None),
         x_eden_experiment_id: str | None = Header(None),
     ) -> Response:
         """Chapter 7 §14.1: stream a portable-checkpoint archive.
@@ -63,15 +68,34 @@ def _export_checkpoint(deps: RouterDeps):
         check_experiment(deps, experiment_id, x_eden_experiment_id)
         if deps.admin_token is not None:
             require_admin(request)
+        # §14.1: the optional format_version query selects the manifest
+        # format; this server produces exactly CHECKPOINT_FORMAT_VERSION
+        # and MUST 400 on an unrecognized value.
+        if format_version is not None and format_version != CHECKPOINT_FORMAT_VERSION:
+            raise BadRequest(
+                f"unrecognized format_version {format_version!r}; this "
+                f"server supports {CHECKPOINT_FORMAT_VERSION!r}"
+            )
         buffer = io.BytesIO()
-        deps.store.export_checkpoint(
-            buffer,
-            experiment_config=deps.checkpoint_config_text,
-            # Provider (not pre-computed bytes) so the bundle is captured
-            # AFTER the store snapshot — see the ordering rationale on
-            # eden_storage._checkpoint.export_checkpoint (issue #294).
-            repo_bundle_provider=lambda: _compose_repo_bundle(deps),
-        )
+        try:
+            deps.store.export_checkpoint(
+                buffer,
+                experiment_config=deps.checkpoint_config_text,
+                # Provider (not pre-computed bytes) so the bundle is
+                # captured AFTER the store snapshot — see the ordering
+                # rationale on eden_storage._checkpoint.export_checkpoint
+                # (issue #294).
+                repo_bundle_provider=lambda: _compose_repo_bundle(deps),
+            )
+        except CheckpointInvalid as exc:
+            # The export-side §12 self-validation found the bundle
+            # missing something the snapshot references — a transient
+            # ref race (deletion/force-move between snapshot and fetch).
+            # 503 retryable: the next export re-snapshots and re-fetches.
+            raise CheckpointRepoUnavailable(
+                "exported bundle failed §12 self-validation against the "
+                f"store snapshot (transient ref race; retry): {exc}"
+            ) from exc
         return Response(
             content=buffer.getvalue(),
             media_type=CHECKPOINT_MEDIA_TYPE,
@@ -95,6 +119,15 @@ def _compose_repo_bundle(deps: RouterDeps) -> bytes:
     buffer). When the repo path is unset (e.g. test fixtures) the bundle
     stays empty — the resulting archive is structurally valid but
     receiver-side resume requires both substrate pieces.
+
+    Bundle-creation failure is swallowed to the zero-byte placeholder
+    ONLY in the no-remote posture (a local test repo with no refs is a
+    legitimate empty bundle). When a remote refresh is configured, the
+    deployment has declared a git remote of record — a healthy one
+    always has at least the seed ref, so any bundle failure after a
+    successful sync is an error and raises
+    :class:`CheckpointRepoUnavailable` rather than silently emitting a
+    non-resumable archive (the #294 failure mode).
     """
     if deps.checkpoint_repo_root is None:
         return b""
@@ -113,11 +146,16 @@ def _compose_repo_bundle(deps: RouterDeps) -> bytes:
         try:
             create_bundle(deps.checkpoint_repo_root, bundle_path)
             return bundle_path.read_bytes()
-        except CheckpointInvalid:
-            # Empty repo (no refs to bundle): emit a zero-byte
-            # placeholder rather than 5xx-ing. The receiver's
-            # chapter-10 §12 cross-reference validation will
-            # surface any inconsistency at import time.
+        except CheckpointInvalid as exc:
+            if deps.checkpoint_repo_refresh is not None:
+                raise CheckpointRepoUnavailable(
+                    "git bundle creation failed after a successful remote "
+                    f"sync: {exc}"
+                ) from exc
+            # No-remote posture: empty repo (no refs to bundle) emits a
+            # zero-byte placeholder rather than 5xx-ing. The receiver's
+            # chapter-10 §12 cross-reference validation will surface any
+            # inconsistency at import time.
             return b""
 
 
