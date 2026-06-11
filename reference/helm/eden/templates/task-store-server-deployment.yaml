@@ -22,6 +22,13 @@ spec:
   # rollout that always completes.
   strategy:
     type: Recreate
+    # Explicitly clear rollingUpdate: a release installed before the Recreate
+    # switch has API-server-defaulted rollingUpdate values on the live object,
+    # and an upgrade that only patches `type` leaves them in place — the API
+    # server then rejects the object ("rollingUpdate: Forbidden: may not be
+    # specified when strategy `type` is 'Recreate'"). null deletes the field
+    # in the upgrade patch.
+    rollingUpdate: null
   {{- end }}
   selector:
     matchLabels:
