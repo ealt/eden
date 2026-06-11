@@ -698,16 +698,47 @@ account). Pick a different --s3-bucket."
 esac
 
 # IAM policy: object read/write + list on exactly this bucket. An existing
-# same-named policy is accepted only if it actually references the bucket —
-# silently adopting a foreign policy would hand the pod the wrong grants.
+# same-named policy is accepted only if its document actually GRANTS those
+# three permissions via plain Allow statements (semantic check, not a
+# substring scan — a Deny that merely mentions the ARN must not pass).
+policy_document_matches() {
+    probe_iam_policy_document "$IRSA_POLICY_ARN" | python3 -c '
+import json, sys
+
+bucket = sys.argv[1]
+try:
+    doc = json.load(sys.stdin)
+except Exception:
+    sys.exit(1)
+
+def aslist(v):
+    return v if isinstance(v, list) else [v]
+
+needed = {
+    ("s3:GetObject", "arn:aws:s3:::%s/*" % bucket),
+    ("s3:PutObject", "arn:aws:s3:::%s/*" % bucket),
+    ("s3:ListBucket", "arn:aws:s3:::%s" % bucket),
+}
+granted = set()
+for s in aslist(doc.get("Statement") or []):
+    if s.get("Effect") != "Allow" or "NotAction" in s or "NotResource" in s:
+        continue
+    for action in aslist(s.get("Action") or []):
+        for resource in aslist(s.get("Resource") or []):
+            granted.add((action, resource))
+sys.exit(0 if needed <= granted else 1)
+' "$S3_BUCKET"
+}
+
 if probe_iam_policy "$IRSA_POLICY_ARN"; then
-    if probe_iam_policy_document "$IRSA_POLICY_ARN" \
-            | grep -F -q "arn:aws:s3:::${S3_BUCKET}"; then
-        log "IAM policy '${IRSA_POLICY_NAME}' exists and references the bucket — skipping create"
+    if policy_document_matches; then
+        log "IAM policy '${IRSA_POLICY_NAME}' exists and grants the bucket access — skipping create"
     else
         die "IAM policy '${IRSA_POLICY_NAME}' exists but does not reference
-s3://${S3_BUCKET} — it likely belongs to another deployment. Pass a
-different --irsa-policy-name, or update that policy manually."
+s3://${S3_BUCKET} with the expected grants (GetObject/PutObject on the
+objects + ListBucket on the bucket) — it likely belongs to another
+deployment. Pass a different --irsa-policy-name, or update that policy
+manually."
     fi
 else
     POLICY_DOC="$(cat <<EOF
