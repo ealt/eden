@@ -1,0 +1,172 @@
+--- docs/plans/review/eden-phase-13f-k8s-worker-modes/20260611T150217/1.md	2026-06-11 15:14:29
++++ docs/plans/eden-phase-13f-k8s-worker-modes.md	2026-06-11 15:23:07
+@@ -305,12 +305,21 @@
+    the fixture's commands all do) REQUIRES the effective image
+    for that role to be an experiment image carrying
+    `workers.experimentDir`. The chart cannot inspect image
+-   contents, so the gate is a bundled **host startup check**:
+-   when `--mode subprocess` or `--mode pod-exec` is set and
+-   `--experiment-dir` does not exist (or is empty), the host
++   contents, so the gate is a bundled runtime check, placed in
++   the container that actually carries the dir: for
++   `--mode subprocess` a **host startup check** — when
++   `--experiment-dir` does not exist (or is empty) the host
+    exits non-zero with a message naming the expected path and
+-   the image-build pattern — a loud CrashLoopBackOff at the
+-   right pod instead of a silent per-task failure loop. The
++   the image-build pattern; for `--mode pod-exec` the host image
++   need not carry the dir at all (the task pod's image does), so
++   the **task-pod wrapper** performs the same check inside the
++   pod-exec image and reports a clear
++   `{"status":"error","reason":"experiment dir missing at …"}`
++   outcome through the sentinel channel (the reason lands in
++   the host's structured log per binding §5). Either way the
++   failure is loud and names the fix — a CrashLoopBackOff at
++   the right pod, or an error variant whose host log names the
++   missing path, instead of a silent generic failure loop. The
+    README + `docs/deployment/helm.md` state the requirement; the
+    smokes build the fixture experiment image rather than leaning
+    on the fallback. For
+@@ -387,7 +396,14 @@
+      web-ui session secret never enter a worker-host pod.
+    `EDEN_WORKER_CREDENTIAL` **is** forwarded to user code by
+    design (the §9 substrate bearers need it); `EDEN_ADMIN_TOKEN`
+-   never is.
++   never is. Scope honestly: this protects the *spawned child's
++   env*. In subprocess mode user code still shares a container
++   with the host process and could read the host's env via
++   `/proc` — the same residual trust Compose host-mode carries
++   today (binding §7.5's bug-isolation-not-containment posture).
++   The chart-side narrowing shrinks what that residual can reach
++   (no Postgres/store DSNs in worker pods at all); pod-exec is
++   the mode that removes it (Decision 10).
+ 
+ 7. **Pod-exec child lifecycle: three nested safety layers.**
+    The DooD `post_kill_callback` analog must answer "who deletes
+@@ -668,14 +684,30 @@
+      python entrypoint (`eden_executor_host.pod_publish`, using
+      `eden_git` — not POSIX sh) that waits for the done-marker
+      (bounded by the pod's remaining deadline), reads
+-     `outcome.json`, and on `status=success` runs local
+-     `update-ref` + `push_ref` with the **three-outcome
+-     read-back ladder** the repo mandates for ambiguous pushes
+-     (AGENTS.md / `GitRepo.push_ref`): `RefRefused` → rollback
+-     local, outcome `error`; `GitTransportError` → immediate
+-     `ls_remote(branch)`: remote == our SHA → confirmed success;
+-     remote divergent or absent → rollback local, `error`;
+-     `ls_remote` also fails → rollback local, `error`. The
++     `outcome.json`, **validates before publishing** — commit
++     exists in the task-pod clone, is a well-formed SHA, and
++     `is_ancestor(parent, commit)` for every
++     `idea.parent_commits` entry — so an invalid commit never
++     creates a remote ref (the host re-validates after fetch,
++     which stays load-bearing for the duplicate-Pod case), and
++     only then runs local `update-ref` + `push_ref` with the
++     **three-outcome read-back ladder** the repo mandates for
++     ambiguous pushes (AGENTS.md / `GitRepo.push_ref`):
++     `RefRefused` → rollback local, outcome `error`;
++     `GitTransportError` → immediate `ls_remote(branch)`:
++     remote == our SHA → confirmed success; remote divergent or
++     absent → rollback local, `error`; `ls_remote` also fails →
++     rollback local, `error`. **The publisher treats the shared
++     clone as hostile** — user code ran against it first and may
++     have rewritten `remote.origin.url`, installed hooks, or
++     edited config to redirect the credentialed push. Defenses,
++     each unit-tested against a malicious fixture repo: push to
++     the explicit `--forgejo-url` the host rendered into the pod
++     spec, never to repo-configured `origin`; supply the
++     credential helper per-invocation (`-c credential.helper=…`)
++     scoped to that URL; disable hooks
++     (`-c core.hooksPath=<empty dir>` + `push --no-verify`);
++     ignore repo-local config that affects transport. The
+      indeterminate branch collapses to the executor's chapter-3
+      §3.3 failure status — never silently to success. A remote
+      `work/*` ref leaked by the indeterminate branch (push
+@@ -710,11 +742,15 @@
+ start concurrently — the publisher's done-marker wait is the
+ ordering mechanism (same shared-emptyDir signaling the DooD wrap
+ gets for free from process order). The Job is terminal only when
+-both containers exit; the publisher always exits 0 (the outcome
+-travels in the sentinel, not the exit code), so Job-level
+-`failed` is reserved for infrastructure failures (deadline,
+-eviction, image pull), keeping the §8.10-adopted classification
+-clean.
++both containers exit. **Exit-code rule:** every container that
++can write its outcome channel exits 0 — the wrapper converts a
++user-command non-zero exit into the outcome/done-marker (it does
++NOT propagate the user rc, deliberately diverging from the DooD
++wrap), and the publisher always exits 0 with the outcome in the
++sentinel. A container exits non-zero only when it cannot report
++through the channel at all, so Job-level `failed` means
++infrastructure (deadline, eviction, image pull, wrapper itself
++broken), keeping the §8.10-adopted classification clean.
+ 
+ ### 3.5 Evaluator pod-exec deltas
+ 
+@@ -756,7 +792,9 @@
+ pods only) is real python running in the chart image — it gets
+ `eden_git`'s typed `RefRefused` / `GitTransportError` +
+ `ls_remote` for the §3.4 read-back ladder for free, instead of
+-reimplementing atomicity logic in shell.
++reimplementing atomicity logic in shell, and it carries the §3.4
++hostile-clone defenses (explicit URL, per-invocation credential
++helper, hooks disabled) plus pre-push validation.
+ 
+ Sentinel-spoofing defense: the host parses only the **last**
+ `EDEN_OUTCOME`-prefixed line of the *sentinel container's* log —
+@@ -873,7 +911,7 @@
+ |---|---|
+ | `reference/services/_common/src/eden_service_common/subprocess_runner.py` | `spawn(..., inherit_env: bool = True)`; `inherit_env=False` builds the child env from the baseline allowlist + supplied `env` only. |
+ | `reference/services/_common/src/eden_service_common/pod_exec.py` (new) | Shared pod-exec machinery (§3.3); lazy `kubernetes` import. |
+-| `reference/services/{ideator,executor,evaluator}/src/.../cli.py` | Repeatable `--*-env-file`; executor + evaluator gain `--mode pod-exec` + the `--pod-*` family with argparse-time required-together validation + `--claim-ttl-seconds`; all three subprocess paths pass `inherit_env=False`; non-scripted modes fail loud at startup when `--experiment-dir` is missing/empty (Decision 3). |
++| `reference/services/{ideator,executor,evaluator}/src/.../cli.py` | Repeatable `--*-env-file`; executor + evaluator gain `--mode pod-exec` + the `--pod-*` family with argparse-time required-together validation + `--claim-ttl-seconds`; all three subprocess paths pass `inherit_env=False`; subprocess mode fails loud at host startup when `--experiment-dir` is missing/empty — pod-exec's equivalent check lives in the task-pod wrapper (Decision 3). |
+ | `reference/services/executor/src/eden_executor_host/pod_exec_mode.py` (new) | §3.4 flow. |
+ | `reference/services/executor/src/eden_executor_host/pod_publish.py` (new) | Publisher-container entrypoint: done-marker wait, outcome read, `update-ref` + `push_ref` + read-back ladder, sentinel emission (§3.4 / §3.6). |
+ | `reference/services/evaluator/src/eden_evaluator_host/pod_exec_mode.py` (new) | §3.5 flow. |
+@@ -959,7 +997,13 @@
+ sentinel; transport failure + `ls_remote` == ours → success;
+ transport failure + divergent/absent → rollback + error;
+ transport failure + `ls_remote` fails → rollback + error;
+-done-marker never appears → deadline → error sentinel. Plus
++done-marker never appears → deadline → error sentinel;
++pre-push validation failures (missing commit, non-ancestor
++parent) → error sentinel with **no remote ref created**; and
++hostile-clone defenses — fixture repo with rewritten
++`remote.origin.url` and an installed `pre-push` hook → push
++still targets the explicit URL, the hook does not run, and the
++credential never reaches the attacker remote. Plus
+ `spawn(inherit_env=False)` allowlist behavior and env-file merge
+ precedence.
+ 
+@@ -1111,8 +1155,11 @@
+    `helm-smoke-subprocess` + `helm-lint` extensions. Existing
+    `ci-smoke.sh` (scripted) must stay green in the same PR.
+ 4. **Wave 3 — pod-exec host code.** `pod_exec.py` + executor +
+-   evaluator `pod_exec_mode.py` + CLI flags + unit matrix. No
+-   chart surface yet; unit-tested only.
++   evaluator `pod_exec_mode.py` + `pod_publish.py` (publisher
++   hardening: hostile-clone defenses, pre-push validation, the
++   read-back ladder, each with its §6.2 matrix) + CLI flags
++   (`--pod-*`, `--claim-ttl-seconds`) + unit matrix. No chart
++   surface yet; unit-tested only.
+ 5. **Wave 4 — chart pod-exec + smoke.** RBAC + wrapper +
+    pod-template ConfigMaps + StatefulSet conditionals + schema
+    gates; `ci-smoke-pod-exec.sh` + `helm-smoke-pod-exec`.
+@@ -1182,6 +1229,14 @@
+ drive the experiment end-to-end on Kubernetes: the ideator
+ holding LLM context in its own pod, every execution and
+ evaluation running as a GPU-schedulable per-task Job, no docker
+-socket anywhere, and no deployment secret reachable from user
+-code. Compose remains the local-development path, byte-for-byte
+-unchanged except the env-isolation contract alignment.
++socket anywhere, and — for the pod-exec roles — no deployment
++secret reachable from user code (Decision 10's container split;
++the credential-bearing init/publisher containers are not
++readable from the user container). Subprocess mode keeps the
++narrower guarantee Compose has today: the *spawned child's env*
++is scrubbed (Decision 6), but user code shares a container with
++the host process, so an adversarial `*_command` could still
++read the host's own env via `/proc` — pod-exec is the mode for
++that threat model. Compose remains the local-development path,
++byte-for-byte unchanged except the env-isolation contract
++alignment.

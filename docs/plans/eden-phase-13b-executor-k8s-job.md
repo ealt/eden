@@ -1,6 +1,21 @@
 # Phase 13b — Executor as a k8s Job (GPU node selection)
 
-**Status.** Draft.
+> **SUPERSEDED by Phase 13f**
+> ([`eden-phase-13f-k8s-worker-modes.md`](eden-phase-13f-k8s-worker-modes.md),
+> issue [#291](https://github.com/ealt/eden/issues/291)). This plan
+> was drafted against the 13a plan text before the chart shipped and
+> covers the executor only; 13f subsumes it — the per-task Job
+> substrate (shared by executor + evaluator), the GPU scheduling
+> pass-through values, and the subprocess in-pod mode all land
+> there. Several decisions here are adopted verbatim by 13f §2
+> Decision 2 (Job-per-task shape, stdout-sentinel outcome plumbing,
+> init-container clone, duplicate-Pod selection, image-pull
+> deadline). Kept for the design record; do not execute. The file
+> moves to `docs/archive/` in 13f's final docs wave. Issue
+> [#172](https://github.com/ealt/eden/issues/172) closes when 13f's
+> pod-exec wave ships.
+
+**Status.** Superseded (see banner). Was: Draft.
 
 **Predecessor.** [`docs/plans/eden-phase-13a-helm-base-chart.md`](eden-phase-13a-helm-base-chart.md)
 (merged). 13a established the base Helm chart with the executor-host

@@ -1,0 +1,19 @@
+**Missing Context**
+Resolved. The updated plan now scopes the secret-isolation claim honestly and documents the subprocess `/proc` residual.
+
+**Feasibility**
+Mostly resolved. The publisher split, claim TTL, experiment-image checks, pre-push validation, and exit-code rule are now coherent. One part still needs a concrete mechanism: the plan says the publisher ignores hostile repo-local transport config, but it still describes pushing from the shared clone via `eden_git` ([plan](</Users/ericalt/Documents/eden-worktrees/plan-issue-291-k8s-worker-modes/docs/plans/eden-phase-13f-k8s-worker-modes.md:700>)). Existing `GitRepo` runs inside the repo and does not disable local config or replace refs for ancestry checks ([repo.py](</Users/ericalt/Documents/eden-worktrees/plan-issue-291-k8s-worker-modes/reference/packages/eden-git/src/eden_git/repo.py:250>), [repo.py](</Users/ericalt/Documents/eden-worktrees/plan-issue-291-k8s-worker-modes/reference/packages/eden-git/src/eden_git/repo.py:767>)). Also, the current helper returns the Forgejo password for any `get` request ([git-credential-helper-configmap.yaml](</Users/ericalt/Documents/eden-worktrees/plan-issue-291-k8s-worker-modes/reference/helm/eden/templates/git-credential-helper-configmap.yaml:19>)). I’d make the plan require a publisher-owned clean git context for validation/push, or otherwise spell out how local `url.*.insteadOf`, local `credential.helper`, `refs/replace`, grafts, and alternates are neutralized.
+
+**Alternatives**
+The architecture still looks right: Job-per-task plus a publisher container is the better direction than `pods/exec`, DooD-on-k8s, or forcing #290 first.
+
+**Completeness**
+Two remaining gaps:
+
+- Task pods need an explicit service-account-token rule. The plan gives pod-exec RBAC to create/watch/delete Jobs and read pod logs ([plan](</Users/ericalt/Documents/eden-worktrees/plan-issue-291-k8s-worker-modes/docs/plans/eden-phase-13f-k8s-worker-modes.md:458>)) and passes `--pod-service-account` for spawned Jobs ([plan](</Users/ericalt/Documents/eden-worktrees/plan-issue-291-k8s-worker-modes/docs/plans/eden-phase-13f-k8s-worker-modes.md:644>)). Unless task pods set `automountServiceAccountToken: false` or use a distinct no-RBAC task ServiceAccount, the user container can receive a Kubernetes API bearer token. That weakens the “no deployment secret reachable from user code” claim for pod-exec.
+- Evaluator sentinel emission is under-specified. The evaluator wrapper plans to forward `eval-outcome.json` bytes verbatim without JSON parsing ([plan](</Users/ericalt/Documents/eden-worktrees/plan-issue-291-k8s-worker-modes/docs/plans/eden-phase-13f-k8s-worker-modes.md:774>)), but the existing binding is an outcome-file contract, not a JSON-line contract ([worker-host-subprocess.md](</Users/ericalt/Documents/eden-worktrees/plan-issue-291-k8s-worker-modes/spec/v0/reference-bindings/worker-host-subprocess.md:220>)). Pretty-printed JSON or embedded newlines will break a line-based sentinel parser. Either add a non-credentialed evaluator publisher/sentinel container in the chart image, or explicitly require single-line compact JSON for pod-exec and test multiline rejection.
+
+**Edge Cases And Risks**
+Add an internal publisher timeout before the pod’s `activeDeadlineSeconds`. The test matrix says “done-marker never appears → deadline → error sentinel” ([plan](</Users/ericalt/Documents/eden-worktrees/plan-issue-291-k8s-worker-modes/docs/plans/eden-phase-13f-k8s-worker-modes.md:994>)), but if Kubernetes kills the pod at the same deadline, the publisher may not get a chance to emit the sentinel.
+
+Overall: the plan is much closer and the six round-1 items are mostly addressed. I’d do one more revision for the publisher trust root, task-pod ServiceAccount token handling, evaluator sentinel compaction, and publisher pre-deadline behavior before treating it as implementation-ready.
