@@ -1,0 +1,110 @@
+--- docs/plans/review/eden-phase-13f-k8s-worker-modes/20260611T150217/3.md	2026-06-12 13:37:13
++++ docs/plans/eden-phase-13f-k8s-worker-modes.md	2026-06-12 13:40:40
+@@ -35,7 +35,7 @@
+ | Worker-host CLI | `--mode pod-exec` (executor + evaluator only) | Joins the existing `--mode {scripted, subprocess}` enum. Kebab-case per argparse convention. Replaces the 13b plan's proposed `--mode k8s-job` — "pod-exec" names the mechanism (per-task spawn packaged as a pod) the way "subprocess" names in-process spawn; the `batch/v1 Job` resource is an implementation detail of the mode, not its name. |
+ | Worker-host CLI | `--pod-namespace`, `--pod-image`, `--pod-image-pull-policy`, `--pod-service-account`, `--pod-template-config`, `--pod-active-deadline-seconds`, `--pod-poll-interval`, `--pod-image-pull-deadline-seconds` | `--pod-*` prefix family for pod-exec knobs (mirrors the `--exec-*` family DooD uses). |
+ | Worker-host CLI | `--claim-ttl-seconds` (executor + evaluator) | Claim `expires_at` plumbing (Decision 7); chart-set in pod-exec mode, optional elsewhere. |
+-| Chart values | `workers.<role>.mode` ∈ {`scripted`, `subprocess`, `podExec`} (`podExec` invalid for ideator), `workers.<role>.image`, `workers.<role>.envFileSecret`, `workers.executor.podExec.*`, `workers.evaluator.podExec.*`, `workers.experimentDir`, `workers.rbac.create`, `workers.serviceAccount.name` | New top-level `workers:` block; the 13a `config.workerMode` value is **retired** (greenfield rename, no alias). |
++| Chart values | `workers.<role>.mode` ∈ {`scripted`, `subprocess`, `podExec`} (`podExec` invalid for ideator), `workers.<role>.image`, `workers.<role>.envFileSecret`, `workers.executor.podExec.*`, `workers.evaluator.podExec.*`, `workers.experimentDir`, `workers.rbac.create`, `workers.serviceAccount.name`, `workers.taskServiceAccount.name` | New top-level `workers:` block; the 13a `config.workerMode` value is **retired** (greenfield rename, no alias). |
+ | Chart values | `storage.artifactsAccessModes` | Access-mode list for the now-shared artifacts PVC (§3.4). |
+ | k8s labels | `eden.role`, `eden.host`, `eden.task_id`, `eden.experiment_id` on per-task Jobs/Pods | Same vocabulary as the DooD container labels, so reaper code shares a filter shape. |
+ | Modules | `eden_service_common/pod_exec.py`, `eden_service_common/pod_outcome.py`, `eden_executor_host/pod_exec_mode.py`, `eden_executor_host/pod_publish.py`, `eden_evaluator_host/pod_exec_mode.py` | `pod_exec` is the `container_exec` sibling; `pod_outcome` is the shared reporter/sentinel machinery; `pod_publish` is the executor publisher-container entrypoint (Decision 10 / §3.6). |
+@@ -325,11 +325,15 @@
+    on the fallback. For
+    pod-exec, `workers.<role>.podExec.image` selects the per-task
+    pod's image, defaulting to `workers.<role>.image` then the
+-   chart image. The 13b minimum-surface contract for pod-exec
+-   images carries over: `/bin/sh`, `git` ≥ 2.20, `python3`,
+-   `ca-certificates`, SHOULD run as `eden:1000`; distroless /
+-   `FROM scratch` are unsupported (static-wrapper follow-up,
+-   §11). Experiment-dir-as-ConfigMap was considered and rejected:
++   chart image. The pod-exec user-image minimum surface is
++   smaller than 13b's, because reporting and publishing moved to
++   chart-image containers (§3.6): `/bin/sh` (the wrapper), plus
++   `git` ≥ 2.20 for executor images (the user command commits in
++   the worktree; evaluator images only SHOULD carry git);
++   `python3` and `ca-certificates` are NOT required in the user
++   image. SHOULD run as `eden:1000`; distroless / `FROM scratch`
++   remain unsupported for the user container (no `/bin/sh`;
++   static-wrapper follow-up, §11). Experiment-dir-as-ConfigMap was considered and rejected:
+    it caps at ~1 MiB, can't carry deps, and would be a second
+    delivery mechanism for the same bytes the image already
+    carries.
+@@ -505,9 +509,13 @@
+     **No k8s API token in task pods.** The task-pod spec sets
+     `automountServiceAccountToken: false` and runs under a
+     dedicated credential-less ServiceAccount
+-    (`<release>-eden-task`, no Role bound; `--pod-service-account`
++    (`workers.taskServiceAccount.name`, default
++    `<release>-eden-task`, no Role bound; `--pod-service-account`
+     names it) — the RBAC'd SA from Decision 9 is the *host's*,
+-    never the task pod's. Without this, every container in the
++    never the task pod's. Both SAs follow one ownership rule:
++    `workers.rbac.create=true` renders both; `false` renders
++    neither and the operator pre-creates both (§3.1 values
++    sketch). Without this, every container in the
+     task pod (including user code) would receive a projected
+     API bearer token by k8s default. Asserted in the rendered
+     manifests (§6.1) and on a live Job in the smoke (§6.3).
+@@ -569,9 +577,18 @@
+   experimentDir: /etc/eden/experiment-dir
+ 
+   rbac:
+-    create: true          # consulted only when some role is podExec
++    # Consulted only when some role is podExec. true: the chart
++    # renders BOTH ServiceAccounts — the host SA (Role-bound per
++    # Decision 9) AND the credential-less task SA (no Role;
++    # task pods run under it with automountServiceAccountToken:
++    # false). false (GitOps-managed RBAC): the chart renders
++    # neither; the operator pre-creates both and supplies both
++    # names below.
++    create: true
+   serviceAccount:
+-    name: ""              # default <release>-eden-workers
++    name: ""              # host SA; default <release>-eden-workers
++  taskServiceAccount:
++    name: ""              # task-pod SA; default <release>-eden-task
+ 
+   ideator:
+     mode: scripted        # ∈ {scripted, subprocess}
+@@ -775,11 +792,15 @@
+ containers and start concurrently — the done-marker wait is the
+ ordering mechanism (same shared-emptyDir signaling the DooD wrap
+ gets for free from process order). The reporter/publisher's
+-internal marker-wait deadline is `activeDeadlineSeconds` minus a
+-fixed margin (passed in as `EDEN_OUTCOME_DEADLINE_SECONDS`), so
+-it emits its error sentinel and exits *before* k8s kills the pod
+-at the Job deadline — a sentinel-less Job-killed-at-deadline is
+-then genuinely infrastructure-shaped. The Job is terminal only
++marker-wait deadline is **absolute, computed by the host at Job
++creation** — `EDEN_OUTCOME_DEADLINE` (epoch seconds) = creation
++time + `activeDeadlineSeconds` − a fixed margin — so scheduling,
++image-pull, and init-clone time that elapse before the regular
++containers start are charged against the same clock the Job
++controller uses, and the reporter emits its error sentinel and
++exits *before* k8s kills the pod at the Job deadline. A
++sentinel-less Job-killed-at-deadline is then genuinely
++infrastructure-shaped. The Job is terminal only
+ when both containers exit. **Exit-code rule:** every container that
+ can write its outcome channel exits 0 — the wrapper converts a
+ user-command non-zero exit into the outcome/done-marker (it does
+@@ -824,7 +845,7 @@
+ 
+ The sentinel side lives in chart-image python: a shared
+ `eden_service_common/pod_outcome.py` (marker-wait with the
+-`EDEN_OUTCOME_DEADLINE_SECONDS` budget, outcome-file read,
++absolute `EDEN_OUTCOME_DEADLINE` budget, outcome-file read,
+ single-line `json.dumps` compaction, sentinel emission) consumed
+ by two entrypoints — the evaluator **reporter** (pod_outcome
+ alone, no credential) and the executor **publisher**
+@@ -1046,8 +1067,8 @@
+ validation, and the credential never reaches the attacker
+ remote. `pod_outcome` additionally gets: multi-line /
+ pretty-printed outcome file → compacted single-line sentinel;
+-marker-never-appears → error sentinel emitted before
+-`EDEN_OUTCOME_DEADLINE_SECONDS` expires. Manifest-shape
++marker-never-appears → error sentinel emitted before the
++absolute `EDEN_OUTCOME_DEADLINE` expires. Manifest-shape
+ assertions add `automountServiceAccountToken: false` + the
+ credential-less task ServiceAccount on every built Job. Plus
+ `spawn(inherit_env=False)` allowlist behavior and env-file merge

@@ -1,0 +1,279 @@
+--- docs/plans/review/eden-phase-13f-k8s-worker-modes/20260611T150217/2.md	2026-06-11 15:23:19
++++ docs/plans/eden-phase-13f-k8s-worker-modes.md	2026-06-12 13:37:02
+@@ -38,7 +38,7 @@
+ | Chart values | `workers.<role>.mode` ∈ {`scripted`, `subprocess`, `podExec`} (`podExec` invalid for ideator), `workers.<role>.image`, `workers.<role>.envFileSecret`, `workers.executor.podExec.*`, `workers.evaluator.podExec.*`, `workers.experimentDir`, `workers.rbac.create`, `workers.serviceAccount.name` | New top-level `workers:` block; the 13a `config.workerMode` value is **retired** (greenfield rename, no alias). |
+ | Chart values | `storage.artifactsAccessModes` | Access-mode list for the now-shared artifacts PVC (§3.4). |
+ | k8s labels | `eden.role`, `eden.host`, `eden.task_id`, `eden.experiment_id` on per-task Jobs/Pods | Same vocabulary as the DooD container labels, so reaper code shares a filter shape. |
+-| Modules | `eden_service_common/pod_exec.py`, `eden_executor_host/pod_exec_mode.py`, `eden_executor_host/pod_publish.py`, `eden_evaluator_host/pod_exec_mode.py` | `pod_exec` is the `container_exec` sibling; `pod_publish` is the publisher-container entrypoint (Decision 10 / §3.6). |
++| Modules | `eden_service_common/pod_exec.py`, `eden_service_common/pod_outcome.py`, `eden_executor_host/pod_exec_mode.py`, `eden_executor_host/pod_publish.py`, `eden_evaluator_host/pod_exec_mode.py` | `pod_exec` is the `container_exec` sibling; `pod_outcome` is the shared reporter/sentinel machinery; `pod_publish` is the executor publisher-container entrypoint (Decision 10 / §3.6). |
+ | Spec binding | `spec/v0/reference-bindings/worker-host-pod-exec.md` (informative) | Sibling of `worker-host-subprocess.md`; supersedes the 13b plan's proposed `worker-host-k8s-job.md`. |
+ | Smoke scripts / CI jobs | `reference/helm/eden/ci-smoke-subprocess.sh` → `helm-smoke-subprocess`; `reference/helm/eden/ci-smoke-pod-exec.sh` → `helm-smoke-pod-exec` | Mirrors the existing `ci-smoke.sh` / `ci-smoke-managed-postgres.sh` naming. |
+ 
+@@ -488,9 +488,29 @@
+       credential-helper mount** — the clone it works in has no
+       stored credentials (the helper supplies them on demand and
+       only the init/publisher containers mount it).
+-    - **publisher (executor pods only)** — chart image; performs
+-      the `work/*` push after user code exits (§3.4) and emits
+-      the outcome sentinel. Carries the Forgejo credential.
++    - **reporter/publisher** — chart image; the per-role
++      sentinel container the host reads (`pods/log` by container
++      name). On evaluator pods it is a credential-less
++      **reporter**: waits for the done-marker, reads the outcome
++      file, compacts it (`json.dumps`) into one line, emits the
++      sentinel. On executor pods it is the **publisher**:
++      reporter behavior plus the credentialed `work/*` push
++      (§3.4); only this variant carries the Forgejo credential.
++      A python sentinel-emitter (rather than the wrapper
++      forwarding outcome-file bytes) is load-bearing for both
++      roles: the binding's outcome files are arbitrary JSON
++      documents — pretty-printed or multi-line is legal — and a
++      line-based sentinel needs guaranteed single-line compact
++      output.
++    **No k8s API token in task pods.** The task-pod spec sets
++    `automountServiceAccountToken: false` and runs under a
++    dedicated credential-less ServiceAccount
++    (`<release>-eden-task`, no Role bound; `--pod-service-account`
++    names it) — the RBAC'd SA from Decision 9 is the *host's*,
++    never the task pod's. Without this, every container in the
++    task pod (including user code) would receive a projected
++    API bearer token by k8s default. Asserted in the rendered
++    manifests (§6.1) and on a live Job in the smoke (§6.3).
+     On Compose, the push always ran host-side, so user code
+     never held the Forgejo credential; this split preserves that
+     property on k8s (13b's wrapper-push would have broken it).
+@@ -699,15 +719,27 @@
+      absent → rollback local, `error`; `ls_remote` also fails →
+      rollback local, `error`. **The publisher treats the shared
+      clone as hostile** — user code ran against it first and may
+-     have rewritten `remote.origin.url`, installed hooks, or
+-     edited config to redirect the credentialed push. Defenses,
+-     each unit-tested against a malicious fixture repo: push to
+-     the explicit `--forgejo-url` the host rendered into the pod
+-     spec, never to repo-configured `origin`; supply the
+-     credential helper per-invocation (`-c credential.helper=…`)
+-     scoped to that URL; disable hooks
+-     (`-c core.hooksPath=<empty dir>` + `push --no-verify`);
+-     ignore repo-local config that affects transport. The
++     have rewritten `remote.origin.url`, installed hooks, set
++     `url.*.insteadOf` / `credential.helper`, planted
++     `refs/replace`, grafts, or alternates. The concrete
++     mechanism is a **quarantine fetch into a publisher-owned
++     repo**, not in-place hardening: the publisher runs
++     `git init` in a publisher-private dir (with
++     `GIT_CONFIG_NOSYSTEM=1`, `HOME`/`XDG_CONFIG_HOME` pointed
++     at that private dir, hooks path empty), object-fetches the
++     candidate `commit_sha` from the hostile clone **by local
++     path** (object transfer only — the hostile repo's config,
++     hooks, replace refs, and grafts do not travel; object ids
++     are content-verified by git on transfer), and performs the
++     ancestry validation + `update-ref` + credentialed
++     `push --no-verify` from that pristine context, targeting
++     the explicit `--forgejo-url` rendered into the pod spec
++     (never repo-configured `origin`) with the credential helper
++     supplied per-invocation and URL-scoped. Each defense is
++     unit-tested against a malicious fixture repo (rewritten
++     origin, pre-push hook, `insteadOf` rewrite, replace ref —
++     asserting the hook never runs and the credential never
++     reaches an attacker remote). The
+      indeterminate branch collapses to the executor's chapter-3
+      §3.3 failure status — never silently to success. A remote
+      `work/*` ref leaked by the indeterminate branch (push
+@@ -723,9 +755,10 @@
+    terminal: select the outcome pod per the duplicate-Pod rule
+    (13b §8.10, adopted verbatim — partition by phase, prefer
+    the Succeeded pod, require byte-equal outcomes if two
+-   Succeeded, fail closed otherwise), read the **publisher
+-   container's** log (`pods/log` takes a container name), parse
+-   the **last** sentinel line.
++   Succeeded, fail closed otherwise), read the
++   **reporter/publisher container's** log (`pods/log` takes a
++   container name; the same container name across both roles),
++   parse the **last** sentinel line.
+ 4. **Host:** validate — outcome shape, then `fetch_ref(branch)`
+    plus `is_ancestor(parent, commit_sha)` for every parent against
+    the host's clone (chapter 3 §3.3). Any failure → the role's
+@@ -738,11 +771,16 @@
+ never reclaims a task whose Job is alive (Decision 7).
+ 
+ Container ordering note: `initContainers` guarantee init runs
+-first; `main` and `publisher` are both regular containers and
+-start concurrently — the publisher's done-marker wait is the
++first; `main` and the reporter/publisher are both regular
++containers and start concurrently — the done-marker wait is the
+ ordering mechanism (same shared-emptyDir signaling the DooD wrap
+-gets for free from process order). The Job is terminal only when
+-both containers exit. **Exit-code rule:** every container that
++gets for free from process order). The reporter/publisher's
++internal marker-wait deadline is `activeDeadlineSeconds` minus a
++fixed margin (passed in as `EDEN_OUTCOME_DEADLINE_SECONDS`), so
++it emits its error sentinel and exits *before* k8s kills the pod
++at the Job deadline — a sentinel-less Job-killed-at-deadline is
++then genuinely infrastructure-shaped. The Job is terminal only
++when both containers exit. **Exit-code rule:** every container that
+ can write its outcome channel exits 0 — the wrapper converts a
+ user-command non-zero exit into the outcome/done-marker (it does
+ NOT propagate the user rc, deliberately diverging from the DooD
+@@ -754,54 +792,53 @@
+ 
+ ### 3.5 Evaluator pod-exec deltas
+ 
+-Symmetric, minus the push — so **no publisher container**: init
+-(chart image, credential) fetches `variant.branch` and adds the
+-worktree at `variant.commit_sha` and writes
+-`.eden/eval-task.json`; main (pod-exec image, no credential)
+-runs `EDEN_EVALUATION_COMMAND` via the wrapper, never touches
+-refs, and emits the evaluation outcome sentinel itself as its
+-last stdout line (nothing credentialed has to happen after user
+-code, so the sentinel can live in main; the host reads the
+-**main** container's log for evaluator Jobs). Host-side
+-validation runs `Store.validate_evaluation` against
+-`evaluation_schema`; transport-shaped failures map to
+-`evaluation_error` (chapter 3 §4.4), per-role per the AGENTS.md
+-transport-failure-mapping pitfall — there is no shared
+-"transport failed" status. Job names use `eden-evaluate-…`.
++Symmetric, minus the push: init (chart image, credential)
++fetches `variant.branch` and adds the worktree at
++`variant.commit_sha` and writes `.eden/eval-task.json`; main
++(pod-exec image, no credential) runs `EDEN_EVALUATION_COMMAND`
++via the wrapper, never touches refs, and writes the done-marker;
++the **reporter** container (chart image, **no credential** —
++the push-less sibling of the executor's publisher, Decision 10)
++reads `eval-outcome.json`, compacts it to one line, and emits
++the sentinel. The host reads the reporter/publisher container's
++log uniformly across both roles. Host-side validation runs
++`Store.validate_evaluation` against `evaluation_schema`;
++transport-shaped failures map to `evaluation_error` (chapter 3
++§4.4), per-role per the AGENTS.md transport-failure-mapping
++pitfall — there is no shared "transport failed" status. Job
++names use `eden-evaluate-…`.
+ 
+-### 3.6 Wrapper script + publisher entrypoint
++### 3.6 Wrapper script + reporter/publisher entrypoints
+ 
+ The **wrapper** is one POSIX-sh `wrapper.sh` shipped in a chart
+ ConfigMap (the authoritative copy, mounted at
+ `/etc/eden/wrapper.sh` and used as `command:`, overriding any
+ image entrypoint) and baked into the reference image for
+ non-Helm invocation — the dual-shipping pattern 13b Decision 8
+-chose, same as the credential-helper ConfigMap.
+-Role-parameterized via env
+-(`EDEN_POD_EXEC_ROLE=executor|evaluator`) rather than two
+-near-identical scripts. With publishing moved out (Decision 10),
+-the wrapper's job shrinks to: cd worktree, run the user command,
+-write the done-marker (executor) or emit the outcome sentinel
+-(evaluator) — it needs only `/bin/sh`, trimming the 13b
+-minimum-surface contract (`python3` is no longer required in the
+-*user* image for the executor path; the evaluator wrapper still
+-needs no JSON parsing because it forwards `outcome.json`'s bytes
+-into the sentinel verbatim and the host does the parsing).
++chose, same as the credential-helper ConfigMap. With both
++sentinel emission and publishing moved out (Decision 10), the
++wrapper's job shrinks to: cd worktree, run the user command,
++write the done-marker. It needs only `/bin/sh` and touches no
++JSON, trimming the 13b minimum-surface contract (`python3` is no
++longer required in the *user* image for either role).
+ 
+-The **publisher** (`eden_executor_host.pod_publish`, executor
+-pods only) is real python running in the chart image — it gets
+-`eden_git`'s typed `RefRefused` / `GitTransportError` +
+-`ls_remote` for the §3.4 read-back ladder for free, instead of
+-reimplementing atomicity logic in shell, and it carries the §3.4
+-hostile-clone defenses (explicit URL, per-invocation credential
+-helper, hooks disabled) plus pre-push validation.
++The sentinel side lives in chart-image python: a shared
++`eden_service_common/pod_outcome.py` (marker-wait with the
++`EDEN_OUTCOME_DEADLINE_SECONDS` budget, outcome-file read,
++single-line `json.dumps` compaction, sentinel emission) consumed
++by two entrypoints — the evaluator **reporter** (pod_outcome
++alone, no credential) and the executor **publisher**
++(`eden_executor_host.pod_publish`: pod_outcome plus the §3.4
++quarantine-fetch, pre-push validation, and credentialed push
++with the read-back ladder, via `eden_git`'s typed `RefRefused` /
++`GitTransportError` + `ls_remote` rather than reimplementing
++atomicity logic in shell).
+ 
+ Sentinel-spoofing defense: the host parses only the **last**
+-`EDEN_OUTCOME`-prefixed line of the *sentinel container's* log —
+-for executor Jobs that container is the publisher, which user
+-code cannot write to at all; for evaluator Jobs it is main, where
+-the wrapper emits after the user command has exited, so the last
+-line wins. Per-Job random nonce hardening is a named follow-up.
++`EDEN_OUTCOME`-prefixed line of the *reporter/publisher
++container's* log — a stream user code cannot write to at all, in
++either role. Per-Job random nonce hardening is a named
++follow-up.
+ 
+ ### 3.7 Spec reference binding
+ 
+@@ -911,6 +948,7 @@
+ |---|---|
+ | `reference/services/_common/src/eden_service_common/subprocess_runner.py` | `spawn(..., inherit_env: bool = True)`; `inherit_env=False` builds the child env from the baseline allowlist + supplied `env` only. |
+ | `reference/services/_common/src/eden_service_common/pod_exec.py` (new) | Shared pod-exec machinery (§3.3); lazy `kubernetes` import. |
++| `reference/services/_common/src/eden_service_common/pod_outcome.py` (new) | Shared reporter machinery: marker-wait with deadline budget, outcome-file read, single-line compaction, sentinel emission (§3.6); the evaluator reporter container's entrypoint. |
+ | `reference/services/{ideator,executor,evaluator}/src/.../cli.py` | Repeatable `--*-env-file`; executor + evaluator gain `--mode pod-exec` + the `--pod-*` family with argparse-time required-together validation + `--claim-ttl-seconds`; all three subprocess paths pass `inherit_env=False`; subprocess mode fails loud at host startup when `--experiment-dir` is missing/empty — pod-exec's equivalent check lives in the task-pod wrapper (Decision 3). |
+ | `reference/services/executor/src/eden_executor_host/pod_exec_mode.py` (new) | §3.4 flow. |
+ | `reference/services/executor/src/eden_executor_host/pod_publish.py` (new) | Publisher-container entrypoint: done-marker wait, outcome read, `update-ref` + `push_ref` + read-back ladder, sentinel emission (§3.4 / §3.6). |
+@@ -927,7 +965,7 @@
+ | `templates/{ideator-host-deployment,executor-host-statefulset,evaluator-host-statefulset}.yaml` | Mode conditionals (§3.2/§3.3); explicit-env narrowing; image override resolution. |
+ | `templates/artifacts-pvc.yaml` (new) + `templates/web-ui-statefulset.yaml` | Standalone shared artifacts PVC (`helm.sh/resource-policy: keep`); web-ui drops its artifacts `volumeClaimTemplate` and mounts the shared PVC. |
+ | `templates/task-store-server-deployment.yaml` | ro artifacts mount + `--artifacts-dir` when any role mode ≠ scripted. |
+-| `templates/workers-rbac.yaml` (new) | SA + Role + RoleBinding, gated per Decision 9. |
++| `templates/workers-rbac.yaml` (new) | Host SA + Role + RoleBinding, gated per Decision 9; plus the credential-less task ServiceAccount `<release>-eden-task` (no Role bound) that task pods run under with `automountServiceAccountToken: false` (Decision 10). |
+ | `templates/worker-wrapper-configmap.yaml`, `templates/worker-env-configmaps.yaml`, `templates/pod-template-configmap.yaml` (new) | Wrapper script; chart-managed ideation env file; rendered pod-template JSON. |
+ | `ci-values-subprocess.yaml`, `ci-values-pod-exec.yaml` (new) | Smoke values. |
+ | `README.md` | Modes section; artifacts access-mode requirement; image contract. |
+@@ -1000,10 +1038,18 @@
+ done-marker never appears → deadline → error sentinel;
+ pre-push validation failures (missing commit, non-ancestor
+ parent) → error sentinel with **no remote ref created**; and
+-hostile-clone defenses — fixture repo with rewritten
+-`remote.origin.url` and an installed `pre-push` hook → push
+-still targets the explicit URL, the hook does not run, and the
+-credential never reaches the attacker remote. Plus
++hostile-clone defenses per the §3.4 quarantine-fetch design —
++fixture repo with rewritten `remote.origin.url`, an installed
++`pre-push` hook, an `url.*.insteadOf` rewrite, and a
++`refs/replace` ref → push still targets the explicit URL, the
++hook never runs, the replace ref does not alter ancestry
++validation, and the credential never reaches the attacker
++remote. `pod_outcome` additionally gets: multi-line /
++pretty-printed outcome file → compacted single-line sentinel;
++marker-never-appears → error sentinel emitted before
++`EDEN_OUTCOME_DEADLINE_SECONDS` expires. Manifest-shape
++assertions add `automountServiceAccountToken: false` + the
++credential-less task ServiceAccount on every built Job. Plus
+ `spawn(inherit_env=False)` allowlist behavior and env-file merge
+ precedence.
+ 
+@@ -1032,7 +1078,9 @@
+ end-state trio; ≥3 Jobs with `eden.role=executor` and ≥3 with
+ `eden.role=evaluator` observed during the run; zero such Jobs
+ and zero task pods remaining post-quiescence (TTL slack
+-allowed); ownerReference present on an observed Job; the default
++allowed); ownerReference present on an observed Job; an observed
++Job's pod spec carries `automountServiceAccountToken: false` +
++the credential-less task ServiceAccount (Decision 10); the default
+ scripted install (from the sibling smoke) rendered no RBAC while
+ this one rendered exactly one Role. Budget ~8 minutes
+ (scheduling latency per task; images pre-loaded so pulls are
+@@ -1154,12 +1202,13 @@
+    fixture Dockerfile `ARG`; `ci-smoke-subprocess.sh` +
+    `helm-smoke-subprocess` + `helm-lint` extensions. Existing
+    `ci-smoke.sh` (scripted) must stay green in the same PR.
+-4. **Wave 3 — pod-exec host code.** `pod_exec.py` + executor +
+-   evaluator `pod_exec_mode.py` + `pod_publish.py` (publisher
+-   hardening: hostile-clone defenses, pre-push validation, the
+-   read-back ladder, each with its §6.2 matrix) + CLI flags
+-   (`--pod-*`, `--claim-ttl-seconds`) + unit matrix. No chart
+-   surface yet; unit-tested only.
++4. **Wave 3 — pod-exec host code.** `pod_exec.py` +
++   `pod_outcome.py` + executor + evaluator `pod_exec_mode.py` +
++   `pod_publish.py` (publisher hardening: quarantine fetch,
++   hostile-clone defenses, pre-push validation, the read-back
++   ladder, each with its §6.2 matrix) + CLI flags (`--pod-*`,
++   `--claim-ttl-seconds`) + unit matrix. No chart surface yet;
++   unit-tested only.
+ 5. **Wave 4 — chart pod-exec + smoke.** RBAC + wrapper +
+    pod-template ConfigMaps + StatefulSet conditionals + schema
+    gates; `ci-smoke-pod-exec.sh` + `helm-smoke-pod-exec`.

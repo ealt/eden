@@ -275,8 +275,9 @@ Units and chunking to be named closer to execution — too far ahead to estimate
 Units and chunking to be named closer to execution. Scope:
 
 - [13a](plans/eden-phase-13a-helm-base-chart.md) — Base Helm chart for the reference services — **shipped 2026-06-04** (see [CHANGELOG](../CHANGELOG.md))
-- Executor as a k8s Job (GPU node selection) — 13b.
+- 13b — Executor as a k8s Job (GPU node selection) — **subsumed by 13f** ([#291](https://github.com/ealt/eden/issues/291)): the per-task Job substrate and the GPU scheduling pass-through values land there. Plan superseded in place (see the banner on [eden-phase-13b-executor-k8s-job.md](plans/eden-phase-13b-executor-k8s-job.md)); [#172](https://github.com/ealt/eden/issues/172) closes when 13f's pod-exec wave ships.
 - [13c](plans/eden-phase-13c-managed-postgres.md) — Managed Postgres migration (`postgres.mode={embedded,external}`) — **shipped 2026-06-10** (see [CHANGELOG](../CHANGELOG.md))
 - [13d](plans/eden-phase-13d-blob-backend.md) — S3/GCS blob backend — **shipped 2026-06-09** (see [CHANGELOG](../CHANGELOG.md))
 - [#284](https://github.com/ealt/eden/pull/311) — helm-upgrade-smoke CI job (13a §6.3 deferral) — **shipped 2026-06-10** (see [CHANGELOG](../CHANGELOG.md))
 - Forgejo with auth + per-branch ACLs + native PR review enabled — 13e.
+- [13f](plans/eden-phase-13f-k8s-worker-modes.md) — Kubernetes-native subprocess + pod-exec worker hosts ([#291](https://github.com/ealt/eden/issues/291)) — **planned**.
