@@ -20,6 +20,20 @@ and re-importing.
 
 ## 1. Prerequisites
 
+**AWS shortcut.** On EKS, all of the prerequisites below can be provisioned
+in one idempotent pass by
+[`reference/scripts/setup-aws/setup-aws.sh`](../../reference/scripts/setup-aws/setup-aws.sh)
+(issue [#309](https://github.com/ealt/eden/issues/309)): EKS cluster
+verify-or-create (+ OIDC provider + the `aws-ebs-csi-driver` addon that PVC
+provisioning needs), ECR repo + image build/push, RDS Postgres
+(`postgres.mode=external`) or an operator-supplied DSN, and the S3 bucket +
+IRSA role for `blob.backend=s3`. It writes a ready Helm values file and
+prints the exact `setup-experiment-helm.sh` invocation. Every step is
+create-if-absent, so re-running converges; `--dry-run` prints every
+mutating command instead of executing it. The list below is the
+substrate-agnostic contract the script satisfies — and the manual path for
+non-AWS clusters.
+
 - **A cluster (Kubernetes 1.27+)** — kind, k3s, EKS, GKE, or AKS. The chart is
   Kubernetes-vanilla: no CRDs, no cloud-provider assumptions baked in.
 - **A default `StorageClass`** that provisions `ReadWriteOnce` PVCs. Confirm

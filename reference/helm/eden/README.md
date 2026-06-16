@@ -17,6 +17,17 @@ for the full operator guide; this README is the chart-local quick reference.
 
 ## Prerequisites
 
+**On AWS (EKS):**
+[`reference/scripts/setup-aws/setup-aws.sh`](../../scripts/setup-aws/setup-aws.sh)
+provisions everything below create-if-absent (EKS cluster + OIDC + EBS CSI
+addon, ECR repo + image build/push, RDS Postgres or an existing DSN, S3
+bucket + IRSA role) and emits the exact `setup-experiment-helm.sh`
+invocation, ready to run. Re-running converges; `--dry-run` prints the full
+mutation plan without touching the account (issue
+[#309](https://github.com/ealt/eden/issues/309)). The manual checklist
+below remains the substrate-agnostic fallback (and the path for every other
+cloud / on-prem cluster).
+
 - A Kubernetes cluster (1.27+) with a default `StorageClass` that provisions
   `ReadWriteOnce` PVCs, plus `kubectl` + `helm` (3.x) configured against it.
 - The `eden-reference` image **built and pushed** to a registry the cluster
