@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 from eden_checkpoint import CheckpointInvalid
 from eden_checkpoint.repo_bundle import (
+    _git_env_overrides,
     create_bundle,
     fetch_bundle,
     list_bundle_refs,
@@ -108,3 +109,22 @@ def test_create_bundle_rejects_empty_repo(tmp_path: Path) -> None:
     bundle = tmp_path / "out.bundle"
     with pytest.raises(CheckpointInvalid):
         create_bundle(src, bundle)
+
+
+def test_git_env_overrides_disables_dubious_ownership() -> None:
+    """Every bundle git invocation must carry ``-c safe.directory=*`` (issue #294).
+
+    Regression guard for the dubious-ownership trap: under Compose /
+    Kubernetes the checkpoint repo is a host bind-mount whose top
+    directory is owned by the host/runner uid while the server process
+    runs as ``eden:1000``. Without ``safe.directory`` git refuses to
+    recognize the bare repo and ``git bundle create`` dies with "Need a
+    repository to create a bundle" — invisible on macOS bind-mounts
+    (ownership squashed) and only caught on Linux CI. The flag mirrors
+    :meth:`eden_git.GitRepo._git_argv`; dropping it reintroduces the bug.
+    """
+    overrides = _git_env_overrides()
+    pairs = [
+        f"{overrides[i]} {overrides[i + 1]}" for i in range(0, len(overrides) - 1, 2)
+    ]
+    assert "-c safe.directory=*" in pairs, overrides

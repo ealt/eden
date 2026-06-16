@@ -31,8 +31,25 @@ def _git_env_overrides() -> list[str]:
 
     Pins author identity + disables GPG signing so bundles produced by
     different operators are byte-equal modulo timestamps.
+
+    ``safe.directory=*`` disables git's dubious-ownership check for these
+    invocations, mirroring :meth:`eden_git.GitRepo._git_argv`. It is
+    load-bearing under Compose / Kubernetes (issue #294): the checkpoint
+    export bundles a bare repo at a host bind-mount whose top-level
+    directory is owned by the host/runner uid, while the server process
+    runs as a different uid (``eden:1000``). Without this flag git
+    refuses to recognize the bind-mounted bare repo — ``git bundle
+    create`` then dies with "Need a repository to create a bundle." The
+    failure is invisible on macOS bind-mounts (ownership is squashed to
+    the container uid) and only manifests on Linux CI, which is why it
+    slipped past local validation. These operations only ever touch
+    repos the server itself manages (its own checkpoint clone + scratch
+    dirs under a tmpdir), so disabling the ownership heuristic carries no
+    untrusted-repo risk.
     """
     return [
+        "-c",
+        "safe.directory=*",
         "-c",
         f"user.name={_GIT_AUTHOR_NAME}",
         "-c",
