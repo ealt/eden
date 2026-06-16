@@ -241,6 +241,7 @@ def build_app(
     max_artifact_bytes: int | None = None,
     checkpoint_experiment_config: str | None = None,
     checkpoint_repo_path: Path | str | None = None,
+    checkpoint_repo_refresh: Callable[[], None] | None = None,
     checkpoint_import_credentials_dir: Path | str | None = None,
 ) -> FastAPI:
     """Build the FastAPI app that wraps ``store`` with the §13 auth middleware.
@@ -270,6 +271,13 @@ def build_app(
     ``None``, the route emits an empty placeholder. Test deployments
     that don't have a paired bare repo leave this unset.
 
+    ``checkpoint_repo_refresh`` (issue #294) — callable the export
+    route invokes once per export (post-snapshot, pre-bundle) to sync
+    ``checkpoint_repo_path`` from the deployment's git remote of
+    record. Built by the CLI from ``--forgejo-url`` /
+    ``--credential-helper``; ``None`` keeps the pre-#294 bundle-the-
+    local-repo-as-is posture.
+
     ``checkpoint_import_credentials_dir`` (issue #150) — directory the
     checkpoint-import handler persists freshly-minted worker bearers
     into per ``10-checkpoints.md`` §8 step 4. The reference Compose
@@ -298,6 +306,7 @@ def build_app(
         artifacts_dir=artifacts_dir,
         checkpoint_experiment_config=checkpoint_experiment_config,
         checkpoint_repo_path=checkpoint_repo_path,
+        checkpoint_repo_refresh=checkpoint_repo_refresh,
         checkpoint_import_credentials_dir=checkpoint_import_credentials_dir,
         **make_app_kwargs,
     )

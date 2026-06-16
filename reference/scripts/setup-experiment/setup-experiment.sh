@@ -385,6 +385,7 @@ mkdir -p \
     "${EDEN_EXPERIMENT_DATA_ROOT}/evaluator-repo" \
     "${EDEN_EXPERIMENT_DATA_ROOT}/web-ui-repo" \
     "${EDEN_EXPERIMENT_DATA_ROOT}/ideator-repo" \
+    "${EDEN_EXPERIMENT_DATA_ROOT}/task-store-repo" \
     "${EDEN_EXPERIMENT_DATA_ROOT}/checkpoints" \
     "${EDEN_EXPERIMENT_DATA_ROOT}/credentials/orchestrator" \
     "${EDEN_EXPERIMENT_DATA_ROOT}/credentials/ideator" \
@@ -422,6 +423,7 @@ if ! chmod 0777 \
     "${EDEN_EXPERIMENT_DATA_ROOT}/evaluator-repo" \
     "${EDEN_EXPERIMENT_DATA_ROOT}/web-ui-repo" \
     "${EDEN_EXPERIMENT_DATA_ROOT}/ideator-repo" \
+    "${EDEN_EXPERIMENT_DATA_ROOT}/task-store-repo" \
     "${EDEN_EXPERIMENT_DATA_ROOT}/checkpoints" \
     "${EDEN_EXPERIMENT_DATA_ROOT}/credentials" \
     "${EDEN_EXPERIMENT_DATA_ROOT}/credentials/orchestrator" \

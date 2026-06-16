@@ -21,6 +21,7 @@ Coverage matches the wave-3 plan:
 from __future__ import annotations
 
 import io
+import shutil
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -639,3 +640,160 @@ def test_event_counter_reseeded_after_import(
 # Hint for ruff that `Any` is intentionally imported for the test
 # fixture annotation surface; silences F401 in case ruff reorders.
 _: Any = None
+
+
+# ----------------------------------------------------------------------
+# repo_bundle_provider (issue #294)
+# ----------------------------------------------------------------------
+
+_git_available = shutil.which("git") is not None
+
+
+def _read_archive_member(archive: io.BytesIO, suffix: str) -> bytes:
+    """Extract the first member whose name ends with ``suffix``."""
+    import tarfile
+
+    archive.seek(0)
+    with tarfile.open(fileobj=archive) as tf:
+        for member in tf.getmembers():
+            if member.name.endswith(suffix):
+                extracted = tf.extractfile(member)
+                assert extracted is not None
+                return extracted.read()
+    raise AssertionError(f"no archive member ends with {suffix!r}")
+
+
+@pytest.mark.skipif(not _git_available, reason="git not installed")
+def test_repo_bundle_provider_supersedes_bytes(tmp_path: Path) -> None:
+    """When a provider is set, its return value wins over ``repo_bundle``.
+
+    The provider returns a real (parseable) bundle because non-empty
+    provider output is self-validated against the snapshot.
+    """
+    store = InMemoryStore(experiment_id=_eid("exp-bundleprov"))
+    bundle_bytes, _ = _bundle_of_fresh_repo(tmp_path)
+    archive = io.BytesIO()
+    store.export_checkpoint(
+        archive,
+        repo_bundle=b"static-bytes-must-lose",
+        repo_bundle_provider=lambda: bundle_bytes,
+    )
+    assert _read_archive_member(archive, "repo.bundle") == bundle_bytes
+
+
+@pytest.mark.skipif(not _git_available, reason="git not installed")
+def test_repo_bundle_provider_runs_after_snapshot(tmp_path: Path) -> None:
+    """The provider is invoked AFTER the store snapshot (issue #294).
+
+    Roles publish git refs before committing the store row, so
+    snapshot-then-bundle yields a bundle that is a superset of what the
+    snapshot references (chapter 10 §12 permits supersets); the reverse
+    order can produce an import-rejecting archive. The provider here
+    mutates the store; the mutation must NOT appear in the exported
+    snapshot, and the provider's bundle bytes must. (The post-snapshot
+    mutation also proves the §12 self-validation runs against the
+    frozen snapshot, not a re-read: the late idea's fake parent commit
+    would fail reachability if the snapshot were re-read.)
+    """
+    store = InMemoryStore(experiment_id=_eid("exp-bundleorder"))
+    bundle_bytes, _ = _bundle_of_fresh_repo(tmp_path)
+
+    def _mutating_provider() -> bytes:
+        _ready_idea(store, "idea-after-snapshot")
+        return bundle_bytes
+
+    archive = io.BytesIO()
+    manifest = store.export_checkpoint(
+        archive, repo_bundle_provider=_mutating_provider
+    )
+    assert manifest.counts.ideas == 0
+    assert b"idea-after-snapshot" not in _read_archive_member(
+        archive, "ideas.jsonl"
+    )
+    assert _read_archive_member(archive, "repo.bundle") == bundle_bytes
+
+
+def test_repo_bundle_provider_failure_writes_nothing() -> None:
+    """A provider raise aborts the export before any archive bytes land."""
+    store = InMemoryStore(experiment_id=_eid("exp-bundleboom"))
+
+    def _boom() -> bytes:
+        raise RuntimeError("remote unreachable")
+
+    archive = io.BytesIO()
+    with pytest.raises(RuntimeError, match="remote unreachable"):
+        store.export_checkpoint(archive, repo_bundle_provider=_boom)
+    assert archive.getvalue() == b""
+
+
+def _bundle_of_fresh_repo(tmp_path: Path) -> tuple[bytes, str]:
+    """Real one-commit repo → (`git bundle --all` bytes, commit sha)."""
+    import subprocess
+
+    from eden_checkpoint.repo_bundle import create_bundle
+
+    repo = tmp_path / "src-repo"
+    subprocess.run(["git", "init", str(repo)], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "-c", "user.email=t@t.invalid",
+         "-c", "user.name=t", "commit", "--allow-empty", "-m", "seed"],
+        check=True,
+        capture_output=True,
+    )
+    sha = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    bundle_path = tmp_path / "src.bundle"
+    create_bundle(repo, bundle_path)
+    return bundle_path.read_bytes(), sha
+
+
+@pytest.mark.skipif(not _git_available, reason="git not installed")
+def test_repo_bundle_provider_bundle_must_cover_snapshot(tmp_path: Path) -> None:
+    """A non-empty provider bundle missing snapshot refs fails the export.
+
+    Export-side mirror of the importer's chapter 10 §12 check (issue
+    #294 codex round 0): the snapshot's variant references a branch the
+    bundle does not carry, so the export raises ``CheckpointInvalid``
+    before writing any archive bytes — at export time, while the source
+    still exists to retry against — instead of producing an archive the
+    receiver would reject.
+    """
+    store = InMemoryStore(experiment_id=_eid("exp-bundlecover"))
+    _populate_full_experiment(store)  # variant carries branch work/…
+    bundle_bytes, _ = _bundle_of_fresh_repo(tmp_path)
+
+    archive = io.BytesIO()
+    with pytest.raises(CheckpointInvalid, match="cross-reference"):
+        store.export_checkpoint(
+            archive, repo_bundle_provider=lambda: bundle_bytes
+        )
+    assert archive.getvalue() == b""
+
+
+@pytest.mark.skipif(not _git_available, reason="git not installed")
+def test_repo_bundle_provider_covering_bundle_passes(tmp_path: Path) -> None:
+    """A provider bundle that covers the snapshot's references exports fine."""
+    store = InMemoryStore(experiment_id=_eid("exp-bundlecover-ok"))
+    bundle_bytes, sha = _bundle_of_fresh_repo(tmp_path)
+    store.create_idea(
+        Idea(
+            idea_id="idea-real-parent",
+            experiment_id=store.experiment_id,
+            slug="feat-real-parent",
+            priority=1.0,
+            parent_commits=[sha],
+            artifacts_uri="file:///artifacts/idea-real-parent",
+            state="drafting",
+            created_at="2026-04-23T00:00:00.000Z",
+        )
+    )
+    archive = io.BytesIO()
+    manifest = store.export_checkpoint(
+        archive, repo_bundle_provider=lambda: bundle_bytes
+    )
+    assert manifest.counts.ideas == 1
+    assert _read_archive_member(archive, "repo.bundle") == bundle_bytes

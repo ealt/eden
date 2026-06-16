@@ -25,6 +25,7 @@ Error handling:
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 
 from eden_checkpoint import CheckpointError
@@ -73,6 +74,10 @@ PROBLEM_JSON = "application/problem+json"
 DEFAULT_MAX_ARTIFACT_BYTES = 100 * 1024 * 1024
 
 
+# slop-allow: FastAPI app factory whose length is the operator-facing
+# param docstring; the body is linear param→RouterDeps wiring + router
+# registration with no branching to extract (same category as the
+# control-plane make_app allowance).
 def make_app(
     store: Store,
     *,
@@ -84,6 +89,7 @@ def make_app(
     max_artifact_bytes: int = DEFAULT_MAX_ARTIFACT_BYTES,
     checkpoint_experiment_config: str | None = None,
     checkpoint_repo_path: Path | str | None = None,
+    checkpoint_repo_refresh: Callable[[], None] | None = None,
     checkpoint_import_credentials_dir: Path | str | None = None,
 ) -> FastAPI:
     """Build a FastAPI app that exposes ``store`` over the wire binding.
@@ -122,6 +128,12 @@ def make_app(
     server passes a server-private ``FileArtifactBackend`` — NOT
     ``artifacts_dir`` (see ``_resolve_artifact_backend``).
     ``max_artifact_bytes`` is the §16.1 deposit cap.
+
+    ``checkpoint_repo_refresh`` (issue #294): invoked by the export
+    route once per export (post-snapshot, pre-bundle) to sync
+    ``checkpoint_repo_path`` from the deployment's git remote of
+    record; a raise maps to 503
+    ``eden://reference-error/checkpoint-repo-unavailable``.
     """
     app = FastAPI(
         title=f"EDEN task store — {store.experiment_id}",
@@ -139,6 +151,7 @@ def make_app(
         checkpoint_repo_root=(
             Path(checkpoint_repo_path) if checkpoint_repo_path is not None else None
         ),
+        checkpoint_repo_refresh=checkpoint_repo_refresh,
         checkpoint_config_text=checkpoint_experiment_config or "",
         credentials_dir_root=(
             Path(checkpoint_import_credentials_dir)

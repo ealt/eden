@@ -194,6 +194,23 @@ services:
       - ${EDEN_ADMIN_TOKEN:?EDEN_ADMIN_TOKEN must be set (run setup-experiment)}
       - --artifacts-dir
       - /var/lib/eden/artifacts
+      # Issue #294: the checkpoint export's repo.bundle source. The
+      # task-store-server keeps its own bare clone of the Forgejo
+      # repo of record at --repo-path and syncs it from --forgejo-url
+      # per export (clone on first export, fetch --prune thereafter).
+      # The sync is LAZY — nothing touches Forgejo at startup, which
+      # keeps the checkpoint-import receiver posture working (the
+      # smoke brings up only postgres + task-store-server, no
+      # forgejo; see smoke-checkpoint.sh phase 4). NO depends_on on
+      # forgejo for the same reason. As a side benefit the synced
+      # clone deepens the §3.3 tree-identity resolver that --repo-path
+      # also wires.
+      - --repo-path
+      - /var/lib/eden/repo
+      - --forgejo-url
+      - ${FORGEJO_REMOTE_URL:?}
+      - --credential-helper
+      - /etc/eden/credential-helper.sh
       - --host
       - 0.0.0.0
       - --port
@@ -211,6 +228,11 @@ services:
       # durability migration); the task-store-server gets ro
       # because it only reads.
       - ${EDEN_EXPERIMENT_DATA_ROOT:?}/artifacts:/var/lib/eden/artifacts:ro
+      # Issue #294: the checkpoint repo clone (rw — the export's
+      # clone/fetch writes here) + the Forgejo HTTP credential
+      # helper, mirroring the orchestrator's mounts.
+      - ${EDEN_EXPERIMENT_DATA_ROOT:?}/task-store-repo:/var/lib/eden/repo
+      - ${EDEN_FORGEJO_CREDS_DIR_HOST:?}/credential-helper.sh:/etc/eden/credential-helper.sh:ro
       # Issue #109: per-service log bind-mount (writable). Survives
       # `compose down -v`. setup-experiment.sh creates the host-side
       # dir tree.

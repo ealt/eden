@@ -55,6 +55,7 @@ and [`spec/v0/01-concepts.md`](../../spec/v0/01-concepts.md) §13.
 | `<DATA_ROOT>/executor-repo/`                    | `executor-host`           | per-host bare clone of the Forgejo repo                |
 | `<DATA_ROOT>/evaluator-repo/`                   | `evaluator-host` (subprocess overlay) | per-host bare clone for subprocess evaluator |
 | `<DATA_ROOT>/web-ui-repo/`                      | `web-ui`                  | per-host bare clone for the web-ui executor module   |
+| `<DATA_ROOT>/task-store-repo/`                  | `task-store-server`       | bare clone synced from Forgejo per checkpoint export (issue #294) |
 | `<DATA_ROOT>/artifacts/`                        | `web-ui`, `ideator-host`, `executor-host` (ro) | Artifact store / idea markdown   |
 | `<DATA_ROOT>/credentials/{orchestrator,ideator,executor,evaluator,web-ui}/` | per-host services | Persisted per-worker registration tokens             |
 

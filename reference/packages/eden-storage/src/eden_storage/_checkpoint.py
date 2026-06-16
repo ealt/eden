@@ -44,7 +44,7 @@ directory; the storage layer itself is substrate-agnostic).
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -263,6 +263,7 @@ def export_checkpoint(
     *,
     experiment_config: str | bytes = "",
     repo_bundle: bytes = b"",
+    repo_bundle_provider: Callable[[], bytes] | None = None,
     exporter_info: ExporterInfo | None = None,
 ) -> CheckpointManifest:
     """Write a portable-checkpoint archive of ``store``'s state to ``stream``.
@@ -274,6 +275,24 @@ def export_checkpoint(
     memory and serialized into the archive; ``experiment_config`` and
     ``repo_bundle`` are caller-supplied substrate-external pieces.
 
+    ``repo_bundle_provider``, when set, supersedes ``repo_bundle``: it
+    is invoked exactly once, AFTER the store snapshot is taken and
+    outside the snapshot transaction — a slow fetch from the git
+    remote never holds the store's write lock, and a raise propagates
+    before any archive bytes are written (issue #294). The ordering is
+    load-bearing for §6 consistency: roles publish git refs to the
+    remote of record BEFORE committing the corresponding store row
+    (chapter 6 §3 step 2 → step 3), so a bundle captured at-or-after
+    the snapshot instant is a superset of every commit the snapshot
+    references (§12 permits supersets), while the reverse order can
+    miss commits referenced by rows committed in between. Against the
+    residual race (a ref deleted/force-moved between snapshot and
+    fetch), non-empty provider bundles are self-validated with the
+    importer's own §12 check — see
+    :func:`_validate_bundle_covers_snapshot`. ``exported_at`` is
+    stamped at the snapshot instant (the §10 recovery-probe anchor),
+    not after the bundle fetch.
+
     Returns the :class:`CheckpointManifest` written into the archive so
     callers can inspect the resulting ``exported_at`` (for the §10
     recovery-probe anchor) or per-component counts.
@@ -283,12 +302,20 @@ def export_checkpoint(
     """
     with store._atomic_operation():
         snapshot = _snapshot_store(store)
+        # §5: exported_at is the instant the snapshot was taken (the
+        # §10 recovery-probe anchor) — stamped here, not after the
+        # potentially-slow provider fetch below.
+        exported_at = _utc_now_iso()
+
+    if repo_bundle_provider is not None:
+        repo_bundle = repo_bundle_provider()
+        if repo_bundle:
+            _validate_bundle_covers_snapshot(snapshot, repo_bundle)
 
     exporter = exporter_info or ExporterInfo(
         implementation=_REFERENCE_IMPL_TAG,
         atomicity_mechanism=_REFERENCE_ATOMICITY,
     )
-    exported_at = _utc_now_iso()
     counts = ManifestCounts(
         tasks=len(snapshot.tasks),
         ideas=len(snapshot.ideas),
@@ -326,6 +353,35 @@ def export_checkpoint(
         writer.write_manifest(manifest)
 
     return manifest
+
+
+def _validate_bundle_covers_snapshot(
+    snapshot: _Snapshot, repo_bundle: bytes
+) -> None:
+    """Run the importer's §12 cross-reference check against ``snapshot``.
+
+    Export-side mirror of :func:`_validate_bundle_cross_references`
+    (issue #294): the provider captures the bundle at a slightly later
+    instant than the store snapshot, so a ref deleted or force-moved in
+    that window could leave the bundle missing something the snapshot
+    references. Mirroring the importer's exact check here can never
+    reject an archive that would have imported — it only moves the
+    failure to export time, while the source experiment still exists to
+    retry against.
+
+    Raises:
+        CheckpointInvalid: when the bundle does not satisfy the
+            snapshot's git references.
+    """
+    with TemporaryDirectory(prefix="eden-export-bundle-check-") as td:
+        bundle_path = Path(td) / "repo.bundle"
+        bundle_path.write_bytes(repo_bundle)
+        _validate_bundle_cross_references(
+            bundle_path=bundle_path,
+            extract_root=Path(td),
+            variants=[_validate_variant(row) for row in snapshot.variants],
+            ideas=[_validate_idea(row) for row in snapshot.ideas],
+        )
 
 
 @dataclass(frozen=True)

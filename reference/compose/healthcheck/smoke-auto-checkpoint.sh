@@ -18,14 +18,17 @@ set -euo pipefail
 #   3. Assert the host checkpoints dir carries:
 #        - >= 1 periodic <safe_exp>-<TS>.tar archive,
 #        - the periodic count never exceeds retention_count,
-#        - each periodic archive parses as tar and carries manifest.json,
+#        - each periodic archive parses as tar, carries manifest.json,
+#          a populated events.jsonl, AND a non-empty repo.bundle,
 #        - exactly 1 terminal <safe_exp>-terminated-<TS>.tar archive.
 #
-# The smoke asserts STRUCTURAL validity, NOT repo-bundle completeness:
-# the compose task-store-server carries no --repo-path today, so the
-# git bundle inside the archive is empty (inherited 12b gap, tracked as
-# a follow-up; see the CHANGELOG entry). Wire state round-trips; git
-# history does not yet under Compose.
+# The non-empty repo.bundle assertion is the issue #294 regression
+# guard: the compose task-store-server passes --repo-path +
+# --forgejo-url, so every export syncs a bare clone from Forgejo and
+# bundles it. Deep bundle validation (git bundle verify, ref-set
+# checks) lives in smoke-checkpoint.sh, which also round-trips the
+# archive through an import; this smoke keeps the per-archive check
+# cheap because it inspects every archive in the retention ring.
 #
 # The terminal assertion is gated on a REAL terminated state, NOT on
 # orchestrator exit (a quiescent-but-running exit must produce no
@@ -238,12 +241,12 @@ test "${#terminal[@]}" -eq 1 || {
     exit 1
 }
 
-# Each archive parses as tar and carries manifest.json (structural
-# validity; NOT repo-bundle completeness — inherited 12b gap), AND that
-# the wire-state JSONL is actually POPULATED (per plan §3.4): a structurally
-# valid archive with an empty events.jsonl would pass the manifest check but
-# carry no recoverable state. The git bundle is allowed to be empty (the
-# inherited 12b gap, #294); the wire state is not.
+# Each archive parses as tar and carries manifest.json, AND the
+# wire-state JSONL is actually POPULATED (per plan §3.4): a structurally
+# valid archive with an empty events.jsonl would pass the manifest check
+# but carry no recoverable state. The repo.bundle must be non-empty too
+# (issue #294): a zero-byte bundle means the export lost the git
+# substrate and the archive is non-resumable per chapter 10 §6.
 for f in "${periodic[@]}" "${terminal[@]}"; do
     tar -tf "$f" >/dev/null || {
         echo "archive does not parse as tar: $f" >&2
@@ -268,6 +271,18 @@ for f in "${periodic[@]}" "${terminal[@]}"; do
     events_bytes="$(tar -xOf "$f" "$events_member" | wc -c | tr -d '[:space:]')"
     test "$events_bytes" -gt 0 || {
         echo "archive carries an EMPTY events.jsonl (no wire state): $f" >&2
+        exit 1
+    }
+    # Issue #294: the git bundle must carry the Forgejo repo of record.
+    bundle_member="$(tar -tf "$f" | grep -E 'repo\.bundle$' | head -1 || true)"
+    test -n "$bundle_member" || {
+        echo "archive missing repo.bundle: $f" >&2
+        tar -tf "$f" >&2
+        exit 1
+    }
+    bundle_bytes="$(tar -xOf "$f" "$bundle_member" | wc -c | tr -d '[:space:]')"
+    test "$bundle_bytes" -gt 0 || {
+        echo "archive carries an EMPTY repo.bundle (issue #294 regression): $f" >&2
         exit 1
     }
 done

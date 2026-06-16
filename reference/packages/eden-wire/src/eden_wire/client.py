@@ -1128,6 +1128,7 @@ class StoreClient:
         *,
         experiment_config: str | bytes = "",  # noqa: ARG002 — server-side composes its own
         repo_bundle: bytes = b"",  # noqa: ARG002
+        repo_bundle_provider: Any | None = None,  # noqa: ARG002
         exporter_info: Any | None = None,  # noqa: ARG002
     ) -> Any:
         """Download a portable-checkpoint archive to ``stream``.
@@ -1139,11 +1140,11 @@ class StoreClient:
         return signature so callers don't branch by transport).
 
         The substrate-external parameters (``experiment_config``,
-        ``repo_bundle``, ``exporter_info``) are accepted for Store-
-        Protocol signature parity but are NOT forwarded — the server
-        composes those from its own substrates. Wave-4 callers that
-        want to customize them should use the in-process Store
-        directly.
+        ``repo_bundle``, ``repo_bundle_provider``, ``exporter_info``)
+        are accepted for Store-Protocol signature parity but are NOT
+        forwarded — the server composes those from its own substrates.
+        Wave-4 callers that want to customize them should use the
+        in-process Store directly.
         """
         from eden_checkpoint import (  # local import — avoid cyclical at module-load
             CheckpointReader,

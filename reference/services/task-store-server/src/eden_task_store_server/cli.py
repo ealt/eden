@@ -11,6 +11,7 @@ import os
 import signal
 import sys
 import threading
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -93,7 +94,39 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "the bare repo via setup-experiment or external tooling; "
             "the executor's pre-submit `_is_no_op_variant` check is "
             "the canonical enforcement point and runs against the "
-            "executor's own controlled clone."
+            "executor's own controlled clone. The checkpoint export "
+            "additionally bundles this repo into every archive's "
+            "repo.bundle (chapter 10 §3); pair with --forgejo-url so "
+            "the bundle reflects the remote of record (issue #294)."
+        ),
+    )
+    parser.add_argument(
+        "--forgejo-url",
+        default=None,
+        help=(
+            "Optional HTTP(S) URL of the central git remote (the "
+            "deployment's repo of record; issue #294). Requires "
+            "--repo-path. When set, the checkpoint export route syncs "
+            "--repo-path from this remote (clone --bare on first "
+            "export, fetch --prune thereafter) immediately before "
+            "bundling, so every archive's repo.bundle reflects the "
+            "remote-of-record state at export time. The sync is lazy — "
+            "nothing is fetched at startup, so the server comes up "
+            "fine on a deployment whose git remote isn't running "
+            "(e.g. a checkpoint-import receiver); only exports "
+            "require the remote to be reachable (a failed sync maps "
+            "to 503 eden://reference-error/checkpoint-repo-"
+            "unavailable). The §3.3 tree resolver stays I/O-free; it "
+            "simply benefits from the synced clone."
+        ),
+    )
+    parser.add_argument(
+        "--credential-helper",
+        default=None,
+        help=(
+            "Optional path to a git credential-helper script used to "
+            "provide HTTP Basic auth to --forgejo-url (same contract "
+            "as the orchestrator's flag; Phase 10d follow-up B §D.3)."
         ),
     )
     parser.add_argument(
@@ -343,6 +376,43 @@ def _resolve_artifact_backend(args: argparse.Namespace, log: Any) -> Any:
     return backend
 
 
+def _build_checkpoint_repo_refresh(
+    args: argparse.Namespace,
+) -> Callable[[], None] | None:
+    """Build the export route's repo-sync callable from argv (issue #294).
+
+    Returns ``None`` when no ``--forgejo-url`` is configured (the local
+    ``--repo-path``, if any, is bundled as-is — the pre-#294 posture).
+    Fails fast with a clear operator message when ``--forgejo-url`` is
+    set without ``--repo-path`` (there is nowhere to sync into).
+
+    The callable is deliberately lazy: it clones ``--repo-path`` from
+    the remote on first use and ``fetch --prune``es thereafter, so
+    server startup never touches the remote (a checkpoint-import
+    receiver runs without its git remote up; see the flag help).
+    """
+    if not args.forgejo_url:
+        return None
+    if not args.repo_path:
+        raise SystemExit(
+            "--forgejo-url requires --repo-path: the checkpoint export "
+            "syncs the remote into the local bare repo at --repo-path "
+            "before bundling (issue #294)."
+        )
+    from eden_git import ensure_local_clone
+
+    url: str = args.forgejo_url
+    repo_path = Path(args.repo_path)
+    credential_helper: str | None = args.credential_helper
+
+    def _refresh() -> None:
+        ensure_local_clone(
+            url=url, path=repo_path, credential_helper=credential_helper
+        )
+
+    return _refresh
+
+
 def main(argv: list[str] | None = None) -> int:
     """Entry point for ``python -m eden_task_store_server``."""
     args = parse_args(argv)
@@ -352,6 +422,7 @@ def main(argv: list[str] | None = None) -> int:
         level=parse_log_level(args.log_level),
     )
     log = get_logger(__name__)
+    checkpoint_repo_refresh = _build_checkpoint_repo_refresh(args)
     config = load_experiment_config(args.experiment_config)
     store_url = _resolve_store_url(args, log)
     store = build_store(
@@ -398,6 +469,7 @@ def main(argv: list[str] | None = None) -> int:
             max_artifact_bytes=args.max_artifact_bytes,
             checkpoint_experiment_config=experiment_config_text,
             checkpoint_repo_path=args.repo_path,
+            checkpoint_repo_refresh=checkpoint_repo_refresh,
             checkpoint_import_credentials_dir=credentials_dir,
         )
         uv_config = uvicorn.Config(

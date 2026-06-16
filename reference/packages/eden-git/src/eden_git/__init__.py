@@ -21,7 +21,7 @@ from .integrator import (
     NotReadyForIntegration,
     ReachabilityViolation,
 )
-from .repo import GitRepo, Identity, TreeEntry, WorktreeInfo
+from .repo import GitRepo, Identity, TreeEntry, WorktreeInfo, ensure_local_clone
 
 __all__ = [
     "AtomicityViolation",
@@ -39,4 +39,5 @@ __all__ = [
     "RefRefused",
     "TreeEntry",
     "WorktreeInfo",
+    "ensure_local_clone",
 ]

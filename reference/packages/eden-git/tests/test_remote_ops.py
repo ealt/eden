@@ -29,6 +29,7 @@ from eden_git import (
     Identity,
     RefRefused,
     TreeEntry,
+    ensure_local_clone,
 )
 
 TEST_AUTHOR = Identity(name="EDEN Test", email="test@eden.example")
@@ -400,3 +401,48 @@ def test_credential_helper_provides_basic_auth(
     # trip this assertion. The real "401" we care about is a status
     # token surrounded by non-digits.
     assert not re.search(r"\b401\b", auth_stderr), auth_stderr
+
+
+# ------------------------------------------------- ensure_local_clone
+
+
+def test_ensure_local_clone_clones_when_absent(tmp_path: Path) -> None:
+    remote, seed = _seeded_bare(tmp_path)
+    repo = ensure_local_clone(
+        url=f"file://{remote.path}",
+        path=tmp_path / "clone.git",
+    )
+    assert repo.is_bare()
+    assert repo.resolve_ref("refs/heads/main") == seed
+
+
+def test_ensure_local_clone_fetches_when_present(tmp_path: Path) -> None:
+    """A second call against an existing clone picks up new remote refs."""
+    remote, seed = _seeded_bare(tmp_path)
+    url = f"file://{remote.path}"
+    dest = tmp_path / "clone.git"
+    ensure_local_clone(url=url, path=dest)
+    remote.create_ref("refs/heads/variant/post-clone", seed)
+    repo = ensure_local_clone(url=url, path=dest)
+    assert repo.resolve_ref("refs/heads/variant/post-clone") == seed
+
+
+def test_ensure_local_clone_prunes_deleted_remote_refs(tmp_path: Path) -> None:
+    remote, seed = _seeded_bare(tmp_path)
+    remote.create_ref("refs/heads/work/doomed", seed)
+    url = f"file://{remote.path}"
+    dest = tmp_path / "clone.git"
+    ensure_local_clone(url=url, path=dest)
+    remote.delete_ref("refs/heads/work/doomed")
+    repo = ensure_local_clone(url=url, path=dest)
+    assert repo.resolve_ref("refs/heads/work/doomed") is None
+
+
+def test_ensure_local_clone_unreachable_raises_transport_error(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(GitTransportError):
+        ensure_local_clone(
+            url="http://127.0.0.1:1/eden/missing.git",
+            path=tmp_path / "clone.git",
+        )

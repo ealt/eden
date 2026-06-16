@@ -18,6 +18,7 @@ cross-router state drift, and it is NOT exported through
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -46,6 +47,15 @@ class RouterDeps:
     subscribe_poll_interval: float
     artifact_root: Path | None
     checkpoint_repo_root: Path | None
+    # Issue #294: deployment-supplied callable that syncs
+    # ``checkpoint_repo_root`` from the deployment's git remote of
+    # record (Compose: clone-or-fetch from Forgejo). Invoked by the
+    # export route once per export, after the store snapshot, before
+    # bundling. ``None`` means the local repo (when set) is already
+    # authoritative — the pre-#294 posture for deployments without a
+    # central remote. A raise maps to 503
+    # ``eden://reference-error/checkpoint-repo-unavailable``.
+    checkpoint_repo_refresh: Callable[[], None] | None
     checkpoint_config_text: str
     credentials_dir_root: Path | None
     # Issue #166: the blob backend behind the §16 deposit / fetch

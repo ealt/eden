@@ -39,7 +39,7 @@ enough. Two reference backends satisfy it — ``InMemoryStore`` and
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, BinaryIO, Protocol
@@ -578,6 +578,7 @@ class Store(Protocol):
         *,
         experiment_config: str | bytes = "",
         repo_bundle: bytes = b"",
+        repo_bundle_provider: Callable[[], bytes] | None = None,
         exporter_info: ExporterInfo | None = None,
     ) -> CheckpointManifest:
         """Write a portable-checkpoint archive of the store's state to ``stream``.
@@ -591,7 +592,12 @@ class Store(Protocol):
         ``experiment_config`` and ``repo_bundle`` are caller-supplied
         substrate-external pieces; the format carries them alongside
         the Store-managed JSONL data so a receiver has everything it
-        needs to re-materialize the experiment.
+        needs to re-materialize the experiment. ``repo_bundle_provider``
+        supersedes ``repo_bundle`` when set: it is invoked exactly once,
+        AFTER the store snapshot is taken, so the bundle is a superset
+        of every commit the snapshot references (issue #294; see
+        :func:`eden_storage._checkpoint.export_checkpoint` for the
+        ordering rationale).
         """
         ...
 
