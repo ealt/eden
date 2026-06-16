@@ -279,5 +279,6 @@ Units and chunking to be named closer to execution. Scope:
 - [13c](plans/eden-phase-13c-managed-postgres.md) — Managed Postgres migration (`postgres.mode={embedded,external}`) — **shipped 2026-06-10** (see [CHANGELOG](../CHANGELOG.md))
 - [13d](plans/eden-phase-13d-blob-backend.md) — S3/GCS blob backend — **shipped 2026-06-09** (see [CHANGELOG](../CHANGELOG.md))
 - [#284](https://github.com/ealt/eden/pull/311) — helm-upgrade-smoke CI job (13a §6.3 deferral) — **shipped 2026-06-10** (see [CHANGELOG](../CHANGELOG.md))
+- [#309](https://github.com/ealt/eden/pull/317) — `setup-aws.sh`: idempotent AWS provisioning upstream of `setup-experiment-helm.sh` (EKS / ECR / RDS / S3+IRSA) for the AWS MVP — **shipped 2026-06-14** (see [CHANGELOG](../CHANGELOG.md))
 - Forgejo with auth + per-branch ACLs + native PR review enabled — 13e.
 - [13f](plans/eden-phase-13f-k8s-worker-modes.md) — Kubernetes-native subprocess + pod-exec worker hosts ([#291](https://github.com/ealt/eden/issues/291)) — **planned**.
