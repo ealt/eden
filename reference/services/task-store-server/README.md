@@ -45,7 +45,7 @@ fine without its git remote up. A failed sync fails the export with 503
 
 ## Auth
 
-`--shared-token <T>` enables the reference-only bearer-token middleware from [`spec/v0/07-wire-protocol.md`](../../../spec/v0/07-wire-protocol.md) §12. Without it, the server accepts anonymous requests.
+`--admin-token <T>` enables the normative §13 auth middleware from [`spec/v0/07-wire-protocol.md`](../../../spec/v0/07-wire-protocol.md): every `/v0/` request must carry `Authorization: Bearer <principal>:<secret>` (the literal `admin` principal matches this token; worker bearers verify against the Store). Without it, the server accepts anonymous requests (test / in-process posture only). The pre-12a-1 `--shared-token` scheme is retired.
 
 ## Shutdown
 

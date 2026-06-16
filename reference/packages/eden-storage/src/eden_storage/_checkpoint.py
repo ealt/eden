@@ -276,31 +276,22 @@ def export_checkpoint(
     ``repo_bundle`` are caller-supplied substrate-external pieces.
 
     ``repo_bundle_provider``, when set, supersedes ``repo_bundle``: it
-    is invoked exactly once, AFTER the store snapshot is taken (issue
-    #294). The ordering is load-bearing for §6 consistency: roles
-    publish git refs to the remote of record BEFORE committing the
-    corresponding store row (chapter 6 §3 step 2 → step 3), so a
-    bundle captured at-or-after the snapshot instant is a superset of
-    every commit the snapshot references — and a superset bundle is
-    explicitly permitted by §12. A bundle captured BEFORE the snapshot
-    could miss commits referenced by rows committed in between, which
-    the receiver's §12 cross-reference validation would reject. The
-    provider runs outside the snapshot transaction so a slow fetch
-    from the git remote never holds the store's write lock; a raise
-    propagates to the caller before any archive bytes are written.
-
-    Because the bundle is captured at a (slightly) later instant than
-    the snapshot, a ref deleted or force-moved in the window between
-    the two could still leave the bundle missing something the
-    snapshot references. Provider-produced non-empty bundles are
-    therefore self-validated against the frozen snapshot with the SAME
-    chapter 10 §12 cross-reference check the importer runs — an export
-    that would be rejected at import time raises
-    :class:`~eden_checkpoint.CheckpointInvalid` here instead, while
-    the source experiment still exists to retry against. The
-    ``exported_at`` manifest timestamp is stamped at the snapshot
-    instant (it is the §10 recovery-probe anchor), not after the
-    bundle fetch.
+    is invoked exactly once, AFTER the store snapshot is taken and
+    outside the snapshot transaction — a slow fetch from the git
+    remote never holds the store's write lock, and a raise propagates
+    before any archive bytes are written (issue #294). The ordering is
+    load-bearing for §6 consistency: roles publish git refs to the
+    remote of record BEFORE committing the corresponding store row
+    (chapter 6 §3 step 2 → step 3), so a bundle captured at-or-after
+    the snapshot instant is a superset of every commit the snapshot
+    references (§12 permits supersets), while the reverse order can
+    miss commits referenced by rows committed in between. Against the
+    residual race (a ref deleted/force-moved between snapshot and
+    fetch), non-empty provider bundles are self-validated with the
+    importer's own §12 check — see
+    :func:`_validate_bundle_covers_snapshot`. ``exported_at`` is
+    stamped at the snapshot instant (the §10 recovery-probe anchor),
+    not after the bundle fetch.
 
     Returns the :class:`CheckpointManifest` written into the archive so
     callers can inspect the resulting ``exported_at`` (for the §10
