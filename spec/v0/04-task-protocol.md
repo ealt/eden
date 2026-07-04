@@ -232,7 +232,7 @@ The orchestrator role contract ([`03-roles.md`](03-roles.md) §6) is gated per-d
 
 ### 7.1 The `update_dispatch_mode` operation
 
-`update_dispatch_mode(experiment_id, patch)` accepts a partial `dispatch_mode` object (any subset of the four keys defined in [`02-data-model.md`](02-data-model.md) §2.4) and atomically merges it into the experiment's stored `dispatch_mode`. Unspecified keys are unchanged. Each value in the patch MUST be either `"auto"` or `"manual"`; an unrecognized value MUST be rejected (`BadRequest`; wire mapping: 400 `eden://error/bad-request`).
+`update_dispatch_mode(experiment_id, patch)` accepts a partial `dispatch_mode` object (any subset of the five keys defined in [`02-data-model.md`](02-data-model.md) §2.4) and atomically merges it into the experiment's stored `dispatch_mode`. Unspecified keys are unchanged. Each value in the patch MUST be either `"auto"` or `"manual"`; an unrecognized value MUST be rejected (`BadRequest`; wire mapping: 400 `eden://error/bad-request`).
 
 A successful update emits exactly one `experiment.dispatch_mode_changed` event ([`05-event-protocol.md`](05-event-protocol.md) §3.4) whose payload records the **resulting** `dispatch_mode` object plus a `changed` object listing the keys whose values flipped. A no-op patch (every supplied key already matches the stored value) MUST still be accepted — it MAY emit an event whose `changed` is empty, or MAY skip the event entirely (implementation-defined; the §1.3 atomicity requirement applies only to state changes, and a no-op is not a state change).
 

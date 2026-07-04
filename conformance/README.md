@@ -4,16 +4,16 @@ Black-box test suite that any third-party implementation of an EDEN component ca
 
 ## Status
 
-**v1+roles shipped (Phase 11 chunk 11a + 11b + 11c).** The v1 suite covers the task-store + wire-binding subset: chapters 02 / 04 / 05 / 07 plus the storage MUSTs (chapter 08 §1.1, §1.7) the wire binding exposes. The v1+roles addendum (chunk 11c) covers chapter 03 §2.4 / §3.4 / §4.2 / §4.4 role-contract MUSTs across three new index groups (`Ideator submission`, `Executor submission`, `Evaluator submission`); 20 new scenarios bring the suite to 106 total. The chapter-06 integrator scenarios (chunk 11d) are out of v1+roles scope.
+**All shipped levels covered.** The suite spans the full chapter-9 §5 scenario index: the **v1** base (task-store + event-log + wire-binding MUSTs from chapters 02 / 04 / 05 / 07, plus the chapter-08 storage MUSTs the binding exposes), **v1+roles** (chapter-03 per-role submission contracts), **v1+roles+integrator** (the wire-observable projection of the chapter-06 integrator ladder), and the parallel **v1+checkpoints** (chapter 10) and **v1+multi-experiment** (chapter 11: registry, leases, holder-instance fencing, state sync) levels — ~270 scenarios green against the reference implementation.
 
-See [`spec/v0/09-conformance.md`](../spec/v0/09-conformance.md) for the normative chapter, including the level taxonomy (`v1` / `v1+roles` / `v1+roles+integrator`).
+See [`spec/v0/09-conformance.md`](../spec/v0/09-conformance.md) for the normative chapter, including the level taxonomy and the per-level scenario index.
 
 ## Running the suite
 
-Against the reference implementation:
+Against the reference implementation (add `-n auto` to parallelize via `pytest-xdist`, as CI does; drop it to debug a single scenario serially):
 
 ```bash
-uv run pytest -q conformance/
+uv run pytest -q conformance/ -n auto
 ```
 
 Against a third-party IUT (whose adapter implements `conformance.harness.adapter.IutAdapter`):

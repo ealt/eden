@@ -1,6 +1,6 @@
 # EDEN operator guide
 
-> **Last verified against commit `84adb50` (Phase 12a-1).** EDEN moves fast — if a flag name, file path, or behavior described here doesn't match what you see, trust the code and file an issue.
+> **Last full-pass verification: commit `84adb50` (Phase 12a-1); sections updated piecemeal through Phase 13 (June 2026).** EDEN moves fast — if a flag name, file path, or behavior described here doesn't match what you see, trust the code and file an issue.
 
 This guide is for someone bringing up an EDEN experiment and driving it through one or more roles. It is not a contributor guide ([`AGENTS.md`](../AGENTS.md) covers that) or a protocol-design reference ([`docs/glossary.md`](glossary.md) + [`spec/v0/`](../spec/v0/) cover those). Terms-of-art used below — *ideator*, *executor*, *evaluator*, *integrator*, *idea*, *variant*, *evaluation*, *task*, *event*, *claim* — are defined in the glossary; this guide assumes you've at least skimmed it.
 

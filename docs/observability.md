@@ -1,6 +1,6 @@
 # EDEN observability guide
 
-> **Last verified against commit `ff3d4a9` (Phase 12c).** Companion to [`docs/user-guide.md`](user-guide.md). EDEN moves fast — if a route, schema, or port doesn't match what you see, trust the code.
+> **Last full-pass verification: commit `ff3d4a9` (Phase 12c); sections updated piecemeal through Phase 13 (June 2026).** Companion to [`docs/user-guide.md`](user-guide.md). EDEN moves fast — if a route, schema, or port doesn't match what you see, trust the code.
 
 This guide enumerates every place you can look at live state in an EDEN deployment: the first-party surfaces that ship with the Compose stack, and the third-party admin UIs you can attach to the same network for deeper introspection. It assumes you already have a stack up per [`user-guide.md` §2](user-guide.md#2-workflow-0-setting-up-an-experiment).
 

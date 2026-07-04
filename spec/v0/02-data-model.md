@@ -247,7 +247,7 @@ A `claim` object MUST NOT carry an opaque per-claim token. The pre-12a-1 `token`
 
 If `target` is absent on a task, the task is **open**: any registered worker (§6) of the matching `kind` may claim. If `target.kind == "worker"`, only the named worker MAY claim. If `target.kind == "group"`, only workers transitively in that group (§7.2) MAY claim. Claim-time enforcement is specified in [`04-task-protocol.md`](04-task-protocol.md) §3.5.
 
-`target` is set at task-creation time. The protocol does not define a reassign operation in v0; later spec lineages may add one.
+`target` is set at task-creation time and MAY be updated on a non-terminal task via the `reassign_task` operation defined in [`04-task-protocol.md`](04-task-protocol.md) §6.
 
 ## 4. Event
 

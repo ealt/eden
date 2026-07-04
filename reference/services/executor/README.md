@@ -1,6 +1,6 @@
 # eden-executor-host
 
-Reference executor worker: claims pending `execution` tasks, writes a real commit to the shared bare repo using `GitRepo`, and submits the new SHA. Honors the full `idea.parent_commits` list — single-parent ideas yield single-parent commits, merge ideas yield merge commits.
+Reference executor worker: claims pending `execution` tasks, writes a real commit on a `work/*` branch in its private clone using `GitRepo` (pushed to the Forgejo remote of record when `--forgejo-url` is set), and submits the new SHA. Honors the full `idea.parent_commits` list — single-parent ideas yield single-parent commits, merge ideas yield merge commits.
 
 ## Run
 

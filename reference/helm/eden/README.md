@@ -161,13 +161,16 @@ See [`values.yaml`](values.yaml) for the full annotated surface and
   objects are keyed by opaque id, so the layout maps 1:1. See
   [`docs/deployment/migrating-to-blob-backend.md`](../../../docs/deployment/migrating-to-blob-backend.md).
 
-## Scope (13a)
+## Scope
 
-In scope: the base chart + the `--mode scripted` worker hosts + an embedded
-Postgres / Forgejo. The 13d S3/GCS blob backend has since landed (issue #174;
-the `blob.*` values above). Still out of scope (later 13 sub-chunks): GPU
-executor as a k8s Job (13b), managed Postgres (13c), Forgejo auth +
-per-branch ACLs (13e), and `--mode subprocess` + DooD worker hosts. The legacy
-`--artifacts-dir` store remains a web-ui-owned RWO PVC; the §16 deposit
-endpoint's blob store is the task-store-server-owned `blob.*` backend, and
-cross-service artifact access goes over the wire (`eden://artifacts/<id>`).
+The 13a base chart ships the `--mode scripted` worker hosts with embedded
+Postgres / Forgejo. Since then: **13c managed Postgres** landed
+(`postgres.mode=external`; issue #173) and the **13d S3/GCS blob backend**
+landed (issue #174; the `blob.*` values above). Still out of scope (later
+Phase-13 chunks): Forgejo auth + per-branch ACLs (13e, issue #170), and
+Kubernetes-native `--mode subprocess` / pod-exec worker hosts (13f, issue #291
+— which also subsumes 13b's per-task executor Job + GPU scheduling).
+The legacy `--artifacts-dir` store remains a web-ui-owned RWO PVC; the §16
+deposit endpoint's blob store is the task-store-server-owned `blob.*`
+backend, and cross-service artifact access goes over the wire
+(`eden://artifacts/<id>`).

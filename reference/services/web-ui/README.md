@@ -325,10 +325,16 @@ helper into `_read_inline_artifact(uri, artifacts_dir)` in
 surface. The envelope is identical: `file://` only, contained in
 `--artifacts-dir`, ≤ 1 MiB.
 
-## What chunks 1 + 9c + 9d do **not** ship
+## What the web-ui does **not** ship yet
 
-- Observability views, admin-reclaim button, orphaned-variant /
-  orphaned-`work/*`-ref garbage-collection view (9e).
-- Multi-experiment switcher (Phase 12).
-- Per-user authentication (Milestone 3).
-- Compose / Dockerization (Phase 10).
+- Per-user human authentication: every browser session acts under
+  the shared web-ui worker identity, so all signed-in users are
+  transitively admin. Operator-as-registered-worker is
+  [#140](https://github.com/ealt/eden/issues/140); non-admin-default
+  sign-up is [#143](https://github.com/ealt/eden/issues/143).
+- A variant lineage-tree visualization of the experiment
+  ([#123](https://github.com/ealt/eden/issues/123)).
+
+(Earlier gaps have shipped: the 9e observability + admin surface,
+the Phase-12c multi-experiment switcher, and the Phase-10
+Compose / Helm packaging.)
