@@ -13,7 +13,7 @@ EDEN is not a single system. It is a specification that defines the roles (ideat
 | [`spec/`](spec/) | Normative protocol specification. Versioned (`spec/v0/`, `spec/v1/`, …). The authoritative source. |
 | [`reference/`](reference/) | One complete implementation of the protocol. Labeled as a reference — *one* valid implementation, not *the* implementation. |
 | [`conformance/`](conformance/) | Black-box test suite any third-party component can run against itself to prove it conforms. |
-| [`docs/`](docs/) | Non-normative human documentation. Starts with [`docs/naming.md`](docs/naming.md) (what EDEN is) and [`docs/roadmap.md`](docs/roadmap.md) (how we build up to the full protocol). |
+| [`docs/`](docs/) | Non-normative human documentation. Start with [`docs/architecture.md`](docs/architecture.md) (how it all fits together), [`docs/naming.md`](docs/naming.md) (what EDEN is), and [`docs/roadmap.md`](docs/roadmap.md) (how we build up to the full protocol). |
 
 ## Status
 

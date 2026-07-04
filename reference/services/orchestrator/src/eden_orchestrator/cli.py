@@ -138,7 +138,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--forgejo-url",
-        "--forgejo-url",
         dest="forgejo_url",
         default=None,
         help=(
@@ -146,7 +145,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "follow-up B). When set, the integrator clones --repo-path "
             "from this URL at startup, fetches all heads + reconciles "
             "remote orphan variant/* refs, and publishes new variant/* refs "
-            "back to this remote. --forgejo-url is a deprecated alias."
+            "back to this remote."
         ),
     )
     parser.add_argument(

@@ -197,7 +197,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--forgejo-url",
-        "--forgejo-url",
         dest="forgejo_url",
         default=None,
         help=(
@@ -205,7 +204,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "follow-up B). When set, --repo-path becomes the local "
             "bare clone of the Forgejo-hosted repo (created at startup) "
             "and the executor module pushes work/* refs to the remote "
-            "after every successful submit. --forgejo-url is a deprecated alias."
+            "after every successful submit."
         ),
     )
     parser.add_argument(
