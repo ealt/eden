@@ -2,6 +2,8 @@
 
 This page describes where the reference Compose deployment keeps an experiment's data, what survives common operator actions, and how to relocate or migrate the substrate tree. It is the operator-facing complement to the normative invariant in [`spec/v0/01-concepts.md`](../../spec/v0/01-concepts.md) §13.
 
+Data durability is necessary but not sufficient for long runs: the *processes* must also outlive the operator's session — see [long-running experiments](long-running-experiments.md) for the substrate-liveness rule.
+
 ## Where experiment data lives
 
 After running `setup-experiment.sh`, every durable substrate is a **host bind-mount** under a single per-experiment data-root directory. The default location is `$HOME/.eden/experiments/$EDEN_EXPERIMENT_ID/`.
