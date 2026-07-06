@@ -27,23 +27,17 @@ from eden_service_common import (
     make_cidfile_path,
     parse_json_line,
     spawn,
+    submit_with_readback,
     sweep_host_worktrees,
     wrap_command,
 )
 from eden_storage import (
-    ConflictingResubmission,
-    DispatchError,
     EvaluationSubmission,
-    IllegalTransition,
     InvalidPrecondition,
-    NotClaimed,
     Store,
 )
-from eden_storage.submissions import submissions_equivalent
 
 log = logging.getLogger(__name__)
-
-_RETRY_DELAYS_S = (0.05, 0.2, 0.5)
 
 
 @dataclass
@@ -542,40 +536,11 @@ def _submit_with_readback(
     token: str,
     submission: EvaluationSubmission,
 ) -> None:
-    last_exc: Exception | None = None
-    for delay in (0.0, *_RETRY_DELAYS_S):
-        if delay:
-            time.sleep(delay)
-        try:
-            store.submit(task_id, token, submission)
-            return
-        except (NotClaimed, ConflictingResubmission, InvalidPrecondition):
-            return
-        except IllegalTransition:
-            last_exc = None
-            break
-        except DispatchError as exc:
-            last_exc = exc
-            continue
-        except Exception as exc:  # noqa: BLE001 — transport-shaped
-            last_exc = exc
-            continue
-    try:
-        prior = store.read_submission(task_id)
-    except Exception:  # noqa: BLE001
-        if last_exc is not None:
-            log.warning(
-                "evaluator_submit_read_back_failed",
-                extra={"task_id": task_id, "error": str(last_exc)},
-            )
-        return
-    if prior is None:
-        return
-    if not isinstance(prior, EvaluationSubmission):
-        return
-    if submissions_equivalent(prior, submission):
-        return
-    log.warning(
-        "evaluator_submit_conflicts_with_committed",
-        extra={"task_id": task_id},
+    """Submit via the shared retry-before-orphan + read-back helper."""
+    submit_with_readback(
+        store=store,
+        task_id=task_id,
+        token=token,
+        submission=submission,
+        role="evaluator",
     )

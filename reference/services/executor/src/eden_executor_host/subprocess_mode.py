@@ -31,24 +31,20 @@ from eden_service_common import (
     make_cidfile_path,
     parse_json_line,
     spawn,
+    submit_with_readback,
     sweep_host_worktrees,
     wrap_command,
 )
 from eden_storage import (
-    ConflictingResubmission,
     DispatchError,
     IllegalTransition,
     InvalidPrecondition,
     NoOpVariant,
-    NotClaimed,
     Store,
     VariantSubmission,
 )
-from eden_storage.submissions import submissions_equivalent
 
 log = logging.getLogger(__name__)
-
-_RETRY_DELAYS_S = (0.05, 0.2, 0.5)
 
 
 @dataclass
@@ -696,65 +692,21 @@ def _submit_with_readback(
     token: str,
     submission: VariantSubmission,
 ) -> None:
-    """Phase 3 submission with retry-before-orphan + committed-state read-back.
+    """Phase 3 submission via the shared read-back helper.
 
-    Definitive server-side rejections short-circuit (NotClaimed,
-    ConflictingResubmission, InvalidPrecondition); a retry of the
-    same payload will be rejected the same way and leaving the task
-    hanging in ``claimed`` until the sweeper TTL is a worse outcome
-    than a fast return.
-
-    ``NoOpVariant`` is re-raised to the caller so the success-submit
-    path in :func:`_handle_one` can route to ``status="error"`` and
-    free the claim cleanly. The executor's own pre-submit check
-    (`_is_no_op_variant`) normally prevents this from firing; a
-    re-raise here is the defense-in-depth path when the executor's
-    local view of the SHAs disagrees with the server's enforcement.
+    The executor passes ``NoOpVariant`` in ``reraise`` so the
+    success-submit path in :func:`_handle_one` can route to
+    ``status="error"`` and free the claim cleanly. The executor's own
+    pre-submit check (`_is_no_op_variant`) normally prevents this from
+    firing; the re-raise is the defense-in-depth path when the
+    executor's local view of the SHAs disagrees with the server's
+    enforcement.
     """
-    last_exc: Exception | None = None
-    for delay in (0.0, *_RETRY_DELAYS_S):
-        if delay:
-            time.sleep(delay)
-        try:
-            store.submit(task_id, token, submission)
-            return
-        except (NotClaimed, ConflictingResubmission, InvalidPrecondition):
-            return
-        except NoOpVariant:
-            # Re-raise so the caller can route to status="error"; a
-            # retry of the same success submission will be rejected
-            # the same way, and leaving the task claimed until the
-            # sweeper TTL is the worst outcome.
-            raise
-        except IllegalTransition:
-            # The task may already be terminal (we won, response
-            # lost, orchestrator already terminalized). Fall through
-            # to read-back.
-            last_exc = None
-            break
-        except DispatchError as exc:
-            last_exc = exc
-            continue
-        except Exception as exc:  # noqa: BLE001 — transport-shaped
-            last_exc = exc
-            continue
-    # Read-back classification.
-    try:
-        prior = store.read_submission(task_id)
-    except Exception:  # noqa: BLE001
-        if last_exc is not None:
-            log.warning(
-                "executor_submit_read_back_failed",
-                extra={"task_id": task_id, "error": str(last_exc)},
-            )
-        return
-    if prior is None:
-        return
-    if not isinstance(prior, VariantSubmission):
-        return
-    if submissions_equivalent(prior, submission):
-        return
-    log.warning(
-        "executor_submit_conflicts_with_committed",
-        extra={"task_id": task_id},
+    submit_with_readback(
+        store=store,
+        task_id=task_id,
+        token=token,
+        submission=submission,
+        role="executor",
+        reraise=(NoOpVariant,),
     )

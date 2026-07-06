@@ -22,7 +22,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from eden_contracts import Idea, IdeationTask
-from eden_service_common import Subprocess, parse_json_line, spawn
+from eden_service_common import (
+    Subprocess,
+    parse_json_line,
+    spawn,
+    submit_with_readback,
+)
 from eden_service_common.artifacts import (
     entity_artifact_dir,
     idea_naming,
@@ -352,7 +357,13 @@ def handle_ideation_task(
             "ideator_dispatch_failed",
             extra={"task_id": task.task_id, "error": str(exc)},
         )
-        store.submit(task.task_id, claim.worker_id, IdeaSubmission(status="error"))
+        submit_with_readback(
+            store=store,
+            task_id=task.task_id,
+            token=claim.worker_id,
+            submission=IdeaSubmission(status="error"),
+            role="ideator",
+        )
         raise
     if terminator.get("event") == "ideation-error":
         log.warning(
@@ -363,7 +374,13 @@ def handle_ideation_task(
                 "ideas_seen": len(ideas),
             },
         )
-        store.submit(task.task_id, claim.worker_id, IdeaSubmission(status="error"))
+        submit_with_readback(
+            store=store,
+            task_id=task.task_id,
+            token=claim.worker_id,
+            submission=IdeaSubmission(status="error"),
+            role="ideator",
+        )
         return
     try:
         ids = _persist_ideas(
@@ -374,12 +391,20 @@ def handle_ideation_task(
             "ideator_idea_invalid",
             extra={"task_id": task.task_id, "error": str(exc)},
         )
-        store.submit(task.task_id, claim.worker_id, IdeaSubmission(status="error"))
+        submit_with_readback(
+            store=store,
+            task_id=task.task_id,
+            token=claim.worker_id,
+            submission=IdeaSubmission(status="error"),
+            role="ideator",
+        )
         return
-    store.submit(
-        task.task_id,
-        claim.worker_id,
-        IdeaSubmission(status="success", idea_ids=tuple(ids)),
+    submit_with_readback(
+        store=store,
+        task_id=task.task_id,
+        token=claim.worker_id,
+        submission=IdeaSubmission(status="success", idea_ids=tuple(ids)),
+        role="ideator",
     )
 
 

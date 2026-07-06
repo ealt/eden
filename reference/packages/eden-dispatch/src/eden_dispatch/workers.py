@@ -1,14 +1,20 @@
 """Scripted reference workers.
 
-These workers drive the in-memory store through a full experiment
-lifecycle using deterministic fake outputs. They exercise the real
-state machine — claim, execute, submit — so the dispatch loop's
-behavior can be asserted end-to-end without any LLM or git machinery.
+These are the reference worker-role bodies (not test fakes): each runs
+the real claim → execute → submit lifecycle against a ``Store``, with
+the per-role work supplied by an injected function. The reference
+service hosts wire real behavior into them — e.g. the executor host
+injects a git-backed ``make_implement_fn`` — so the same classes drive
+both deterministic in-memory experiments and the production subprocess
+hosts.
 
-Phase 5 non-goals (roadmap):
-  • no git: executor ``commit_sha`` values are fabricated.
-  • no evaluation logic: metrics come from a script hook.
-  • no dispatch policy: there is one worker per role.
+The injected functions decide how much machinery is involved:
+  • ``make_implement_fn`` may fabricate a ``commit_sha`` (in-memory) or
+    write a real git commit (executor host).
+  • ``make_evaluate_fn`` may return scripted metrics or run a real
+    evaluation.
+Dispatch policy (how many workers per role, ordering) is the
+orchestrator's concern, not these classes'.
 """
 
 from __future__ import annotations
