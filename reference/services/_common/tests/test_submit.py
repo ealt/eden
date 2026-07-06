@@ -85,7 +85,7 @@ def test_reraise_set_propagates_to_caller():
     store = _FakeStore(submit_effects=[_Custom()])
     with pytest.raises(_Custom):
         submit_with_readback(
-            store=store,
+            store=store,  # type: ignore  # _FakeStore is a 2-method stub, not full Store
             task_id="t-1",
             token="wkr_x",
             submission=IdeaSubmission(status="error"),

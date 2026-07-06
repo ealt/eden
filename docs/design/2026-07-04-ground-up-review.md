@@ -1,6 +1,6 @@
 # Ground-up design review — July 2026
 
-> **Status: review record (2026-07-04).** An outside-in architecture review of the whole repo, commissioned as: *"if you were to design this project from the ground up, what would you do differently? any suboptimal design decisions and other slop that should be cleaned up?"* Findings are evidence-based (file/line citations, measured duplication) and deliberately opinionated. Nothing here is a plan yet; the intent is to agree on the verdicts first, then promote selected items to plans/issues.
+> **Status: review record (2026-07-04).** An outside-in architecture review of the whole repo, commissioned as: *"if you were to design this project from the ground up, what would you do differently? any suboptimal design decisions and other slop that should be cleaned up?"* Findings are evidence-based (file/line citations, measured duplication) and deliberately opinionated. Nothing here is a plan yet; the intent is to agree on the verdicts first, then advance selected items into plans/issues.
 
 ## 1. The verdict in one paragraph
 
