@@ -56,6 +56,32 @@ Today's clusters:
 
 New clusters get created when a third issue joins a previously-2-member set. Adding a cluster label is a triage action, not a filing action.
 
+### Milestone
+
+Milestones group issues by the **body of work** they belong to — distinct from `cluster:*` (coordination surface) and `priority:*` (urgency). Assign the milestone whose theme fits when it's clear; leave it unset if the issue is genuinely cross-cutting or the fit is ambiguous (milestones are cheap to re-triage).
+
+**The milestone set is open, not a fixed vocabulary.** When an issue represents a genuinely new body of work that no existing milestone fits, **create a new milestone** rather than force-fitting it into the nearest listed one — a milestone that has to stretch to hold an issue is the signal to make a new one (the same instinct as the cluster ≥3 rule, applied to bodies of work). Leaving the milestone unset is also better than a wrong fit. Prefer a new milestone over an overloaded catch-all. The table below is the set **as of this writing**, described so you can judge fit — not the allowed values:
+
+| Milestone | Scope |
+|---|---|
+| AWS MVP | Provisioning + running EDEN on AWS (EKS / ECR / RDS / S3), the `setup-aws.sh` line of work. |
+| Identity v2 | Operator/worker identity + auth-model evolution — the #140 → #143 → #170 arc, and code that unifies or corrects the auth surface. |
+| Multi-experiment | Control plane, leases, and hosting multiple experiments on one deployment. |
+| Production hardening | Correctness / robustness / operability for real runs: product bugs, latent-correctness issues, agent-workload ergonomics. |
+| Refactors & polish | Code-health: cross-file/-package dedup, module and interface restructures, test-infra cleanup, doc-debt. |
+| Spec evolution | Normative spec changes and new conformance surface. |
+| Hosted Web UI | Multi-user hosted deployment (ingress/TLS, external access). |
+
+Keep this table current when milestones are added or their scope shifts — but the tracker's own milestone list (`gh api repos/ealt/eden/milestones`) is the source of truth if the two drift.
+
+### Project board
+
+Every issue goes on the **EDEN** GitHub Project (project #1). It's the cross-milestone planning view, so an issue that's filed but not added is invisible there. Add it at filing time:
+
+```bash
+gh project item-add 1 --owner ealt --url <issue-url>
+```
+
 ## 2. When labels are applied
 
 At issue creation, the filer applies:
@@ -63,6 +89,8 @@ At issue creation, the filer applies:
 - **Type** (`bug` / `enhancement` / etc.) — required.
 - **`manual-ui`** — when applicable.
 - **`cluster:*`** — if the cluster fit is obvious. Otherwise leave to triage.
+- **Milestone** — assign when the body-of-work fit is clear; leave unset if cross-cutting or ambiguous.
+- **Project board** — add the issue to the EDEN project (see [§1 Project board](#project-board)). This is a filing action, not deferred to triage — an unadded issue is invisible to the planning view.
 
 At triage pass, the triager applies:
 
