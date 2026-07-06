@@ -10,7 +10,7 @@ Spec versions live in subdirectories: `v0/`, `v1/`, …
 - **Breaking changes go to a new version**, never mutated in place.
 - The reference implementation declares which spec version(s) it targets; third-party implementations do the same.
 
-Current version: **v0 (draft, in development)**. See [`v0/`](v0/) for the list of planned chapters.
+Current version: **v0 (draft, in development)**. See [`v0/`](v0/) for the chapter list.
 
 ## Conventions
 
@@ -22,4 +22,4 @@ Current version: **v0 (draft, in development)**. See [`v0/`](v0/) for the list o
 
 A conforming **component** (ideator, executor, evaluator, integrator, storage backend, git host, control plane, web UI) implements the contract(s) defined in the spec version it targets. A conforming **system** is any composition of conforming components that together satisfy the end-to-end invariants.
 
-The [conformance suite](../conformance/) (landing in Phase 11 per [`docs/roadmap.md`](../docs/roadmap.md)) validates components against their contracts.
+The [conformance suite](../conformance/) validates components against their contracts; see [`v0/09-conformance.md`](v0/09-conformance.md) for the level taxonomy.

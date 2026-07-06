@@ -95,9 +95,11 @@ def _trim_paragraph(line: str, max_len: int = 220) -> str:
 
     Scrubs patterns that would lint badly in the output:
 
-    - Strips spec-internal anchor links like ``[§5.1](#51-fields)`` →
-      ``§5.1`` (MD051 — the ``#51-fields`` anchor exists in the spec doc,
-      not in this output, so the link is unresolvable here).
+    - Flattens markdown links like ``[§5.1](#51-fields)`` or
+      ``[03-roles.md](03-roles.md)`` → their text. Anchors and
+      spec-relative targets resolve in the spec doc, not from this
+      output's location under ``docs/`` (MD051 / broken relative links);
+      in a quoted excerpt the link is decoration, so keep just the text.
     - Escapes angle-bracketed placeholders like ``<error detail>`` so
       they don't trip markdownlint's MD033 inline-HTML rule when an
       excerpt happens to carry one in a code-like fragment.
@@ -106,9 +108,10 @@ def _trim_paragraph(line: str, max_len: int = 220) -> str:
     # Strip leading list bullet / table pipes for readability.
     line = re.sub(r"^[-*|]\s*", "", line)
     line = re.sub(r"\s+\|.*$", "", line)
-    # Replace markdown anchor-only links ([text](#anchor)) with just the
-    # text; the anchor wouldn't resolve in this output file.
-    line = re.sub(r"\[([^\]]+)\]\(#[^)]+\)", r"\1", line)
+    # Replace markdown links ([text](target)) with just the text; the
+    # targets are spec-relative (anchors or sibling chapter paths) and
+    # wouldn't resolve from this output file's location.
+    line = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", line)
     # Escape stray ``<…>`` placeholder fragments (e.g. ``<error detail>``
     # in a quoted error template) so they don't render as HTML. Limited
     # to inside backtick spans is too fragile; do a blanket escape on

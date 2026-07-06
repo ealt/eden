@@ -6,9 +6,9 @@ EDEN is a **protocol** for directed evolution orchestration. This repo contains 
 
 ## Current phase
 
-**Phase 11 complete.** Chapters 00–09 of spec/v0 are on the protected `main`, alongside the full reference implementation (workspace under [`reference/`](reference/) — six services + five packages on a Compose stack with Postgres + Forgejo) and the conformance suite at the **v1+roles+integrator** level (110 scenarios green). CI gates the reference impl on docs-lint, schema-validity, schema-parity, python-lint, python-typecheck, python-test, python-test-postgres, conformance, compose-smoke, compose-smoke-subprocess, compose-smoke-subprocess-docker, and compose-e2e. See [`CHANGELOG.md`](CHANGELOG.md) for the canonical per-chunk "what's done" record, [`AGENTS.md`](AGENTS.md) for the agent contract (commands, naming discipline, pitfalls), and [`docs/roadmap.md`](docs/roadmap.md) for the remaining Phase 12–13 plan.
+**Phase 13 in progress.** Chapters 00–11 of spec/v0 are on the protected `main` — including portable checkpoints (ch. 10) and the multi-experiment control plane (ch. 11) — alongside the full reference implementation (workspace under [`reference/`](reference/): seven services + shared scaffolding, seven packages, deployable via Docker Compose or the Helm chart, with Postgres + Forgejo) and the conformance suite covering every shipped level (v1 / v1+roles / v1+roles+integrator / v1+checkpoints / v1+multi-experiment). CI gates changes with ~26 jobs — lint/typecheck/test, schema validity + parity, conformance, the compose-smoke family, compose-e2e, and the helm-lint / helm-smoke family; see [`.github/workflows/ci.yml`](.github/workflows/ci.yml) for the authoritative list and [`AGENTS.md`](AGENTS.md#commands) for the local equivalents. See [`CHANGELOG.md`](CHANGELOG.md) for the canonical per-chunk "what's done" record and [`docs/roadmap.md`](docs/roadmap.md) for the remaining Phase 13 plan (13e Forgejo hardening, 13f Kubernetes-native worker modes).
 
-If you want to contribute, useful areas are: spec gaps surfaced by [`docs/conformance-coverage.md`](docs/conformance-coverage.md), open issues labeled [`manual-ui`](https://github.com/ealt/eden/issues?q=is%3Aopen+label%3Amanual-ui), or scoping work for Phase 12 (multi-experiment / control plane).
+If you want to contribute, useful areas are: spec gaps surfaced by [`docs/conformance-coverage.md`](docs/conformance-coverage.md), open issues labeled [`manual-ui`](https://github.com/ealt/eden/issues?q=is%3Aopen+label%3Amanual-ui), or issues labeled [`triage:ready`](https://github.com/ealt/eden/issues?q=is%3Aopen+label%3A%22triage%3Aready%22).
 
 ## Contributing to the spec
 
@@ -49,7 +49,7 @@ The reference web UI is server-side Jinja with HTMX vendored under `reference/se
 
 ## Contributing to the conformance suite
 
-The conformance suite lives under [`conformance/`](conformance/) at the v1+roles+integrator level (chunk 11d).
+The conformance suite lives under [`conformance/`](conformance/) and covers every shipped level (v1 / v1+roles / v1+roles+integrator / v1+checkpoints / v1+multi-experiment).
 
 - Scenarios must be **implementation-agnostic** — they drive an implementation-under-test via its advertised protocol surface (the chapter-7 HTTP binding), not via language-specific hooks.
 - A scenario must cite the spec paragraph it validates. The first line of its docstring carries the citation in the form `spec/v0/<chapter>.md §<sec>`; [`conformance/src/conformance/tools/check_citations.py`](conformance/src/conformance/tools/check_citations.py) gates this in CI.

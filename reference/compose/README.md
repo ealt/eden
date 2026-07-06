@@ -2,9 +2,9 @@
 
 A Docker Compose stack that runs the EDEN reference implementation
 end-to-end locally: third-party infrastructure (Postgres, Forgejo) plus
-the six EDEN services (`task-store-server`, `orchestrator`,
-`ideator-host`, `executor-host`, `evaluator-host`, `web-ui`), plus a
-one-shot `eden-repo-init` setup service.
+the seven EDEN services (`task-store-server`, `orchestrator`,
+`ideator-host`, `executor-host`, `evaluator-host`, `web-ui`,
+`control-plane`), plus a one-shot `eden-repo-init` setup service.
 
 Durable substrate state (postgres data, forgejo data, artifacts,
 per-host bare clones, per-host worker credentials) lives as host
@@ -259,10 +259,16 @@ for any deployment that handles real data.
 
 ## What's not here yet
 
-- Workers integrate with Forgejo as their actual git remote (deferred
-  to a follow-up sub-chunk after 10d; see "Forgejo is idle" above).
-- An admin user / API token for Forgejo — created when Forgejo actually
-  starts being consumed.
-- LLM-backed worker hosts — added in 10d.
-- A comprehensive end-to-end Compose integration test (with Web UI
-  walkthroughs and admin actions) — added in 10e.
+- Forgejo auth hardening: per-worker Forgejo identities, per-branch
+  ACLs enforcing the chapter-6 namespace ownership at the git layer,
+  and native PR-mediated review — Phase 13e
+  ([#170](https://github.com/ealt/eden/issues/170)). Today every
+  service shares the one `eden` Forgejo credential.
+- Hosting more than one experiment on a single task-store-server —
+  [#254](https://github.com/ealt/eden/issues/254). The multi-experiment
+  overlay exercises lease hand-off between orchestrator replicas
+  against a single registered experiment.
+- Cloud blob backends under Compose: the stack keeps the `file`
+  artifact-backend posture; the wire-deposit writer cutover that would
+  let Compose opt into `s3`/`gcs` is
+  [#290](https://github.com/ealt/eden/issues/290).

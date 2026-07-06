@@ -275,6 +275,7 @@ The `rename-discipline` CI job (`scripts/check-rename-discipline.py`) catches th
 
 The `docs/` tree separates content by intent:
 
++ [`docs/architecture.md`](docs/architecture.md) — newcomer-facing map of the design, the protocol layers, and the deployed stack.
 + [`docs/naming.md`](docs/naming.md) — what EDEN is, at the concept level.
 + [`docs/glossary.md`](docs/glossary.md) — canonical vocabulary (worker roles, data shapes, lifecycle, git topology, etc.).
 + [`docs/triage.md`](docs/triage.md) — issue-label conventions (type / triage / priority / cluster), application rules, heuristics, and the deferral-tracking rule.

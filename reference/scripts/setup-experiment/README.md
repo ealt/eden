@@ -14,8 +14,16 @@ bash reference/scripts/setup-experiment/setup-experiment.sh <config.yaml> \
     [--experiment-id <id>] \
     [--admin-token <T>] \
     [--postgres-password <P>] \
-    [--env-file <path>]
+    [--env-file <path>] \
+    [--experiment-dir <dir>] \
+    [--ideas-per-ideation <n>] \
+    [--exec-mode host|docker] \
+    [--seed-from <dir>] \
+    [--data-root <dir>] \
+    [--no-auto-host-workers]
 ```
+
+`--exec-mode docker` enables the DooD container-isolation overlay (builds/uses `eden-runtime:dev` or an experiment-specific image, probes the docker-socket gid). `--seed-from` seeds the bare repo from an existing directory instead of an empty commit. `--data-root` overrides where the durable per-experiment substrate lives (default `$HOME/.eden/experiments/<experiment-id>/`). `--no-auto-host-workers` skips minting the per-service worker identities (for deployments that register workers themselves).
 
 Then run:
 
@@ -62,5 +70,11 @@ cd reference/compose
 docker compose --env-file .env down -v
 ```
 
-`-v` wipes the Postgres / Forgejo / artifacts volumes too. After
-`down -v` you must re-run setup-experiment before `compose up`.
+`-v` removes the ephemeral named volumes (worktrees, repo-init
+staging). Durable substrate state — Postgres data, Forgejo data,
+artifacts, per-service clones, worker credentials — lives as host
+bind-mounts under `${EDEN_EXPERIMENT_DATA_ROOT}/` (Phase 12a-1g) and
+is **not** touched by `down -v`; delete that directory explicitly to
+wipe an experiment. See
+[`docs/operations/experiment-data-durability.md`](../../../docs/operations/experiment-data-durability.md).
+After a full wipe you must re-run setup-experiment before `compose up`.

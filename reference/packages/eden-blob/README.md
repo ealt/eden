@@ -1,14 +1,18 @@
-# eden-blob (placeholder)
+# eden-blob (unused placeholder)
 
-This directory is a placeholder for the future blob-store backend.
-Phase 13 of the roadmap will populate it; see
-[`docs/roadmap.md`](../../../docs/roadmap.md) "Phase 13 — Kubernetes
-reference deployment" → `S3/GCS blob backend`.
+This directory was reserved for a standalone blob-store package. The
+work it anticipated shipped elsewhere: the chapter-8 §5 / chapter-7
+§16 artifact-store surface is implemented by the `ArtifactBackend`
+protocol and its `FileArtifactBackend` / `S3Backend` / `GcsBackend`
+implementations in
+[`eden-storage`](../eden-storage/src/eden_storage/artifact_backend.py)
+(issue #166 wire contract; Phase 13d cloud backends, issue #174).
+Backend selection is server-side only (`--blob-backend file|s3|gcs`
+on the task-store-server); clients always see opaque
+`eden://artifacts/<id>` URIs, so no client-side blob package is
+needed.
 
-The chapter-8 §5 artifact-store contract is the spec-side surface
-this package will implement. Until Phase 13, the reference deployment
-satisfies the contract via host-local file paths under
-`/var/lib/eden/artifacts/` (see the web-ui's `--artifacts-dir` flag).
-
-This package is intentionally NOT a `pyproject.toml` workspace
-member; it stays out of the build until there is something to build.
+This directory is intentionally NOT a `pyproject.toml` workspace
+member and contains no code. It is retained only so the historical
+roadmap references resolve; it can be deleted outright if the
+standalone-package split is never revisited.

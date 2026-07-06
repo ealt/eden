@@ -29,6 +29,9 @@ registry) introduced in chapter 11. Per-experiment task/idea/variant
 data continues to live in the task-store-server; the control plane
 maintains only the cross-experiment metadata.
 
-The chapter 11 §3 state-sync poller will be added in wave 4 alongside
-the orchestrator integration; wave 3 ships the registry, lease ops,
-and the deployment-scoped worker/group registry only.
+The chapter 11 §3 state-sync poller ships in this service
+(`state_sync.py`, wired into `make_app` and the CLI): it polls each
+registered experiment's task-store `/state` endpoint on a fixed
+cadence, caches `last_known_state` on the registry row, and injects
+the §3.4 bounded-staleness warning after consecutive failures;
+`acquire_lease` triggers the §3.3 on-demand refresh.

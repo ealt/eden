@@ -13,11 +13,11 @@ EDEN is not a single system. It is a specification that defines the roles (ideat
 | [`spec/`](spec/) | Normative protocol specification. Versioned (`spec/v0/`, `spec/v1/`, …). The authoritative source. |
 | [`reference/`](reference/) | One complete implementation of the protocol. Labeled as a reference — *one* valid implementation, not *the* implementation. |
 | [`conformance/`](conformance/) | Black-box test suite any third-party component can run against itself to prove it conforms. |
-| [`docs/`](docs/) | Non-normative human documentation. Starts with [`docs/naming.md`](docs/naming.md) (what EDEN is) and [`docs/roadmap.md`](docs/roadmap.md) (how we build up to the full protocol). |
+| [`docs/`](docs/) | Non-normative human documentation. Start with [`docs/architecture.md`](docs/architecture.md) (how it all fits together), [`docs/naming.md`](docs/naming.md) (what EDEN is), and [`docs/roadmap.md`](docs/roadmap.md) (how we build up to the full protocol). |
 
 ## Status
 
-**Phase 11 complete.** The v0 spec covers chapters 00–09 (`spec/v0/`); the reference implementation under [`reference/`](reference/) ships the full set of services (task-store-server, orchestrator, ideator / executor / evaluator hosts, web UI) on a Compose stack with Postgres + Forgejo; and the conformance suite under [`conformance/`](conformance/) is at the **v1+roles+integrator** level (110 scenarios green against the reference impl). Phase 12 (multi-experiment / control plane / leases) and Phase 13 (Kubernetes + S3 blob backend) are the remaining build-up phases. See [`AGENTS.md`](AGENTS.md) for the current-phase narrative and [`docs/roadmap.md`](docs/roadmap.md) for the per-phase plan.
+**Phase 13 in progress.** The v0 spec covers chapters 00–11 (`spec/v0/`), including portable checkpoints (ch. 10) and the multi-experiment control plane (ch. 11). The reference implementation under [`reference/`](reference/) ships the full set of services (task-store-server, orchestrator, ideator / executor / evaluator hosts, web UI, control plane) on two first-class substrates — a Docker Compose stack and a Helm chart for Kubernetes — with Postgres (embedded or managed), Forgejo as the git remote of record, and file / S3 / GCS artifact backends. The conformance suite under [`conformance/`](conformance/) covers every shipped level (v1, v1+roles, v1+roles+integrator, v1+checkpoints, v1+multi-experiment; ~270 scenarios green against the reference impl). Remaining Phase 13 chunks: Forgejo auth hardening (13e) and Kubernetes-native worker modes (13f). See [`AGENTS.md`](AGENTS.md) for the current-phase narrative, [`docs/roadmap.md`](docs/roadmap.md) for the per-phase plan, and [`CHANGELOG.md`](CHANGELOG.md) for per-chunk completion records.
 
 ## Contributing
 

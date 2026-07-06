@@ -404,7 +404,7 @@ the worker host's own paths exactly so worker-internal env vars
 (`EDEN_TASK_JSON`, `EDEN_OUTPUT`, `EDEN_WORKTREE`,
 `EDEN_EXPERIMENT_DIR`) resolve consistently in both places.
 
-### 7.1 Mount strategy
+### 8.1 Mount strategy
 
 DooD means `--mount source=` references are resolved against the
 **host docker daemon's catalog**, not the worker host container's
@@ -416,7 +416,7 @@ Compose stack pins explicit `name:` on each forwarded volume so
 compose's default `<project>_<volume>` prefix doesn't mismatch
 the wrap's literal name reference.
 
-### 7.2 Container lifecycle
+### 8.2 Container lifecycle
 
 - **Per-spawn cidfile.** Every spawn writes its container id to
   `<cidfile_dir>/<role>-<spawn-uuid>.cid`. Paths are unique per
@@ -438,7 +438,7 @@ the wrap's literal name reference.
   filter is host-scoped to mirror the cross-host worktree
   isolation in §6.
 
-### 7.3 Identity
+### 8.3 Identity
 
 The default reference runtime image (`eden-runtime:dev`) runs as
 the same `eden:1000` user that the worker host uses, so worktree
@@ -449,7 +449,7 @@ images that need a different uid (e.g. for system-level installs)
 override `USER` in their Dockerfile; the wrap deliberately does
 NOT pass `--user` so this override is honored.
 
-### 7.4 Socket permissions
+### 8.4 Socket permissions
 
 The host docker socket is conventionally `root:docker` mode
 `0660` on Linux. The reference compose overlay supplies the
@@ -460,7 +460,7 @@ throwaway container that bind-mounts the socket — this is the
 gid the worker container will see, which on Docker Desktop /
 Colima differs from a host-side stat.
 
-### 7.5 Security boundary
+### 8.5 Security boundary
 
 DooD with a shared `/var/run/docker.sock` is **not a hard
 isolation boundary**. A `*_command` running in the spawned child
@@ -478,7 +478,7 @@ is **bug isolation** (a buggy `*_command` writing to disk doesn't
 clobber the worker host's filesystem) and **dependency isolation**
 (experiment-specific images), not hostile-code containment.
 
-### 7.6 Image strategy
+### 8.6 Image strategy
 
 Two layers, in priority order:
 

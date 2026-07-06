@@ -23,6 +23,12 @@ the wire-observable end-state should look like.
 - [Web UI multi-experiment operation](web-ui-multi-experiment.md) — the
   experiment switcher, the four credential-bootstrap postures, and the
   per-experiment config / repo layout (issue #145).
+- [Agent substrate access](agent-substrate-access.md) — writing an
+  agentic ideator / executor / evaluator against the three read-side
+  substrates (git, artifact server, readonly Postgres) opened by
+  Phase 12a-1f.
+- [Readonly Postgres substrate](agent-readonly-db.md) — schema
+  reference for the `eden_readonly` role's queryable surface.
 
 These docs assume the reference Compose deployment + the
 [`docs/glossary.md`](../glossary.md) vocabulary. For the underlying

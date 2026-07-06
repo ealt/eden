@@ -2,24 +2,22 @@
 
 Reference storage backends for the EDEN protocol ([`spec/v0/08-storage.md`](../../../spec/v0/08-storage.md)).
 
-This package defines the [`Store`][store-protocol] structural interface — the union of the task store, event log, and idea/variant persistence that chapter 8 §1, §1.7, and §2 specify — and ships two backends that satisfy it:
+This package defines the [`Store`][store-protocol] structural interface — the union of the task store, event log, and idea/variant persistence that chapter 8 §1, §1.7, and §2 specify — and ships three backends that satisfy it:
 
-- **`InMemoryStore`** (lives in [`eden-dispatch`](../eden-dispatch/), re-exported from here for convenience) — single-process, non-durable, suitable for tests and the Phase 5 dispatch loop.
+- **`InMemoryStore`** (lives in [`eden-dispatch`](../eden-dispatch/), re-exported from here for convenience) — single-process, non-durable, suitable for tests.
 - **`SqliteStore`** — single-process, SQLite-backed, **durable** across process restarts. The smallest backend that satisfies chapter 8 §3 (durability, read-after-write, crash recovery).
+- **`PostgresStore`** — the production-shaped backend (psycopg v3, SERIALIZABLE per-op); the Compose and Helm stacks run on it. `ensure_readonly_role` provisions the Phase 12a-1f `eden_readonly` substrate role.
 
-Both backends pass the same conformance scenarios ([`tests/`](tests/)); adding a third backend (Postgres, Forgejo-adjacent, …) is a matter of implementing the Protocol and running the suite.
+All backends pass the same parametrized conformance scenarios ([`tests/`](tests/)); adding another backend is a matter of implementing the Protocol and running the suite.
+
+The package also owns two adjacent surfaces:
+
+- **Artifact backends** ([`artifact_backend.py`](src/eden_storage/artifact_backend.py)) — the chapter-7 §16 blob store behind the task-store-server's `--blob-backend file|s3|gcs` flag (`FileArtifactBackend`, `S3Backend`, `GcsBackend`; the cloud SDKs are optional extras `eden-storage[s3]` / `[gcs]`).
+- **Checkpoint ops** ([`_checkpoint.py`](src/eden_storage/_checkpoint.py)) — the chapter-8 §1.9 `export_checkpoint` / `import_checkpoint` implementations backing the chapter-10 wire endpoints.
 
 [store-protocol]: src/eden_storage/protocol.py
 
-## Scope (Phase 6)
+## Non-goals
 
-- One Protocol, two backends, shared conformance.
-- SQLite schema + migrations under [`_schema.py`](src/eden_storage/_schema.py).
-- Restart-safety tests: close and reopen the SQLite store mid-experiment and assert all state and events survive.
-
-Non-goals at this phase:
-
-- No Postgres backend (Phase 12).
-- No artifact store (Phase 10).
-- No cross-process transport (Phase 8 owns the wire protocol).
-- No role-scoped handles — a caller with access to the store can call any mutation method; role negative rules are enforced by the conformance suite (Phase 11), not by the storage layer.
+- No cross-process transport ([`eden-wire`](../eden-wire/) owns the HTTP binding).
+- No role-scoped handles — a caller with access to the store can call any mutation method; role negative rules are enforced at the wire/auth layer and by the conformance suite, not by the storage layer.

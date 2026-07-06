@@ -49,6 +49,7 @@ from .scripted import (
     make_plan_fn,
 )
 from .signals import StopFlag, install_stop_handlers
+from .submit import submit_with_readback
 from .subprocess_runner import (
     Subprocess,
     parse_env_file,
@@ -103,6 +104,7 @@ __all__ = [
     "seed_bare_repo",
     "spawn",
     "strip_reserved_substrate_keys",
+    "submit_with_readback",
     "substrate_args_for_exec_mode",
     "sweep_host_worktrees",
     "wait_for_task_store",

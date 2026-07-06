@@ -39,12 +39,12 @@ The parallel to EDEN's architecture is nearly 1:1:
 | Mutagenesis                 | Ideator proposes modifications to the code  |
 | Intelligent guidance        | Ideator is strategic, not random            |
 
-## Package name (reference implementation, planned)
+## Package name (reference implementation)
 
-The Python reference implementation **will be published** as `direvo` (**dir**ected **evo**lution) once it exists (landing in Phase 3 per `docs/roadmap.md`). Both `direvo` and `eden` will work as CLI commands after install — users can think of the tool as EDEN while the package name stays short, unique, and conflict-free.
+The Python reference implementation exists today as an **unpublished** uv workspace of `eden-*` packages under [`reference/`](../reference/) (`eden-contracts`, `eden-storage`, `eden-wire`, …), deployed via the Compose stack or Helm chart rather than installed from a registry. If and when it is published to PyPI, the plan of record is the distribution name `direvo` (**dir**ected **evo**lution), with both `direvo` and `eden` as CLI commands — users can think of the tool as EDEN while the package name stays short, unique, and conflict-free.
 
 ```bash
-# After Phase 3 lands, installation will look like:
+# If published, installation would look like:
 pip install direvo
 eden run --config .eden/config.yaml
 ```
