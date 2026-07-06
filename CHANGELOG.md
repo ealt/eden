@@ -8,6 +8,15 @@ Per-chunk entries preserve the full implementation record: contract amendments, 
 
 ## [Unreleased]
 
+### Repo review: docs refresh, architecture doc, ground-up design review, ideator submit-readback fix
+
+A review-and-cleanup pass (no roadmap chunk). Four parts:
+
+- **Ideator submit read-back fix (behavior).** The ideator subprocess host submitted via naked `store.submit()` with no committed-state read-back, so a transport-lost response stranded the task in `claimed` until the sweeper TTL — while the executor and evaluator hosts each carried their own identical `_submit_with_readback`. Hoisted one canonical `submit_with_readback` into `eden-service-common` (retry-before-orphan + `IllegalTransition`→read-back per `07-wire-protocol.md` §2.4/§8.1), routed all three hosts through it, and gave the ideator read-back for the first time. Executor keeps its `NoOpVariant` re-raise via a new `reraise` parameter. Direct coverage added; touched-service suite green.
+- **Docs refresh.** Entry-point and section docs had frozen at Phase 10/11; updated `README.md`, `CONTRIBUTING.md`, `spec/v0/README.md`, `reference/README.md`, `conformance/README.md`, and the package/service/compose/helm/scripts READMEs to the Phase-13 state. Two clarifying normative-spec fixes: `02-data-model.md` §3.5 (stale "no reassign op in v0" line, contradicted by chapters 04/05/07) and `04-task-protocol.md` §7.1 ("four keys"→"five" for `dispatch_mode`); renumbered the mislabeled DooD subsections in the worker-host binding.
+- **New docs.** `docs/architecture.md` (newcomer-facing map) and `docs/design/2026-07-04-ground-up-review.md` (outside-in architecture review: what a ground-up design would change, what to keep, defects found, a leverage-ranked cleanup program). The review's findings are filed as [#320](https://github.com/ealt/eden/issues/320)–[#332](https://github.com/ealt/eden/issues/332).
+- **Convention docs.** `docs/triage.md` now documents the milestone axis and the EDEN-project-board filing rule (previously discoverable only by inspecting existing issues). Also fixes the vestigial `--forgejo-url` duplicate-alias argparse artifact (orchestrator + web-ui CLIs) and flattens `conformance-coverage.py`'s excerpt links.
+
 ### helm-upgrade-smoke CI job (issue #284, Phase 13a §6.3 deferral)
 
 Adds the `helm-upgrade-smoke` CI job deferred from Phase 13a: proof that `helm upgrade` works **in place** against a live release carrying real experiment state. The core regression class it catches is "chart change breaks upgrade-in-place" — immutable-field patches (StatefulSet `volumeClaimTemplates`, Service `clusterIP`), PVC reclaim mistakes that lose Postgres/Forgejo data on upgrade, and render breaks against a live release's stored values.
