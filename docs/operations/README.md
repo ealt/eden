@@ -16,6 +16,11 @@ the wire-observable end-state should look like.
 - [Experiment data durability](experiment-data-durability.md) — where
   experiment data lives, durability posture, custom data root,
   migration from named volumes (Phase 12a-1g).
+- [Long-running experiments](long-running-experiments.md) — the
+  substrate-liveness rule: runs meant to outlive the working session
+  must not depend on processes, tunnels, or credentials tied to a
+  user's interactive machine; validate locally, run on managed
+  substrate.
 - [Experiment lifecycle](experiment-lifecycle.md) — terminating an
   experiment (operator wire op + orchestrator policy-driven path),
   reference termination policies, drain semantics, idempotent
