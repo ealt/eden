@@ -343,7 +343,12 @@ def _write_content(
 
 
 def _record_ideation_cost(
-    *, store: Store, task: IdeationTask, terminator: dict[str, Any], cwd: Path
+    *,
+    store: Store,
+    task: IdeationTask,
+    terminator: dict[str, Any],
+    cwd: Path,
+    idea_ids: tuple[str, ...],
 ) -> None:
     """Record the dispatch's gateway spend, if the subprocess reported any.
 
@@ -360,6 +365,15 @@ def _record_ideation_cost(
     reclaim really did spend twice. Nothing retries this call, so
     idempotency holds by construction (one record per dispatch) rather
     than by key.
+
+    ``idea_ids`` is what the dispatch actually produced (empty on any
+    failure path). The entry is attributed to an idea only when the
+    dispatch produced **exactly one** — a dispatch that emitted three
+    ideas spent one indivisible gateway call on all three, and picking
+    one, or splitting the cost three ways, would both be inventions.
+    Those entries stay attributed at the role/task level, and
+    ``summarize``'s ``by_idea`` bucket is documented as a partial
+    partition because of it.
     """
     record_outcome_cost(
         # The reference backends and `StoreClient` all satisfy the
@@ -371,6 +385,7 @@ def _record_ideation_cost(
         role="ideator",
         task_id=task.task_id,
         attempt_key=f"{task.task_id}-{uuid.uuid4().hex[:12]}",
+        idea_id=idea_ids[0] if len(idea_ids) == 1 else None,
     )
 
 
@@ -409,49 +424,64 @@ def handle_ideation_task(
             role="ideator",
         )
         raise
-    _record_ideation_cost(
-        store=store, task=task, terminator=terminator, cwd=ideator.cwd
-    )
-    if terminator.get("event") == "ideation-error":
-        log.warning(
-            "ideator_ideate_error",
-            extra={
-                "task_id": task.task_id,
-                "reason": terminator.get("reason"),
-                "ideas_seen": len(ideas),
-            },
-        )
-        submit_with_readback(
-            store=store,
-            task_id=task.task_id,
-            token=claim.worker_id,
-            submission=IdeaSubmission(status="error"),
-            role="ideator",
-        )
-        return
+    # Issue #343: record the dispatch's spend exactly once, on every
+    # path, in a `finally` — because `idea_id` attribution needs the ids
+    # `_persist_ideas` mints, which are only known after the terminator
+    # has been handled. Recording last means a crash between submit and
+    # record loses the cost row; recording first would have meant a
+    # crash between record and submit loses the *submission*, which is
+    # strictly worse.
+    idea_ids: tuple[str, ...] = ()
     try:
-        ids = _persist_ideas(
-            store, task=task, ideas=ideas, artifacts_dir=artifacts_dir
-        )
-    except ProtocolViolation as exc:
-        log.warning(
-            "ideator_idea_invalid",
-            extra={"task_id": task.task_id, "error": str(exc)},
-        )
+        if terminator.get("event") == "ideation-error":
+            log.warning(
+                "ideator_ideate_error",
+                extra={
+                    "task_id": task.task_id,
+                    "reason": terminator.get("reason"),
+                    "ideas_seen": len(ideas),
+                },
+            )
+            submit_with_readback(
+                store=store,
+                task_id=task.task_id,
+                token=claim.worker_id,
+                submission=IdeaSubmission(status="error"),
+                role="ideator",
+            )
+            return
+        try:
+            ids = _persist_ideas(
+                store, task=task, ideas=ideas, artifacts_dir=artifacts_dir
+            )
+        except ProtocolViolation as exc:
+            log.warning(
+                "ideator_idea_invalid",
+                extra={"task_id": task.task_id, "error": str(exc)},
+            )
+            submit_with_readback(
+                store=store,
+                task_id=task.task_id,
+                token=claim.worker_id,
+                submission=IdeaSubmission(status="error"),
+                role="ideator",
+            )
+            return
+        idea_ids = tuple(ids)
         submit_with_readback(
             store=store,
             task_id=task.task_id,
             token=claim.worker_id,
-            submission=IdeaSubmission(status="error"),
+            submission=IdeaSubmission(status="success", idea_ids=idea_ids),
             role="ideator",
         )
-        return
-    submit_with_readback(
-        store=store,
-        task_id=task.task_id,
-        token=claim.worker_id,
-        submission=IdeaSubmission(status="success", idea_ids=tuple(ids)),
-        role="ideator",
-    )
+    finally:
+        _record_ideation_cost(
+            store=store,
+            task=task,
+            terminator=terminator,
+            cwd=ideator.cwd,
+            idea_ids=idea_ids,
+        )
 
 

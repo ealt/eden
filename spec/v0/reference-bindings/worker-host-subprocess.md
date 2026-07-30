@@ -688,13 +688,30 @@ instead of an outcome file; everything else below is identical.
 
 | Key | Meaning |
 |---|---|
-| `agent_log` | Path to a Claude Code `--output-format stream-json` log. Absolute, or relative to cwd (the per-task worktree). The host reads the last `{"type": "result"}` record and takes `total_cost_usd`, the `usage` token counts, `num_turns`, `duration_ms`, and — when the run used exactly one model — the `modelUsage` key as the model label. |
-| `cost` | Already-normalized figures, for user code driving a non-Claude provider: any subset of `total_cost_usd`, `input_tokens`, `output_tokens`, `cache_creation_input_tokens`, `cache_read_input_tokens`, `num_turns`, `duration_ms`, `model`. |
+| `agent_log` | Path to a Claude Code `--output-format stream-json` log. Absolute, or relative to cwd (the per-task worktree). The host reads the last `{"type": "result"}` record and takes `total_cost_usd`, the `usage` token counts (including the `cache_creation` 5-minute / 1-hour split), `num_turns`, `duration_ms`, and the whole `modelUsage` map as a per-model breakdown. |
+| `cost` | Already-normalized figures, for user code driving a non-Claude provider: any subset of `total_cost_usd`, `input_tokens`, `output_tokens`, `cache_creation_input_tokens`, `cache_creation_5m_input_tokens`, `cache_creation_1h_input_tokens`, `cache_read_input_tokens`, `num_turns`, `duration_ms`, `model`, and `models` (a list of `{model, input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens, total_cost_usd}` objects). |
+
+Two token distinctions are load-bearing rather than pedantic, and a host
+that flattens either of them makes correct pricing impossible:
+
+- **Cache writes are recorded per TTL tier** (5-minute vs 1-hour),
+  because the two bill at different rates. A source that reports only
+  the aggregate leaves those tokens unpriceable — the reference rollup
+  reports that as a gap rather than guessing a tier.
+- **Per-model splits are preserved, not collapsed.** An attempt that
+  spanned models keeps one entry (cost is attributed per *attempt*) with
+  the per-model breakdown alongside the attempt totals, so a rollup can
+  slice by model without a second source.
 
 `cost` wins when both are present (an explicit report is the user's own
 accounting). For the R3-shaped experiment whose `execution_command`
 already writes a durable stream-json log, adopting this is one added key
 naming a file it already writes.
+
+`total_cost_usd` always means **as the provider reported it**. Dollars
+computed from token counts are a read-time concern of the rollup, kept in
+separate fields and labelled as derived, so a stored figure is always
+first-hand (see §11.2).
 
 The host records what it extracted in the store's cost ledger before
 submitting, keyed per **attempt** — so a task reclaimed and rerun
@@ -702,7 +719,15 @@ records both spends, while a retried submit records one. The executor
 keys on its freshly-minted `variant_id` and the evaluator on
 `(task_id, variant_id)`; the ideator has no stable per-attempt
 identifier, so it keys on a per-dispatch nonce (nothing retries that
-call, so one-record-per-dispatch holds by construction). Extraction and
+call, so one-record-per-dispatch holds by construction).
+
+Attribution to an **idea** follows the same "only when it is
+unambiguous" rule: the executor and evaluator both know the idea their
+variant came from, but an ideation dispatch that produced several ideas
+spent one indivisible call on all of them, so it is attributed to none of
+them (picking one, or splitting the cost N ways, would be an invention).
+The rollup's per-idea bucket is a partial partition because of it, and
+reports how many entries it excluded. Extraction and
 recording run while the per-task worktree still exists (a relative
 `agent_log` resolves against it).
 
@@ -728,3 +753,33 @@ read, both bearer-gated for worker-or-admin). Nothing about it is
 required of a conforming implementation and no conformance assertion
 depends on it. Giving cost a normative home is scoped on
 [issue #343](https://github.com/ealt/eden/issues/343).
+
+### 11.2 Deriving dollars from tokens
+
+A provider that reports token counts but no dollar figure (a typical
+OpenAI-compatible gateway) leaves an attempt with tokens and no cost. The
+reference rollup can price those from an **operator-supplied rate table**
+(`--price-table`; template at
+`reference/pricing/price-table.example.json`), and three properties keep
+that from becoming a source of false precision:
+
+- **Derived is never mistaken for reported.** Nothing writes a computed
+  figure into the ledger; derivation happens at read time, and the rollup
+  keeps `reported_cost_usd` and `derived_cost_usd` in separate fields with
+  a `basis` of `reported` / `derived` / `mixed` / `unpriced`.
+- **Rates are configuration with provenance.** A table MUST declare
+  `source` and `as_of`, both echoed into the report — published list
+  prices, negotiated rates, Bedrock-vs-direct, and cache-TTL variants all
+  differ and all go stale. An unfilled template prices nothing.
+- **An unpriced token class is a reported gap, never a zero.** A missing
+  rate that silently priced at 0 would turn "we don't know" into "it was
+  free".
+
+Rates are per **token class per model** — fresh input, cache write at the
+5-minute TTL, cache write at the 1-hour TTL, cache read — not one
+blended per-token number. Cache reads run roughly an order of magnitude
+cheaper than fresh input and 1-hour writes materially more expensive than
+5-minute ones, so a single rate applied to summed tokens can be wrong by a
+large multiple in either direction.
+
+All of this is reference-only; nothing about pricing is normative.

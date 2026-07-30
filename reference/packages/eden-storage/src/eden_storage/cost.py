@@ -30,12 +30,11 @@ Two properties are load-bearing for the ledger's purpose (answering
   the reference hosts' keys from the per-attempt identifiers.
 - **Attribution, not aggregation.** One row per spend event with the
   role / task / variant / idea it is attributable to; every rollup is a
-  read-time reduction over rows.
+  read-time reduction over rows ([`rollup.py`](rollup.py)).
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterable
 from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -59,6 +58,31 @@ CostSource = Literal["claude-code-stream-json", "worker-reported"]
 """
 
 
+class ModelUsage(BaseModel):
+    """One model's slice of an attempt's usage.
+
+    An attempt can span models (a fast model for tool loops, a stronger
+    one for the hard turn), and the cheapest thing to do — collapse it
+    to a single label — throws away exactly the breakdown that makes
+    "which model is the spend" answerable. So the per-model split is
+    kept as structure the rollup slices at read time, next to the
+    attempt-level totals rather than instead of them.
+
+    Deliberately narrower than :class:`CostEntry`: ``num_turns`` and
+    ``duration_ms`` belong to the attempt, not to a model within it, and
+    a per-model copy of them would be a fabricated division.
+    """
+
+    model_config = ConfigDict(strict=True, extra="forbid")
+
+    model: Annotated[str, Field(min_length=1)]
+    total_cost_usd: Annotated[float, Field(ge=0.0)] | None = None
+    input_tokens: Annotated[int, Field(ge=0)] | None = None
+    output_tokens: Annotated[int, Field(ge=0)] | None = None
+    cache_creation_input_tokens: Annotated[int, Field(ge=0)] | None = None
+    cache_read_input_tokens: Annotated[int, Field(ge=0)] | None = None
+
+
 class CostEntry(BaseModel):
     """One attributable spend event. Reference-only; not a wire schema.
 
@@ -67,6 +91,11 @@ class CostEntry(BaseModel):
     dropped one. A rollup sums what is present and reports how many
     entries were missing it rather than silently reading a partial total
     as a complete one.
+
+    ``total_cost_usd`` means **as the provider reported it** and is never
+    written by a derivation. Dollars computed from tokens are a
+    read-time concern (:mod:`eden_storage.pricing`) precisely so a
+    stored figure can always be trusted as first-hand.
     """
 
     model_config = ConfigDict(strict=True, extra="forbid")
@@ -82,12 +111,43 @@ class CostEntry(BaseModel):
     idea_id: Annotated[str, Field(min_length=1)] | None = None
 
     model: Annotated[str, Field(min_length=1)] | None = None
-    """Model label, when the source reports exactly one."""
+    """Model label, when the attempt used exactly one.
+
+    A convenience for the common case; ``models`` is the general answer
+    and is populated whether the attempt used one model or five.
+    """
+
+    models: list[ModelUsage] = Field(default_factory=list)
+    """Per-model usage split, when the source reports one.
+
+    A ``list``, not a ``tuple``: the entry round-trips through JSON on
+    the wire and through ``model_dump`` inside the store, and a JSON
+    array deserializes to a list — which ``strict=True`` would refuse to
+    coerce into a tuple. (Found the hard way: a tuple here made every
+    multi-model entry unrecordable *and* un-POSTable.)
+    """
 
     total_cost_usd: Annotated[float, Field(ge=0.0)] | None = None
+    """What the provider charged, as the provider reported it."""
+
     input_tokens: Annotated[int, Field(ge=0)] | None = None
     output_tokens: Annotated[int, Field(ge=0)] | None = None
     cache_creation_input_tokens: Annotated[int, Field(ge=0)] | None = None
+    """All cache writes, both TTL tiers."""
+
+    cache_creation_5m_input_tokens: Annotated[int, Field(ge=0)] | None = None
+    """Cache writes at the 5-minute TTL.
+
+    Split out from the aggregate because cache writes are priced **per
+    TTL tier** — a 1-hour write costs materially more than a 5-minute
+    one — so pricing tokens without the split means picking a tier and
+    hoping. Sums with the 1h field to ``cache_creation_input_tokens``
+    when the source reports the breakdown at all.
+    """
+
+    cache_creation_1h_input_tokens: Annotated[int, Field(ge=0)] | None = None
+    """Cache writes at the 1-hour TTL. See the 5m field."""
+
     cache_read_input_tokens: Annotated[int, Field(ge=0)] | None = None
     num_turns: Annotated[int, Field(ge=0)] | None = None
     duration_ms: Annotated[int, Field(ge=0)] | None = None
@@ -104,92 +164,6 @@ class CostEntry(BaseModel):
     def to_payload(self) -> dict[str, Any]:
         """JSON-shaped dict with absent optionals omitted."""
         return self.model_dump(mode="json", exclude_none=True)
-
-
-_TOKEN_FIELDS: tuple[str, ...] = (
-    "input_tokens",
-    "output_tokens",
-    "cache_creation_input_tokens",
-    "cache_read_input_tokens",
-    "num_turns",
-    "duration_ms",
-)
-
-
-class CostTotals(BaseModel):
-    """Summed figures over a set of ledger entries.
-
-    ``entries_missing_cost_usd`` is the honesty field: a source that
-    reports tokens but no dollar figure would otherwise make
-    ``total_cost_usd`` read as a complete total when it is a partial
-    one. A consumer that cares about completeness checks it rather than
-    inferring completeness from a non-zero sum.
-    """
-
-    model_config = ConfigDict(strict=True, extra="forbid")
-
-    entries: int = 0
-    entries_missing_cost_usd: int = 0
-    total_cost_usd: float = 0.0
-    input_tokens: int = 0
-    output_tokens: int = 0
-    cache_creation_input_tokens: int = 0
-    cache_read_input_tokens: int = 0
-    num_turns: int = 0
-    duration_ms: int = 0
-
-
-class CostSummary(BaseModel):
-    """Per-experiment cost rollup: overall, per role, per variant.
-
-    A read-time reduction over ledger rows, not stored state — so it can
-    never disagree with the ledger. Entries with no ``variant_id``
-    (ideation spend, which precedes any variant) count in ``totals`` and
-    ``by_role`` but appear in no ``by_variant`` bucket; ``by_role`` is
-    the complete partition.
-    """
-
-    model_config = ConfigDict(strict=True, extra="forbid")
-
-    experiment_id: str
-    totals: CostTotals
-    by_role: dict[str, CostTotals]
-    by_variant: dict[str, CostTotals]
-
-
-def _accumulate(totals: CostTotals, entry: CostEntry) -> None:
-    totals.entries += 1
-    if entry.total_cost_usd is None:
-        totals.entries_missing_cost_usd += 1
-    else:
-        totals.total_cost_usd += entry.total_cost_usd
-    for field in _TOKEN_FIELDS:
-        value = getattr(entry, field)
-        if value is not None:
-            setattr(totals, field, getattr(totals, field) + value)
-
-
-def summarize(experiment_id: str, entries: Iterable[CostEntry]) -> CostSummary:
-    """Reduce ledger entries into a :class:`CostSummary`.
-
-    A pure function so the same reduction serves an in-process consumer
-    and one reading entries over the wire — there is no server-side
-    summary endpoint to drift from it.
-    """
-    summary = CostSummary(
-        experiment_id=experiment_id,
-        totals=CostTotals(),
-        by_role={},
-        by_variant={},
-    )
-    for entry in entries:
-        _accumulate(summary.totals, entry)
-        _accumulate(summary.by_role.setdefault(entry.role, CostTotals()), entry)
-        if entry.variant_id is not None:
-            _accumulate(
-                summary.by_variant.setdefault(entry.variant_id, CostTotals()), entry
-            )
-    return summary
 
 
 def cost_entry_id(*, role: CostRole, attempt_key: str) -> str:

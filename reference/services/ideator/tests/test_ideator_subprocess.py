@@ -482,3 +482,93 @@ def test_two_dispatches_of_one_task_each_record(tmp_path: Path) -> None:
     entries = store.list_cost_entries()
     assert len(entries) == 2
     assert sum(e.total_cost_usd or 0.0 for e in entries) == 0.2
+
+
+def test_single_idea_dispatch_attributes_cost_to_that_idea(
+    tmp_path: Path,
+) -> None:
+    """One idea from one dispatch → unambiguous per-idea attribution.
+
+    This is the common case (the R3 bridge emits one idea per dispatch),
+    and it is what makes "which ideas cost what" answerable at all.
+    """
+    worker = _write_worker(
+        tmp_path,
+        """
+        import json, sys
+        print(json.dumps({"event": "ready"}), flush=True)
+        dispatch = json.loads(sys.stdin.readline())
+        task_id = dispatch["task_id"]
+        print(json.dumps({"event": "idea", "task_id": task_id,
+                          "slug": "p0", "priority": 1.0,
+                          "parent_commits": ["a" * 40],
+                          "content": "# c\\n"}), flush=True)
+        print(json.dumps({"event": "ideation-done", "task_id": task_id,
+                          "cost": {"total_cost_usd": 0.21}}), flush=True)
+        """,
+    )
+    store, _, ideator_id = _seed_store_and_repo(tmp_path)
+    _drive_one_ideation(store, ideator_id, tmp_path, worker)
+
+    submission = store.read_submission("ideation-1")
+    assert isinstance(submission, IdeaSubmission)
+    (idea_id,) = submission.idea_ids
+    (entry,) = store.list_cost_entries()
+    assert entry.idea_id == idea_id
+
+
+def test_multi_idea_dispatch_is_attributed_to_no_single_idea(
+    tmp_path: Path,
+) -> None:
+    """One indivisible gateway call produced three ideas.
+
+    Picking one, or splitting the cost three ways, would both be
+    inventions — so the entry stays at role/task level and the rollup
+    counts it as unattributed.
+    """
+    worker = _write_worker(
+        tmp_path,
+        """
+        import json, sys
+        print(json.dumps({"event": "ready"}), flush=True)
+        dispatch = json.loads(sys.stdin.readline())
+        task_id = dispatch["task_id"]
+        for i in range(3):
+            print(json.dumps({"event": "idea", "task_id": task_id,
+                              "slug": f"p{i}", "priority": 1.0,
+                              "parent_commits": ["a" * 40],
+                              "content": f"# c{i}\\n"}), flush=True)
+        print(json.dumps({"event": "ideation-done", "task_id": task_id,
+                          "cost": {"total_cost_usd": 0.6}}), flush=True)
+        """,
+    )
+    store, _, ideator_id = _seed_store_and_repo(tmp_path)
+    _drive_one_ideation(store, ideator_id, tmp_path, worker)
+
+    submission = store.read_submission("ideation-1")
+    assert isinstance(submission, IdeaSubmission)
+    assert len(submission.idea_ids) == 3
+    (entry,) = store.list_cost_entries()
+    assert entry.idea_id is None
+    assert entry.total_cost_usd == 0.6
+
+
+def test_failed_dispatch_records_without_an_idea(tmp_path: Path) -> None:
+    """No idea exists to attribute to, but the spend still lands."""
+    worker = _write_worker(
+        tmp_path,
+        """
+        import json, sys
+        print(json.dumps({"event": "ready"}), flush=True)
+        dispatch = json.loads(sys.stdin.readline())
+        print(json.dumps({"event": "ideation-error",
+                          "task_id": dispatch["task_id"],
+                          "cost": {"total_cost_usd": 0.3}}), flush=True)
+        """,
+    )
+    store, _, ideator_id = _seed_store_and_repo(tmp_path)
+    _drive_one_ideation(store, ideator_id, tmp_path, worker)
+
+    (entry,) = store.list_cost_entries()
+    assert entry.idea_id is None
+    assert entry.total_cost_usd == 0.3

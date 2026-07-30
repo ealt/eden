@@ -438,3 +438,142 @@ def test_two_attempts_on_one_task_each_record() -> None:
     entries = store.list_cost_entries()
     assert len(entries) == 2
     assert sum(e.total_cost_usd or 0.0 for e in entries) == pytest.approx(1.0)
+
+
+# ----------------------------------------------------------------------
+# Per-model splits + cache TTL tiers (issue #343 follow-up)
+# ----------------------------------------------------------------------
+
+
+def test_real_capture_carries_the_per_model_split() -> None:
+    """``modelUsage`` is preserved as structure, not collapsed to a label."""
+    fields = cost_from_agent_log(FIXTURE, task_id="execution-1")
+    assert fields is not None
+    (usage,) = fields.models
+    assert usage.model == "claude-sonnet-4-6"
+    assert usage.input_tokens == 6
+    assert usage.output_tokens == 637
+    assert usage.cache_creation_input_tokens == 16584
+    assert usage.cache_read_input_tokens == 47413
+    assert usage.total_cost_usd == pytest.approx(0.1233009)
+
+
+def test_real_capture_carries_the_cache_ttl_tiers() -> None:
+    """The 5m/1h split is what makes cache writes priceable.
+
+    Verbatim from the capture: this run's cache writes were all at the
+    1-hour TTL, which bills at a different rate than 5-minute writes.
+    """
+    fields = cost_from_agent_log(FIXTURE)
+    assert fields is not None
+    assert fields.cache_creation_input_tokens == 16584
+    assert fields.cache_creation_5m_input_tokens == 0
+    assert fields.cache_creation_1h_input_tokens == 16584
+
+
+def test_multi_model_run_keeps_every_model(tmp_path: Path) -> None:
+    """A multi-model attempt keeps its breakdown even with no single label."""
+    log = tmp_path / "multi.log"
+    log.write_text(
+        _result_line(
+            modelUsage={
+                "claude-sonnet-4-6": {
+                    "costUSD": 0.1,
+                    "inputTokens": 5,
+                    "outputTokens": 50,
+                },
+                "claude-haiku-4-5": {
+                    "costUSD": 0.036,
+                    "inputTokens": 2,
+                    "outputTokens": 10,
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    fields = cost_from_agent_log(log)
+    assert fields is not None
+    # No single honest label...
+    assert fields.model is None
+    # ...but the split survives, sorted for stable rollup output.
+    assert [u.model for u in fields.models] == [
+        "claude-haiku-4-5",
+        "claude-sonnet-4-6",
+    ]
+    assert fields.models[1].output_tokens == 50
+
+
+def test_malformed_model_usage_is_skipped_not_fatal(tmp_path: Path) -> None:
+    log = tmp_path / "bad-models.log"
+    log.write_text(
+        _result_line(modelUsage={"m1": "not-an-object", "m2": {"inputTokens": 3}})
+        + "\n",
+        encoding="utf-8",
+    )
+    fields = cost_from_agent_log(log)
+    assert fields is not None
+    assert [u.model for u in fields.models] == ["m2"]
+
+
+def test_model_usage_absent_leaves_models_empty(tmp_path: Path) -> None:
+    log = tmp_path / "nomodels.log"
+    log.write_text(_result_line(modelUsage="nope") + "\n", encoding="utf-8")
+    fields = cost_from_agent_log(log)
+    assert fields is not None
+    assert fields.models == ()
+    assert fields.total_cost_usd == pytest.approx(0.136)
+
+
+def test_reported_models_list_is_normalized() -> None:
+    """A gateway bridge can report its own per-model split."""
+    fields = cost_from_reported(
+        {
+            "models": [
+                {"model": "gw-a", "input_tokens": 10, "total_cost_usd": 0.2},
+                {"model": "gw-b", "output_tokens": 5},
+                {"input_tokens": 99},  # no label — not attributable
+                "junk",
+            ]
+        }
+    )
+    assert fields is not None
+    assert [u.model for u in fields.models] == ["gw-a", "gw-b"]
+    assert fields.models[0].total_cost_usd == pytest.approx(0.2)
+
+
+def test_reported_ttl_tier_keys_are_accepted() -> None:
+    fields = cost_from_reported(
+        {
+            "cache_creation_input_tokens": 30,
+            "cache_creation_5m_input_tokens": 10,
+            "cache_creation_1h_input_tokens": 20,
+        }
+    )
+    assert fields is not None
+    assert fields.cache_creation_5m_input_tokens == 10
+    assert fields.cache_creation_1h_input_tokens == 20
+
+
+def test_models_alone_is_enough_to_record() -> None:
+    """An entry with only a per-model split is still worth a row."""
+    fields = cost_from_reported({"models": [{"model": "gw-a", "input_tokens": 1}]})
+    assert fields is not None
+    assert not fields.is_empty()
+
+
+def test_recorded_entry_carries_models_and_tiers() -> None:
+    store = _store()
+    entry = record_outcome_cost(
+        store=store,
+        outcome={"status": "success", "agent_log": str(FIXTURE)},
+        base_dir=FIXTURE.parent,
+        role="executor",
+        task_id="execution-1",
+        attempt_key="variant-1",
+        variant_id="variant-1",
+    )
+    assert entry is not None
+    (stored,) = store.list_cost_entries()
+    assert [u.model for u in stored.models] == ["claude-sonnet-4-6"]
+    assert stored.cache_creation_1h_input_tokens == 16584

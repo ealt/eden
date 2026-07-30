@@ -20,10 +20,12 @@ with the identifiers it owns.
 about an attempt; a missing / truncated / malformed log MUST NOT fail an
 otherwise-good variant. Callers get ``None`` and log it.
 
-Only the aggregate ``usage`` totals are read. Per-model splits (the
-``modelUsage`` map) are collapsed to a single ``model`` label when the
-run used exactly one model and dropped otherwise — cost attribution is
-per attempt, not per model.
+Both the aggregate ``usage`` totals **and** the per-model ``modelUsage``
+split are read: the aggregate is what the attempt cost, the split is what
+each model contributed, and a rollup wants to slice by either. Cache
+writes are additionally kept per TTL tier (5-minute vs 1-hour), because
+the two bill at different rates and pricing the aggregate means picking
+one — see :mod:`eden_storage.pricing`.
 """
 
 from __future__ import annotations
@@ -36,7 +38,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from eden_storage import CostEntry, CostLedger, CostRole, CostSource, cost_entry_id
+from eden_storage import (
+    CostEntry,
+    CostLedger,
+    CostRole,
+    CostSource,
+    ModelUsage,
+    cost_entry_id,
+)
 
 log = logging.getLogger(__name__)
 
@@ -62,16 +71,21 @@ class CostFields:
 
     source: CostSource
     model: str | None = None
+    models: tuple[ModelUsage, ...] = ()
     total_cost_usd: float | None = None
     input_tokens: int | None = None
     output_tokens: int | None = None
     cache_creation_input_tokens: int | None = None
+    cache_creation_5m_input_tokens: int | None = None
+    cache_creation_1h_input_tokens: int | None = None
     cache_read_input_tokens: int | None = None
     num_turns: int | None = None
     duration_ms: int | None = None
 
     def is_empty(self) -> bool:
         """True when no figure was recovered (nothing worth recording)."""
+        if self.models:
+            return False
         return all(
             getattr(self, name) is None
             for name in (
@@ -79,6 +93,8 @@ class CostFields:
                 "input_tokens",
                 "output_tokens",
                 "cache_creation_input_tokens",
+                "cache_creation_5m_input_tokens",
+                "cache_creation_1h_input_tokens",
                 "cache_read_input_tokens",
                 "num_turns",
                 "duration_ms",
@@ -130,17 +146,56 @@ def cost_from_reported(reported: dict[str, Any]) -> CostFields | None:
     fields = CostFields(
         source="worker-reported",
         model=_as_str(reported.get("model")),
+        models=_reported_models(reported.get("models")),
         total_cost_usd=_as_float(reported.get("total_cost_usd")),
         input_tokens=_as_int(reported.get("input_tokens")),
         output_tokens=_as_int(reported.get("output_tokens")),
         cache_creation_input_tokens=_as_int(
             reported.get("cache_creation_input_tokens")
         ),
+        cache_creation_5m_input_tokens=_as_int(
+            reported.get("cache_creation_5m_input_tokens")
+        ),
+        cache_creation_1h_input_tokens=_as_int(
+            reported.get("cache_creation_1h_input_tokens")
+        ),
         cache_read_input_tokens=_as_int(reported.get("cache_read_input_tokens")),
         num_turns=_as_int(reported.get("num_turns")),
         duration_ms=_as_int(reported.get("duration_ms")),
     )
     return None if fields.is_empty() else fields
+
+
+def _reported_models(raw: Any) -> tuple[ModelUsage, ...]:
+    """Normalize a worker-reported ``models`` list.
+
+    Each entry needs a ``model`` label to be attributable at all; one
+    without a label is dropped rather than bucketed under a placeholder,
+    since an ``"unknown"`` bucket in a per-model rollup is worse than an
+    honest gap.
+    """
+    if not isinstance(raw, list):
+        return ()
+    out: list[ModelUsage] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        label = _as_str(item.get("model"))
+        if label is None:
+            continue
+        out.append(
+            ModelUsage(
+                model=label,
+                total_cost_usd=_as_float(item.get("total_cost_usd")),
+                input_tokens=_as_int(item.get("input_tokens")),
+                output_tokens=_as_int(item.get("output_tokens")),
+                cache_creation_input_tokens=_as_int(
+                    item.get("cache_creation_input_tokens")
+                ),
+                cache_read_input_tokens=_as_int(item.get("cache_read_input_tokens")),
+            )
+        )
+    return tuple(out)
 
 
 def cost_from_agent_log(path: Path, *, task_id: str = "") -> CostFields | None:
@@ -160,20 +215,65 @@ def cost_from_agent_log(path: Path, *, task_id: str = "") -> CostFields | None:
         return None
     usage = record.get("usage")
     usage = usage if isinstance(usage, dict) else {}
+    cache_creation = usage.get("cache_creation")
+    cache_creation = cache_creation if isinstance(cache_creation, dict) else {}
     fields = CostFields(
         source="claude-code-stream-json",
         model=_sole_model(record),
+        models=_stream_json_models(record),
         total_cost_usd=_as_float(record.get("total_cost_usd")),
         input_tokens=_as_int(usage.get("input_tokens")),
         output_tokens=_as_int(usage.get("output_tokens")),
         cache_creation_input_tokens=_as_int(
             usage.get("cache_creation_input_tokens")
         ),
+        # The per-TTL breakdown is what makes cache writes priceable:
+        # 5-minute and 1-hour writes bill at different rates, so the
+        # aggregate alone forces a guess (see eden_storage.pricing).
+        cache_creation_5m_input_tokens=_as_int(
+            cache_creation.get("ephemeral_5m_input_tokens")
+        ),
+        cache_creation_1h_input_tokens=_as_int(
+            cache_creation.get("ephemeral_1h_input_tokens")
+        ),
         cache_read_input_tokens=_as_int(usage.get("cache_read_input_tokens")),
         num_turns=_as_int(record.get("num_turns")),
         duration_ms=_as_int(record.get("duration_ms")),
     )
     return None if fields.is_empty() else fields
+
+
+def _stream_json_models(record: dict[str, Any]) -> tuple[ModelUsage, ...]:
+    """Read the per-model split out of ``modelUsage``.
+
+    Claude Code reports this map keyed by model id with camelCase token
+    fields; it is the only place a multi-model attempt's breakdown
+    exists, so it is preserved as structure rather than collapsed to a
+    single label (which is what :func:`_sole_model` can still offer for
+    the single-model case). Entries are sorted by model id so a rollup's
+    output is stable across runs.
+    """
+    model_usage = record.get("modelUsage")
+    if not isinstance(model_usage, dict):
+        return ()
+    out: list[ModelUsage] = []
+    for label in sorted(model_usage):
+        stats = model_usage[label]
+        if not isinstance(stats, dict) or not _as_str(label):
+            continue
+        out.append(
+            ModelUsage(
+                model=label,
+                total_cost_usd=_as_float(stats.get("costUSD")),
+                input_tokens=_as_int(stats.get("inputTokens")),
+                output_tokens=_as_int(stats.get("outputTokens")),
+                cache_creation_input_tokens=_as_int(
+                    stats.get("cacheCreationInputTokens")
+                ),
+                cache_read_input_tokens=_as_int(stats.get("cacheReadInputTokens")),
+            )
+        )
+    return tuple(out)
 
 
 def _last_result_record(path: Path, *, task_id: str) -> dict[str, Any] | None:
@@ -282,10 +382,13 @@ def record_outcome_cost(
             variant_id=variant_id,
             idea_id=idea_id,
             model=fields.model,
+            models=list(fields.models),
             total_cost_usd=fields.total_cost_usd,
             input_tokens=fields.input_tokens,
             output_tokens=fields.output_tokens,
             cache_creation_input_tokens=fields.cache_creation_input_tokens,
+            cache_creation_5m_input_tokens=fields.cache_creation_5m_input_tokens,
+            cache_creation_1h_input_tokens=fields.cache_creation_1h_input_tokens,
             cache_read_input_tokens=fields.cache_read_input_tokens,
             num_turns=fields.num_turns,
             duration_ms=fields.duration_ms,

@@ -188,6 +188,9 @@ def _handle_one(
             task_id=task.task_id,
             attempt_key=f"{task.task_id}-{variant_id}",
             variant_id=variant_id,
+            # The variant names the idea it came from, so evaluation
+            # spend attributes per-idea too (issue #343).
+            idea_id=variant.idea_id,
         )
     finally:
         wt.remove()

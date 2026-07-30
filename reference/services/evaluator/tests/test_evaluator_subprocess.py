@@ -329,3 +329,7 @@ def test_success_records_cost_for_the_evaluator_role(tmp_path: Path) -> None:
     assert entry.variant_id == submission.variant_id
     assert entry.entry_id == f"cost-evaluator-evaluate-1-{submission.variant_id}"
     assert entry.total_cost_usd == 0.05
+    # The variant names its producing idea, so evaluation spend rolls up
+    # per idea too (issue #343 follow-up).
+    assert entry.idea_id == store.read_variant(submission.variant_id).idea_id
+    assert entry.idea_id is not None

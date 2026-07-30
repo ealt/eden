@@ -22,10 +22,8 @@ from .cost import (
     CostEntry,
     CostRole,
     CostSource,
-    CostSummary,
-    CostTotals,
+    ModelUsage,
     cost_entry_id,
-    summarize,
 )
 from .errors import (
     AlreadyExists,
@@ -47,7 +45,15 @@ from .errors import (
 )
 from .memory import InMemoryStore
 from .postgres import PostgresStore, ensure_readonly_role
+from .pricing import (
+    DerivedCost,
+    ModelRates,
+    PriceTable,
+    derive_cost,
+    load_price_table,
+)
 from .protocol import ArtifactStore, CostLedger, Store
+from .rollup import CostSummary, CostTokenTotals, CostTotals, summarize
 from .sqlite import SqliteStore
 from .submissions import (
     EvaluationSubmission,
@@ -67,8 +73,10 @@ __all__ = [
     "CostRole",
     "CostSource",
     "CostSummary",
+    "CostTokenTotals",
     "CostTotals",
     "CycleDetected",
+    "DerivedCost",
     "DispatchError",
     "EvaluationSubmission",
     "FileArtifactBackend",
@@ -80,12 +88,15 @@ __all__ = [
     "InMemoryStore",
     "InvalidName",
     "InvalidPrecondition",
+    "ModelRates",
+    "ModelUsage",
     "NotClaimed",
     "NotFound",
     "IdeaSubmission",
     "ImportResult",
     "NoOpVariant",
     "PostgresStore",
+    "PriceTable",
     "RESERVED_GROUP_NAMES",
     "RESERVED_WORKER_NAMES",
     "ReservedIdentifier",
@@ -98,8 +109,10 @@ __all__ = [
     "WorkerNotRegistered",
     "WrongClaimant",
     "cost_entry_id",
+    "derive_cost",
     "ensure_readonly_role",
     "iter_events_by_type",
+    "load_price_table",
     "submissions_equivalent",
     "summarize",
 ]
