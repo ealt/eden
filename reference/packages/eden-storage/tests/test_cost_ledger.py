@@ -5,6 +5,11 @@ ledger's two guarantees — first-write-wins idempotency and a stable
 cross-backend read order — are exactly the ones a per-backend
 implementation can get subtly wrong.
 """
+# The `make_store` fixture is typed `Store`; the cost ledger is deliberately
+# NOT on that Protocol (see protocol.py), while every concrete backend does
+# satisfy it. Same widening pragma the repo uses elsewhere for fixture
+# attributes — e.g. tests/test_no_op_variant.py.
+# pyright: reportAttributeAccessIssue=false
 
 from __future__ import annotations
 

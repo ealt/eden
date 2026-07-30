@@ -65,7 +65,7 @@ class _PostgresCostMixin:
         """
         from psycopg import sql
 
-        clauses = []
+        clauses: list[sql.Composable] = []
         params: list[str] = []
         if role is not None:
             clauses.append(sql.SQL("role = %s"))
@@ -73,16 +73,12 @@ class _PostgresCostMixin:
         if variant_id is not None:
             clauses.append(sql.SQL("variant_id = %s"))
             params.append(variant_id)
-        where = (
-            sql.SQL(" WHERE ") + sql.SQL(" AND ").join(clauses)
-            if clauses
-            else sql.SQL("")
-        )
-        query = (
-            sql.SQL("SELECT data FROM cost_entry")
-            + where
-            + sql.SQL(" ORDER BY recorded_at, entry_id")
-        )
+        parts: list[sql.Composable] = [sql.SQL("SELECT data FROM cost_entry")]
+        if clauses:
+            parts.append(sql.SQL(" WHERE "))
+            parts.append(sql.SQL(" AND ").join(clauses))
+        parts.append(sql.SQL(" ORDER BY recorded_at, entry_id"))
+        query = sql.Composed(parts)
         with self._conn.cursor() as cur:
             cur.execute(query, tuple(params))
             rows = cur.fetchall()
