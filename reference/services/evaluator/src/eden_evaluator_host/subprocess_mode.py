@@ -17,7 +17,7 @@ import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from eden_contracts import EvaluationTask, ExperimentConfig
 from eden_service_common import (
@@ -26,12 +26,14 @@ from eden_service_common import (
     make_cidfile_callbacks,
     make_cidfile_path,
     parse_json_line,
+    record_outcome_cost,
     spawn,
     submit_with_readback,
     sweep_host_worktrees,
     wrap_command,
 )
 from eden_storage import (
+    CostLedger,
     EvaluationSubmission,
     InvalidPrecondition,
     Store,
@@ -172,6 +174,20 @@ def _handle_one(
             objective=objective,
             config=config,
             worker_id=worker_id,
+        )
+        # Issue #343: an LLM-driven evaluator spends money too. Record
+        # before the worktree goes away — a relative `agent_log`
+        # resolves against it. The attempt key pairs the task with the
+        # variant so a reclaimed-and-rerun evaluation records twice
+        # while a retried submit does not.
+        record_outcome_cost(
+            store=cast(CostLedger, store),
+            outcome=outcome,
+            base_dir=wt.path,
+            role="evaluator",
+            task_id=task.task_id,
+            attempt_key=f"{task.task_id}-{variant_id}",
+            variant_id=variant_id,
         )
     finally:
         wt.remove()

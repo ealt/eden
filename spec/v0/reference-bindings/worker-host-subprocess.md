@@ -111,8 +111,13 @@ MUST carry the same `task_id` as the dispatch.
  "slug": "p0", "priority": 1.0,
  "parent_commits": ["abc…"],
  "content": "free-form markdown text"}
-{"event": "ideation-done", "task_id": "ideation-…"}
+{"event": "ideation-done", "task_id": "ideation-…",
+ "cost": {"input_tokens": 4200, "output_tokens": 830}}
 ```
+
+The terminator MAY carry the OPTIONAL cost-capture keys (`cost` /
+`agent_log`, §11) — on `ideation-error` too, since a failed ideation
+attempt still spent tokens.
 
 If `content` is present, the host writes it to
 `<artifacts_dir>/ideas/<idea_id>/content.md` and uses the
@@ -178,10 +183,12 @@ repository write becomes observable. The reference flow is:
 
    ```json
    {"status": "success", "commit_sha": "def…",
-    "description": "free-form summary"}
+    "description": "free-form summary",
+    "agent_log": "/abs/path/to/execution_variant-….log"}
    ```
 
-   or `{"status": "error", "description": "…"}`.
+   or `{"status": "error", "description": "…"}`. `agent_log` /
+   `cost` are the OPTIONAL cost-capture keys — see §11.
 8. Validate `commit_sha` exists and `is_ancestor(parent, commit_sha)`
    for every parent in `idea.parent_commits` (chapter 3 §3.3).
 9. `repo.create_ref("refs/heads/work/<…>", commit_sha)`.
@@ -222,10 +229,12 @@ no free-form field; see §5).
 
    ```json
    {"status": "success", "evaluation": {"score": 0.83},
-    "artifacts_uri": "file:///…"}
+    "artifacts_uri": "file:///…",
+    "agent_log": "/abs/path/to/evaluate-….log"}
    ```
 
-   or `{"status": "error" | "evaluation_error"}`. (Under the deferred
+   or `{"status": "error" | "evaluation_error"}`. `agent_log` /
+   `cost` are the OPTIONAL cost-capture keys — see §11. (Under the deferred
    #166 cutover the host stages the subprocess's artifact bytes and
    deposits them over the wire, stamping an `eden://artifacts/<id>`
    URI — see §10.)
@@ -666,3 +675,56 @@ lay out artifacts however they like.
 > the bundle viewer reads entries from a fetched blob in memory, and the
 > physical layout becomes server-internal. The `file://` layout above is
 > the current reference-host behavior until that cutover lands.
+
+## 11. Cost capture (issue #343)
+
+A worker host never talks to an LLM itself — the user's `*_command`
+does. So only the user's process knows what an attempt cost, and the
+reference hosts read it back through two OPTIONAL keys on the outcome
+JSON they already parse:
+
+The same two keys ride the ideator's JSON-line terminator (§2.3)
+instead of an outcome file; everything else below is identical.
+
+| Key | Meaning |
+|---|---|
+| `agent_log` | Path to a Claude Code `--output-format stream-json` log. Absolute, or relative to cwd (the per-task worktree). The host reads the last `{"type": "result"}` record and takes `total_cost_usd`, the `usage` token counts, `num_turns`, `duration_ms`, and — when the run used exactly one model — the `modelUsage` key as the model label. |
+| `cost` | Already-normalized figures, for user code driving a non-Claude provider: any subset of `total_cost_usd`, `input_tokens`, `output_tokens`, `cache_creation_input_tokens`, `cache_read_input_tokens`, `num_turns`, `duration_ms`, `model`. |
+
+`cost` wins when both are present (an explicit report is the user's own
+accounting). For the R3-shaped experiment whose `execution_command`
+already writes a durable stream-json log, adopting this is one added key
+naming a file it already writes.
+
+The host records what it extracted in the store's cost ledger before
+submitting, keyed per **attempt** — so a task reclaimed and rerun
+records both spends, while a retried submit records one. The executor
+keys on its freshly-minted `variant_id` and the evaluator on
+`(task_id, variant_id)`; the ideator has no stable per-attempt
+identifier, so it keys on a per-dispatch nonce (nothing retries that
+call, so one-record-per-dispatch holds by construction). Extraction and
+recording run while the per-task worktree still exists (a relative
+`agent_log` resolves against it).
+
+Every failure mode here is a **no-op, never an error**: a missing key, a
+missing / truncated / non-JSON log, a deadline-killed agent whose log
+has no `result` record, or an unreachable ledger all leave the attempt's
+outcome exactly as it would have been. Cost is bookkeeping about an
+attempt, not part of it.
+
+### 11.1 Where it lands
+
+`spec/v0` has no home for cost: the chapter-3 submission shapes carry no
+cost field, the chapter-2 `Variant` record has no cost property, and the
+chapter-5 event registry is closed at v0. Extra keys on an execution
+submission payload are silently dropped by the reference deserializer,
+and extra keys on an *evaluation* payload are rejected outright by the
+`evaluation_schema` exact-key-match rule (chapter 2 §9.2) — so there is
+no smuggling route either.
+
+The reference impl therefore keeps a **non-normative** ledger reached
+through `/_reference/experiments/{E}/cost` (`POST` to record, `GET` to
+read, both bearer-gated for worker-or-admin). Nothing about it is
+required of a conforming implementation and no conformance assertion
+depends on it. Giving cost a normative home is scoped on
+[issue #343](https://github.com/ealt/eden/issues/343).

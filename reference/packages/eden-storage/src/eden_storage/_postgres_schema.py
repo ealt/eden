@@ -242,6 +242,31 @@ def _apply_v9(cur: Any) -> None:
         cur.execute(stmt)
 
 
+# Issue #343: the reference-only cost ledger (mirrors the SQLite v10
+# table). `role` / `variant_id` / `recorded_at` are denormalized out of
+# the CostEntry JSON in `data` so the rollup's filters and ordering
+# index; `data` stays the source of truth. No event accompanies a cost
+# row — see `_ops/cost.py`.
+_V10_STATEMENTS: list[str] = [
+    """
+    CREATE TABLE cost_entry (
+        entry_id text NOT NULL PRIMARY KEY,
+        recorded_at text NOT NULL,
+        role text NOT NULL,
+        variant_id text,
+        data text NOT NULL
+    )
+    """,
+    "CREATE INDEX cost_entry_by_role ON cost_entry(role)",
+    "CREATE INDEX cost_entry_by_variant ON cost_entry(variant_id)",
+]
+
+
+def _apply_v10(cur: Any) -> None:
+    for stmt in _V10_STATEMENTS:
+        cur.execute(stmt)
+
+
 _MIGRATIONS: list[Callable[[Any], None]] = [
     _apply_v1,
     _apply_v2,
@@ -252,6 +277,7 @@ _MIGRATIONS: list[Callable[[Any], None]] = [
     _apply_v7,
     _apply_v8,
     _apply_v9,
+    _apply_v10,
 ]
 
 

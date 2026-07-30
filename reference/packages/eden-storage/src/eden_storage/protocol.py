@@ -64,6 +64,7 @@ from eden_contracts import (
     Worker,
 )
 
+from .cost import CostEntry
 from .submissions import Submission
 
 if TYPE_CHECKING:
@@ -628,6 +629,48 @@ class Store(Protocol):
         Store-managed entity + the imported experiment's runtime state +
         ``imported_from`` per chapter 10 §10.
         """
+        ...
+
+
+class CostLedger(Protocol):
+    """Cost-ledger interface — **reference-only, non-normative** (issue #343).
+
+    Separate from :class:`Store` for the same reason as
+    :class:`ArtifactStore`, plus a stronger one: nothing here is in
+    ``spec/v0``, so folding it onto ``Store`` would put a reference
+    extension inside the structural interface a *conforming*
+    implementation is measured against. Both the three reference
+    backends and the wire ``StoreClient`` satisfy this protocol — unlike
+    artifacts, the ledger does have a wire surface (the ``/_reference/``
+    cost routes), because the reference worker hosts reach their store
+    over HTTP.
+
+    See [`cost.py`](cost.py) for why cost lives here rather than on the
+    ``Variant`` record or a submission payload.
+    """
+
+    @property
+    def experiment_id(self) -> str:
+        """The experiment every entry in this ledger belongs to."""
+        ...
+
+    def record_cost(self, entry: CostEntry) -> None:
+        """Record one spend event; first-write-wins on ``entry.entry_id``.
+
+        A repeat ``entry_id`` is a no-op, so a host that re-records after
+        a transport failure cannot double-count. ``recorded_at`` is
+        stamped by the store. Raises ``InvalidPrecondition`` on an
+        experiment-id mismatch.
+        """
+        ...
+
+    def list_cost_entries(
+        self,
+        *,
+        role: str | None = None,
+        variant_id: str | None = None,
+    ) -> list[CostEntry]:
+        """Return recorded entries ordered by ``(recorded_at, entry_id)``."""
         ...
 
 

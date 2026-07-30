@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import textwrap
 import time
 from pathlib import Path
@@ -265,3 +266,66 @@ def test_subprocess_timeout_routes_to_eval_error(tmp_path: Path) -> None:
     submission = store.read_submission("evaluate-1")
     assert isinstance(submission, EvaluationSubmission)
     assert submission.status == "evaluation_error"
+
+
+def test_success_records_cost_for_the_evaluator_role(tmp_path: Path) -> None:
+    """An LLM-driven evaluator's spend lands in the ledger (issue #343).
+
+    Same shared extraction the executor host uses; what this pins is the
+    evaluator's own attribution — ``role="evaluator"`` and a per-attempt
+    key built from ``(task_id, variant_id)`` rather than the variant
+    alone, since one variant can be evaluated by more than one task.
+    """
+    store, repo_path, _, _, evaluator_id = _store_with_evaluable_variant(tmp_path)
+    log = tmp_path / "agent.log"
+    log.write_text(
+        json.dumps(
+            {
+                "type": "result",
+                "subtype": "success",
+                "total_cost_usd": 0.05,
+                "usage": {"input_tokens": 3, "output_tokens": 11},
+                "modelUsage": {"claude-sonnet-4-6": {"costUSD": 0.05}},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    body = f"""
+    import json, os
+    from pathlib import Path
+    out = Path.cwd() / os.environ["EDEN_OUTPUT"]
+    out.write_text(json.dumps({{"status": "success",
+                               "evaluation": {{"score": 0.7}},
+                               "agent_log": {str(log)!r}}}))
+    """
+    config = _config(
+        command=_write_command(tmp_path, body),
+        repo_path=repo_path,
+        experiment_dir=tmp_path,
+        worktrees_root=tmp_path / "wt-root",
+    )
+    host_subdir = host_worktrees_subdir(worktrees_root=config.worktrees_root)
+    host_subdir.mkdir(parents=True, exist_ok=True)
+    task_raw = store.list_tasks(kind="evaluation", state="pending")[0]
+    assert isinstance(task_raw, EvaluationTask)
+    _handle_one(
+        store=store,
+        worker_id=evaluator_id,
+        task=task_raw,
+        config=config,
+        host_subdir=host_subdir,
+        evaluation_schema={"score": "real"},
+        objective={"expr": "score", "direction": "maximize"},
+    )
+
+    submission = store.read_submission("evaluate-1")
+    assert isinstance(submission, EvaluationSubmission)
+    assert submission.status == "success"
+
+    (entry,) = store.list_cost_entries()
+    assert entry.role == "evaluator"
+    assert entry.task_id == "evaluate-1"
+    assert entry.variant_id == submission.variant_id
+    assert entry.entry_id == f"cost-evaluator-evaluate-1-{submission.variant_id}"
+    assert entry.total_cost_usd == 0.05

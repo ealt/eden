@@ -53,6 +53,7 @@ from ._base import (
     _StoreBase,
     _Tx,
 )
+from ._postgres_cost import _PostgresCostMixin
 from .errors import InvalidPrecondition
 from .submissions import (
     Submission,
@@ -76,6 +77,7 @@ _READONLY_GRANT_TABLES: tuple[str, ...] = (
     "group_membership",
     "schema_version",
     "artifact",
+    "cost_entry",
 )
 """Tables the 12a-1f readonly role gets full-table SELECT on.
 
@@ -450,7 +452,7 @@ def _submission_from_row(kind: str, data: str) -> Submission:
     return submission_from_payload(kind, json.loads(data))
 
 
-class PostgresStore(_StoreBase):
+class PostgresStore(_PostgresCostMixin, _StoreBase):
     """Postgres-backed ``Store``. See module docstring for serialization strategy.
 
     The store either initializes a fresh database (when the
@@ -867,6 +869,8 @@ class PostgresStore(_StoreBase):
                 )
         for opaque_id, metadata in tx.artifacts.items():
             self._upsert_artifact(opaque_id, metadata)
+        for entry_id, cost_entry in tx.cost_entries.items():
+            self._insert_cost_entry(entry_id, cost_entry)
         if tx.dispatch_mode is not None:
             with self._conn.cursor() as cur:
                 cur.execute(

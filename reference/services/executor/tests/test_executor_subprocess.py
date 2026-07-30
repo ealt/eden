@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import textwrap
 import time
 from pathlib import Path
@@ -291,3 +292,184 @@ def test_subprocess_timeout_routes_to_error(tmp_path: Path) -> None:
     submission = store.read_submission("execution-1")
     assert isinstance(submission, VariantSubmission)
     assert submission.status == "error"
+
+
+# ----------------------------------------------------------------------
+# Cost capture (issue #343)
+# ----------------------------------------------------------------------
+
+_RESULT_LINE = json.dumps(
+    {
+        "type": "result",
+        "subtype": "success",
+        "total_cost_usd": 0.1233009,
+        "num_turns": 4,
+        "duration_ms": 18118,
+        "usage": {"input_tokens": 6, "output_tokens": 637},
+        "modelUsage": {"claude-sonnet-4-6": {"costUSD": 0.1233009}},
+    }
+)
+
+
+def _drive_one(
+    store: InMemoryStore,
+    repo_path: str,
+    executor_id: str,
+    tmp_path: Path,
+    command: str,
+) -> None:
+    config = _config(
+        command=command,
+        repo_path=repo_path,
+        experiment_dir=tmp_path,
+        worktrees_root=tmp_path / "wt-root",
+    )
+    host_subdir = host_worktrees_subdir(worktrees_root=config.worktrees_root)
+    host_subdir.mkdir(parents=True, exist_ok=True)
+    task_raw = store.list_tasks(kind="execution", state="pending")[0]
+    assert isinstance(task_raw, ExecutionTask)
+    _handle_one(
+        store=store,
+        worker_id=executor_id,
+        task=task_raw,
+        config=config,
+        host_subdir=host_subdir,
+    )
+
+
+def test_success_path_records_cost_attributed_to_the_variant(
+    tmp_path: Path,
+) -> None:
+    """The host parses the agent log the user command points at."""
+    store, repo_path, _, executor_id = _store_with_idea(tmp_path)
+    log = tmp_path / "agent.log"
+    log.write_text(_RESULT_LINE + "\n", encoding="utf-8")
+    body = f"""
+    import json, os, subprocess
+    from pathlib import Path
+    cwd = Path.cwd()
+    (cwd / "out.txt").write_text("x\\n")
+    env = {{**os.environ,
+           "GIT_AUTHOR_NAME": "T", "GIT_AUTHOR_EMAIL": "t@i",
+           "GIT_COMMITTER_NAME": "T", "GIT_COMMITTER_EMAIL": "t@i"}}
+    subprocess.run(["git", "add", "out.txt"], cwd=cwd, check=True)
+    subprocess.run(["git", "-c", "commit.gpgsign=false", "commit", "-m", "x"],
+                   cwd=cwd, env=env, check=True)
+    sha = subprocess.run(["git", "rev-parse", "HEAD"], cwd=cwd,
+                         capture_output=True, text=True, check=True).stdout.strip()
+    (cwd / os.environ["EDEN_OUTPUT"]).write_text(json.dumps(
+        {{"status": "success", "commit_sha": sha, "agent_log": {str(log)!r}}}))
+    """
+    _drive_one(
+        store, repo_path, executor_id, tmp_path, _write_command(tmp_path, body)
+    )
+
+    submission = store.read_submission("execution-1")
+    assert isinstance(submission, VariantSubmission)
+    assert submission.status == "success"
+
+    (entry,) = store.list_cost_entries()
+    assert entry.role == "executor"
+    assert entry.task_id == "execution-1"
+    assert entry.variant_id == submission.variant_id
+    assert entry.idea_id == "idea-x1"
+    assert entry.source == "claude-code-stream-json"
+    assert entry.total_cost_usd == 0.1233009
+    assert entry.model == "claude-sonnet-4-6"
+    assert entry.entry_id == f"cost-executor-{submission.variant_id}"
+
+
+def test_relative_agent_log_inside_the_worktree_is_read_before_cleanup(
+    tmp_path: Path,
+) -> None:
+    """Cost is extracted while the worktree still exists.
+
+    A relative ``agent_log`` resolves under the per-task worktree, which
+    the host removes at task end — so this fails if the extraction ever
+    moves after cleanup. The unit tests can't catch that ordering; only
+    driving the real handler can.
+    """
+    store, repo_path, _, executor_id = _store_with_idea(tmp_path)
+    body = f"""
+    import json, os
+    from pathlib import Path
+    cwd = Path.cwd()
+    (cwd / "agent.log").write_text({_RESULT_LINE!r} + "\\n")
+    (cwd / os.environ["EDEN_OUTPUT"]).write_text(json.dumps(
+        {{"status": "error", "agent_log": "agent.log"}}))
+    """
+    _drive_one(
+        store, repo_path, executor_id, tmp_path, _write_command(tmp_path, body)
+    )
+
+    (entry,) = store.list_cost_entries()
+    assert entry.total_cost_usd == 0.1233009
+
+
+def test_failed_attempt_still_records_its_spend(tmp_path: Path) -> None:
+    """A variant that errored still cost money; the ledger says so."""
+    store, repo_path, _, executor_id = _store_with_idea(tmp_path)
+    log = tmp_path / "agent.log"
+    log.write_text(_RESULT_LINE + "\n", encoding="utf-8")
+    body = f"""
+    import json, os
+    from pathlib import Path
+    (Path.cwd() / os.environ["EDEN_OUTPUT"]).write_text(json.dumps(
+        {{"status": "error", "agent_log": {str(log)!r}}}))
+    """
+    _drive_one(
+        store, repo_path, executor_id, tmp_path, _write_command(tmp_path, body)
+    )
+
+    submission = store.read_submission("execution-1")
+    assert isinstance(submission, VariantSubmission)
+    assert submission.status == "error"
+
+    (entry,) = store.list_cost_entries()
+    assert entry.variant_id == submission.variant_id
+    assert entry.total_cost_usd == 0.1233009
+
+
+def test_outcome_without_cost_keys_records_nothing(tmp_path: Path) -> None:
+    """The keys are optional — an experiment that ignores them still runs."""
+    store, repo_path, _, executor_id = _store_with_idea(tmp_path)
+    body = """
+    import json, os
+    from pathlib import Path
+    (Path.cwd() / os.environ["EDEN_OUTPUT"]).write_text(
+        json.dumps({"status": "error"}))
+    """
+    _drive_one(
+        store, repo_path, executor_id, tmp_path, _write_command(tmp_path, body)
+    )
+    assert store.list_cost_entries() == []
+
+
+def test_unreadable_agent_log_does_not_fail_the_attempt(tmp_path: Path) -> None:
+    """A bad ``agent_log`` path costs the row, not the variant."""
+    store, repo_path, _, executor_id = _store_with_idea(tmp_path)
+    body = """
+    import json, os, subprocess
+    from pathlib import Path
+    cwd = Path.cwd()
+    (cwd / "out.txt").write_text("x\\n")
+    env = {**os.environ,
+           "GIT_AUTHOR_NAME": "T", "GIT_AUTHOR_EMAIL": "t@i",
+           "GIT_COMMITTER_NAME": "T", "GIT_COMMITTER_EMAIL": "t@i"}
+    subprocess.run(["git", "add", "out.txt"], cwd=cwd, check=True)
+    subprocess.run(["git", "-c", "commit.gpgsign=false", "commit", "-m", "x"],
+                   cwd=cwd, env=env, check=True)
+    sha = subprocess.run(["git", "rev-parse", "HEAD"], cwd=cwd,
+                         capture_output=True, text=True, check=True).stdout.strip()
+    (cwd / os.environ["EDEN_OUTPUT"]).write_text(json.dumps(
+        {"status": "success", "commit_sha": sha,
+         "agent_log": "/nonexistent/agent.log"}))
+    """
+    _drive_one(
+        store, repo_path, executor_id, tmp_path, _write_command(tmp_path, body)
+    )
+
+    submission = store.read_submission("execution-1")
+    assert isinstance(submission, VariantSubmission)
+    assert submission.status == "success"
+    assert store.list_cost_entries() == []

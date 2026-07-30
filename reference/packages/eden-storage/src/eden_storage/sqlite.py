@@ -60,6 +60,7 @@ from ._base import (
     _StoreBase,
     _Tx,
 )
+from .cost import CostEntry
 from .errors import InvalidPrecondition
 from .submissions import (
     Submission,
@@ -424,6 +425,37 @@ class SqliteStore(_StoreBase):
             return None
         return ArtifactMetadata.model_validate_json(row[0])
 
+    def _get_cost_entry(self, entry_id: str) -> CostEntry | None:
+        row = self._conn.execute(
+            "SELECT data FROM cost_entry WHERE entry_id = ?", (entry_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        return CostEntry.model_validate_json(row[0])
+
+    def _iter_cost_entries(
+        self, *, role: str | None = None, variant_id: str | None = None
+    ) -> Iterable[CostEntry]:
+        # Filter in SQL (both columns are indexed) so a per-variant
+        # rollup over a long-running experiment does not deserialize
+        # every row. `role` / `variant_id` are denormalized copies of
+        # the JSON in `data`, which stays the source of truth.
+        clauses: list[str] = []
+        params: list[str] = []
+        if role is not None:
+            clauses.append("role = ?")
+            params.append(role)
+        if variant_id is not None:
+            clauses.append("variant_id = ?")
+            params.append(variant_id)
+        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+        rows = self._conn.execute(
+            "SELECT data FROM cost_entry"
+            f"{where} ORDER BY recorded_at, entry_id",
+            tuple(params),
+        )
+        return [CostEntry.model_validate_json(row[0]) for row in rows]
+
     def _get_dispatch_mode(self) -> dict[str, str]:
         row = self._conn.execute(
             "SELECT dispatch_mode FROM experiment WHERE experiment_id = ?",
@@ -511,6 +543,8 @@ class SqliteStore(_StoreBase):
             )
         for opaque_id, metadata in tx.artifacts.items():
             self._upsert_artifact(opaque_id, metadata)
+        for entry_id, cost_entry in tx.cost_entries.items():
+            self._insert_cost_entry(entry_id, cost_entry)
         if tx.dispatch_mode is not None:
             self._conn.execute(
                 "UPDATE experiment SET dispatch_mode = ? WHERE experiment_id = ?",
@@ -595,6 +629,26 @@ class SqliteStore(_StoreBase):
                 data = excluded.data
             """,
             (task_id, kind, data),
+        )
+
+    def _insert_cost_entry(self, entry_id: str, entry: CostEntry) -> None:
+        # DO NOTHING, not an upsert: `record_cost` is first-write-wins
+        # (issue #343) so a re-record after a transport failure cannot
+        # double-count. The mixin already short-circuits on a hit; this
+        # is the backstop for a concurrent writer.
+        self._conn.execute(
+            """
+            INSERT INTO cost_entry(entry_id, recorded_at, role, variant_id, data)
+            VALUES(?, ?, ?, ?, ?)
+            ON CONFLICT(entry_id) DO NOTHING
+            """,
+            (
+                entry_id,
+                entry.recorded_at,
+                entry.role,
+                entry.variant_id,
+                _serialize_model(entry),
+            ),
         )
 
     def _upsert_artifact(self, opaque_id: str, metadata: ArtifactMetadata) -> None:

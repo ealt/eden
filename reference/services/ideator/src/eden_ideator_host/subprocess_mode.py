@@ -20,11 +20,13 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any, cast
 
 from eden_contracts import Idea, IdeationTask
 from eden_service_common import (
     Subprocess,
     parse_json_line,
+    record_outcome_cost,
     spawn,
     submit_with_readback,
 )
@@ -33,7 +35,7 @@ from eden_service_common.artifacts import (
     idea_naming,
     write_artifact_bundle,
 )
-from eden_storage import IdeaSubmission, Store
+from eden_storage import CostLedger, IdeaSubmission, Store
 
 log = logging.getLogger(__name__)
 
@@ -147,6 +149,16 @@ class IdeatorSubprocess:
     def is_alive(self) -> bool:
         """Is the underlying process still running?"""
         return self._sub.is_alive()
+
+    @property
+    def cwd(self) -> Path:
+        """The subprocess's working directory (the experiment dir, §1.2).
+
+        Exposed so a relative path the subprocess reports (an
+        ``agent_log`` on the terminator line) resolves the same way the
+        subprocess wrote it.
+        """
+        return self._config.cwd
 
     def await_ready(self) -> None:
         """Block until the subprocess prints ``{"event": "ready"}``.
@@ -330,6 +342,38 @@ def _write_content(
     )
 
 
+def _record_ideation_cost(
+    *, store: Store, task: IdeationTask, terminator: dict[str, Any], cwd: Path
+) -> None:
+    """Record the dispatch's gateway spend, if the subprocess reported any.
+
+    Issue #343. The terminator line (``ideation-done`` **or**
+    ``ideation-error``) is the carrier: an ideation attempt that failed
+    still burned gateway tokens. Keys are the same two the executor and
+    evaluator hosts read from their outcome JSON — a ``cost`` object
+    (the shape a gateway bridge normalizes its ``usage`` into) or an
+    ``agent_log`` path, resolved against the ideator's cwd.
+
+    The attempt key is a per-dispatch nonce rather than a deterministic
+    id: unlike the executor's ``variant_id``, an ideation dispatch has
+    no stable per-attempt identifier, and a task re-dispatched after a
+    reclaim really did spend twice. Nothing retries this call, so
+    idempotency holds by construction (one record per dispatch) rather
+    than by key.
+    """
+    record_outcome_cost(
+        # The reference backends and `StoreClient` all satisfy the
+        # reference-only `CostLedger`; it is deliberately not part of
+        # the `Store` Protocol (see eden_storage.protocol).
+        store=cast(CostLedger, store),
+        outcome=terminator,
+        base_dir=cwd,
+        role="ideator",
+        task_id=task.task_id,
+        attempt_key=f"{task.task_id}-{uuid.uuid4().hex[:12]}",
+    )
+
+
 def handle_ideation_task(
     *,
     store: Store,
@@ -365,6 +409,9 @@ def handle_ideation_task(
             role="ideator",
         )
         raise
+    _record_ideation_cost(
+        store=store, task=task, terminator=terminator, cwd=ideator.cwd
+    )
     if terminator.get("event") == "ideation-error":
         log.warning(
             "ideator_ideate_error",

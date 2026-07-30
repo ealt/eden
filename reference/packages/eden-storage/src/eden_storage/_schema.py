@@ -283,6 +283,34 @@ def _apply_v9(conn: sqlite3.Connection) -> None:
         conn.execute(stmt)
 
 
+# Issue #343: the reference-only cost ledger. `data` carries the
+# canonical CostEntry JSON; `role` / `variant_id` are denormalized out
+# of it purely so the per-role / per-variant rollup filters index (the
+# JSON in `data` stays the source of truth, mirroring the task / idea /
+# variant pattern). Reads are ordered by `(recorded_at, entry_id)` —
+# the store-stamped timestamp with a deterministic tie-break — so every
+# backend returns the same sequence. No event accompanies a cost row;
+# see `_ops/cost.py`.
+_V10_STATEMENTS: list[str] = [
+    """
+    CREATE TABLE cost_entry (
+        entry_id TEXT NOT NULL PRIMARY KEY,
+        recorded_at TEXT NOT NULL,
+        role TEXT NOT NULL,
+        variant_id TEXT,
+        data TEXT NOT NULL
+    )
+    """,
+    "CREATE INDEX cost_entry_by_role ON cost_entry(role)",
+    "CREATE INDEX cost_entry_by_variant ON cost_entry(variant_id)",
+]
+
+
+def _apply_v10(conn: sqlite3.Connection) -> None:
+    for stmt in _V10_STATEMENTS:
+        conn.execute(stmt)
+
+
 _MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _apply_v1,
     _apply_v2,
@@ -293,6 +321,7 @@ _MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _apply_v7,
     _apply_v8,
     _apply_v9,
+    _apply_v10,
 ]
 
 

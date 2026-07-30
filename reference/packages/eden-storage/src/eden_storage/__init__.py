@@ -5,6 +5,7 @@ interface every backend satisfies, and [`memory.py`](memory.py) /
 [`sqlite.py`](sqlite.py) / [`postgres.py`](postgres.py) for the
 three reference backends. Error types and submission dataclasses
 live in [`errors.py`](errors.py) and [`submissions.py`](submissions.py).
+The reference-only cost ledger (issue #343) lives in [`cost.py`](cost.py).
 """
 
 from ._base import RESERVED_GROUP_NAMES, RESERVED_WORKER_NAMES
@@ -16,6 +17,15 @@ from .artifact_backend import (
     GcsBackend,
     InMemoryArtifactBackend,
     S3Backend,
+)
+from .cost import (
+    CostEntry,
+    CostRole,
+    CostSource,
+    CostSummary,
+    CostTotals,
+    cost_entry_id,
+    summarize,
 )
 from .errors import (
     AlreadyExists,
@@ -37,7 +47,7 @@ from .errors import (
 )
 from .memory import InMemoryStore
 from .postgres import PostgresStore, ensure_readonly_role
-from .protocol import ArtifactStore, Store
+from .protocol import ArtifactStore, CostLedger, Store
 from .sqlite import SqliteStore
 from .submissions import (
     EvaluationSubmission,
@@ -52,6 +62,12 @@ __all__ = [
     "ArtifactBackend",
     "ArtifactStore",
     "ConflictingResubmission",
+    "CostEntry",
+    "CostLedger",
+    "CostRole",
+    "CostSource",
+    "CostSummary",
+    "CostTotals",
     "CycleDetected",
     "DispatchError",
     "EvaluationSubmission",
@@ -81,7 +97,9 @@ __all__ = [
     "WorkerNotEligible",
     "WorkerNotRegistered",
     "WrongClaimant",
+    "cost_entry_id",
     "ensure_readonly_role",
     "iter_events_by_type",
     "submissions_equivalent",
+    "summarize",
 ]

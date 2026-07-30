@@ -293,6 +293,30 @@ When the experiment-config opts in with an [`auto_checkpoint`](user-guide.md#aut
 - **Exports need Forgejo reachable.** The Compose `task-store-server` syncs a bare clone from Forgejo on every export and bundles it into the archive (issue [#294](https://github.com/ealt/eden/issues/294)), so checkpoints — manual and auto alike — carry the full git history alongside the wire state. The flip side: an export attempted while Forgejo is down fails with 503 `eden://reference-error/checkpoint-repo-unavailable` rather than silently emitting a stale or empty bundle. Auto-checkpoint treats that like any other export failure (logged; retried at the next cadence boundary).
 - **Disk growth + admin-token lifetime.** Budget `retention_count × checkpoint_size` per experiment for the periodic ring (plus one terminal archive). And note that with `auto_checkpoint.enabled: true` the orchestrator holds the deployment admin token in memory for its whole run (the export endpoint is admin-gated per [`07-wire-protocol.md`](../spec/v0/07-wire-protocol.md) §14) — a modest, opt-in privilege-lifetime expansion over the startup-only use it otherwise makes of the token.
 
+### 2.10 Run cost (per role, per variant)
+
+Every LLM-driven attempt that reports its spend lands a row in the reference **cost ledger** ([issue #343](https://github.com/ealt/eden/issues/343)). One row per *attempt*, carrying the role / task / variant / idea it is attributable to, plus `total_cost_usd` and the token breakdown when the source reports them.
+
+The report reduces that ledger to a per-role + per-variant rollup, joined against each variant's status and evaluation payload so a metric-per-dollar analysis (DCI-per-dollar being the motivating one) is a local computation:
+
+```bash
+EDEN_ADMIN_TOKEN=$(grep '^EDEN_ADMIN_TOKEN=' reference/compose/.env | cut -d= -f2-) \
+  uv run python -m eden_service_common.cost_report \
+    --task-store-url http://localhost:8080 \
+    --experiment-id "$EDEN_EXPERIMENT_ID" --format table
+```
+
+Drop `--format table` for the JSON form (the machine contract), and add `--role executor` or `--variant-id <id>` to narrow. Auth is read from `EDEN_ADMIN_TOKEN` (or a full `EDEN_BEARER`) — never passed on argv, which would put it in shell history and every `ps` listing. The raw rows are also readable directly at `GET /_reference/experiments/<id>/cost`.
+
+**What determines whether there is anything to report.** The platform cannot see what a worker spent — the user's `*_command` talks to the model, so the *experiment* has to report it, via one of two optional keys on the outcome JSON (or, for the ideator, on its `ideation-done` / `ideation-error` line): `agent_log`, a path to a Claude Code `--output-format stream-json` log the host parses, or `cost`, already-normalized figures. See the [worker-host binding](../spec/v0/reference-bindings/worker-host-subprocess.md) §11. An experiment that reports neither runs exactly as before and reports an empty ledger.
+
+**Operator gaps to know about:**
+
+- **Incomplete totals are labeled, not hidden.** A source that reports tokens but no dollar figure increments `entries_missing_cost_usd`; the table render says so in words. Read that field before quoting a total.
+- **Timed-out attempts under-report.** A deadline-killed agent's log has no terminal `result` record, so its spend is not recoverable from the log — the attempt appears in the run's event log but not in the ledger. Attempts that *errored* but finished do record.
+- **Checkpoints do not carry cost.** A checkpoint restore starts with an empty ledger, so a run that survived one reports only its post-restore spend ([#344](https://github.com/ealt/eden/issues/344)).
+- **Infra cost is not here.** The ledger covers inference only. Attributing EC2 / RDS / S3 spend per experiment needs AWS cost-allocation tags (proposed on #343, not implemented).
+
 ## 3. Bring-your-own admin UIs
 
 These do not ship with the Compose stack. They're one-shot `docker run` siblings on the same docker network. Useful for ad-hoc inspection; tear them down when you're done.
