@@ -7,7 +7,7 @@ than inferred, and so the next session that reaches for `/codex-review` on this
 pod does not spend an hour re-deriving the cause.
 
 The review brief in [`0.md`](0.md) is complete and accurate; a retry needs only a
-working Codex sandbox.
+working Codex sandbox, which this pod cannot currently give it.
 
 ## The failure
 
@@ -41,53 +41,115 @@ bwrap: Creating new namespace failed: Operation not permitted (exit 1)
 | A nested namespace in this session's tmux | This shell shares PID 1's exact namespaces (`mnt:[4026534204]`, `user:[4026531837]`) — same as every other `tmux: server` / `bash` on the pod |
 | Codex project trust | Same failure with `-C /home/dev/Documents/eden`, which `~/.codex/config.toml` marks `trust_level = "trusted"` |
 | A seccomp filter | `/proc/self/status`: `Seccomp: 0`, no filters |
+| A shadowed / newly-installed `bwrap` | Falsified — see "A hypothesis this record used to carry" below |
 
 ## Why it fails
 
-`CapEff: 00000000a80425fb` is the Docker default capability set — **no
-`CAP_SYS_ADMIN`** (bit 21 clear). `mount(NULL, "/", MS_SLAVE|MS_REC)` requires
-it, and `EPERM` there is precisely the first error. User namespaces are not
-sysctl-disabled (`max_user_namespaces` = 251409), so the namespace is created and
-then the propagation change is refused.
+`bwrap` needs `CAP_SYS_ADMIN` for `mount(NULL, "/", MS_SLAVE|MS_REC)`, and this
+container's `CapEff: 00000000a80425fb` (the Docker default set) has bit 21 clear,
+so that call returns `EPERM` — precisely the first error. User namespaces are not
+sysctl-disabled (`max_user_namespaces` = 251409): the namespace is created, then
+the propagation change is refused.
 
-## Leading hypothesis: the bubblewrap install is the regression
+**Do not read that as "this pod cannot be sandboxed" — that is too strong.** The
+kernel here does offer an unprivileged sandbox: `landlock_create_ruleset` with
+`LANDLOCK_CREATE_RULESET_VERSION` returns **ABI v7, errno 0**, and Landlock needs
+no `CAP_SYS_ADMIN` at all (operator-measured). The accurate, narrower statement
+is:
 
-Codex 0.145.0 resolves `bwrap` by **bare name** — the binary contains the strings
-`bwrap` and `codex-bwrap-synthetic-mount-targets` but no absolute path and no
-`CODEX_LINUX_SANDBOX_EXE`. `~/.local/bin` precedes `/usr/bin` on `PATH`.
+> *Codex* can no longer reach the sandbox this pod can provide.
 
-Before bubblewrap 0.9.0 was installed on this pod, Codex warned and used a
-**bundled fallback**, and `codex exec --sandbox read-only` / `workspace-write`
-both ran shell commands successfully (operator-verified). Installing system
-bubblewrap plausibly flipped Codex onto a real `bwrap` that this container's
-capability set cannot run — i.e. the install, now in bootstrap, may have broken a
-path that worked.
+`codex features list` shows `use_linux_sandbox_bwrap` as **removed** and
+`use_legacy_landlock` as **deprecated** — bwrap is the only supported backend in
+0.145.0. The decisive test on the deprecated escape hatch (operator-run):
+`codex exec --enable use_legacy_landlock -s workspace-write`, instructed to
+`printf SANDBOX_LIVE > proof.txt`, produced **no file** and reported "Unable to
+run: the shell sandbox failed before executing the command" (11,467 tokens).
 
-Untested here on purpose: confirming it means shadowing or removing a binary the
-operator had just installed, which is theirs to do, not something to work around
-silently.
+So the resolution is to run the review **off this pod**, for a sharper reason
+than the capability set: the config surface that could reach Landlock is
+deprecated and non-functional here.
 
-## Fix options, cheapest first
+## Execution integrity: a "DONE" is not evidence
 
-1. **Revert/shadow the bubblewrap install** and re-run a Codex smoke. If the
-   bundled fallback works again, this fixes `/codex-review` for every future
-   session on this pod, not just one.
-2. **Grant `CAP_SYS_ADMIN`** to the pod (securityContext capabilities add, or
-   privileged). Makes real `bwrap` work; costs a pod restart.
-3. **`--dangerously-bypass-approvals-and-sandbox`.** Declined here, and the
-   reasoning is worth preserving: the container isolates the *pod from the
-   cluster*, while Codex's sandbox isolates *Codex from the pod's contents* — AWS
-   credentials, Claude credentials, GitHub PAT helpers, the eden DSN, and ~14
-   repos, all readable by any process under this single uid. The two layers are
-   not redundant, and "we're already externally sandboxed" is the wrong reason to
+Two behaviours were observed from Codex on this pod, and the difference matters
+more than either run:
+
+- The `use_legacy_landlock` run **failed honestly** — it said the sandbox failed
+  instead of claiming success.
+- An earlier observed run burned **15,303 tokens, replied `DONE`, and ran
+  nothing.**
+
+Because both behaviours exist, a review's validity here cannot be read off the
+model's tone or its closing summary. It has to be checked **mechanically**:
+**zero tool-execution events ⇒ the run is void, not passing.** The JSONL stream
+is the place to check it (`item.completed` events of type `command_execution`); a
+run with none of them read no files, whatever its prose says.
+
+## A hypothesis this record used to carry — falsified, kept as a correction
+
+An earlier revision of this file led with: *Codex resolves `bwrap` by bare name,
+`~/.local/bin` precedes `/usr/bin`, so installing bubblewrap 0.9.0 flipped Codex
+off a working bundled fallback onto a real `bwrap` this container can't run* —
+and recommended **removing the install** as the cheapest fix.
+
+**That premise is false**, and it was the one action the hypothesis told a reader
+to take, so it is corrected here rather than deleted:
+
+```text
+$ which -a bwrap
+/usr/bin/bwrap
+/bin/bwrap
+$ ls -l ~/.local/bin/bwrap
+ls: cannot access '/home/dev/.local/bin/bwrap': No such file or directory
+$ stat -c '%i %n' /usr/bin/bwrap /bin/bwrap
+7926183 /usr/bin/bwrap
+7926183 /bin/bwrap          # same inode; /bin -> /usr/bin
+```
+
+There is no `bwrap` in `~/.local/bin`, so nothing was shadowed and PATH order
+never mattered. **Removing the bubblewrap install would fix nothing.**
+
+The hypothesis was built from `strings` on the Codex binary (bare `bwrap`, no
+absolute path, no `CODEX_LINUX_SANDBOX_EXE`) plus the report that Codex had
+previously warned about bubblewrap and used a fallback. The string evidence was
+real; the inference that a *new* install displaced something was not tested
+before being written down. Given `use_legacy_landlock` is now deprecated, the
+likelier explanation for the earlier working runs is a **Codex version change**
+that retired the Landlock backend — but that is inference, not measurement, and
+should be treated as such.
+
+## Fix options
+
+1. **Run the review off this pod.** The current resolution. Nothing on the pod
+   needs changing, and it is the only option that doesn't trade away a sandbox
+   layer.
+2. **Grant `CAP_SYS_ADMIN`** (securityContext capabilities add, or privileged).
+   Makes real `bwrap` work; costs a pod restart, and widens what any process
+   under this uid can do — not just Codex.
+3. **~~Revert the bubblewrap install.~~** Falsified above; it would change
+   nothing.
+4. **`--dangerously-bypass-approvals-and-sandbox`.** Declined, and the reasoning
+   is worth preserving: the container isolates the *pod from the cluster*, while
+   Codex's sandbox isolates *Codex from the pod's contents* — AWS credentials,
+   Claude credentials, GitHub PAT helpers, the eden DSN, and ~14 repos, all
+   readable by any process under this single uid. The two layers are not
+   redundant, and "we're already externally sandboxed" is the wrong reason to
    drop the inner one.
 
-## Suggested skill improvement
+## Suggested skill improvements
 
-`/codex-review` has no preflight for *sandbox functionality* — only for `codex`
-being on `PATH`. A two-second check before round 0 would have failed loudly
-instead of burning a ~250k-token round that read nothing:
+`/codex-review` checks that `codex` is on `PATH` but never that its sandbox can
+**start**, and never that a completed round actually **ran** anything. Both gaps
+cost real tokens here (a ~250k-token round 0 that read nothing; a 15k-token round
+that claimed `DONE` and ran nothing). Two cheap additions:
 
 ```bash
+# Preflight: does Codex's only supported backend work at all?
 bwrap --dev-bind / / --unshare-all true 2>&1 || echo "codex sandbox unavailable"
+```
+
+```bash
+# Postflight: a round with no tool-execution events is void, not passing.
+grep -c '"command_execution"' "${RUN_DIR}/${N}.jsonl"
 ```
