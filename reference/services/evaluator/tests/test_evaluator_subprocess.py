@@ -327,7 +327,12 @@ def test_success_records_cost_for_the_evaluator_role(tmp_path: Path) -> None:
     assert entry.role == "evaluator"
     assert entry.task_id == "evaluate-1"
     assert entry.variant_id == submission.variant_id
-    assert entry.entry_id == f"cost-evaluator-evaluate-1-{submission.variant_id}"
+    # Length-prefixed composite: a `-` join is not injective over opaque
+    # ids (issue #343 review round 0).
+    assert entry.entry_id == (
+        f"cost-evaluator-{len('evaluate-1')}:evaluate-1"
+        f".{len(submission.variant_id)}:{submission.variant_id}"
+    )
     assert entry.total_cost_usd == 0.05
     # The variant names its producing idea, so evaluation spend rolls up
     # per idea too (issue #343 follow-up).

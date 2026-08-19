@@ -35,7 +35,12 @@ from eden_service_common.artifacts import (
     idea_naming,
     write_artifact_bundle,
 )
-from eden_storage import CostLedger, IdeaSubmission, Store
+from eden_storage import (
+    CostLedger,
+    IdeaSubmission,
+    Store,
+    composite_attempt_key,
+)
 
 log = logging.getLogger(__name__)
 
@@ -349,6 +354,7 @@ def _record_ideation_cost(
     terminator: dict[str, Any],
     cwd: Path,
     idea_ids: tuple[str, ...],
+    dispatch_nonce: str,
 ) -> None:
     """Record the dispatch's gateway spend, if the subprocess reported any.
 
@@ -362,9 +368,15 @@ def _record_ideation_cost(
     The attempt key is a per-dispatch nonce rather than a deterministic
     id: unlike the executor's ``variant_id``, an ideation dispatch has
     no stable per-attempt identifier, and a task re-dispatched after a
-    reclaim really did spend twice. Nothing retries this call, so
-    idempotency holds by construction (one record per dispatch) rather
-    than by key.
+    reclaim really did spend twice.
+
+    ``dispatch_nonce`` is minted by the caller **before** the dispatch and
+    held in its state, so the key is reconstructible for the life of that
+    dispatch. Nothing retries this call today — idempotency would hold by
+    construction either way — but minting the nonce here would have made
+    the ideator the one role whose key a retry could not reproduce, so a
+    retry added later would double-count. Cheap to make safe by key
+    instead of safe by assumption.
 
     ``idea_ids`` is what the dispatch actually produced (empty on any
     failure path). The entry is attributed to an idea only when the
@@ -384,7 +396,10 @@ def _record_ideation_cost(
         base_dir=cwd,
         role="ideator",
         task_id=task.task_id,
-        attempt_key=f"{task.task_id}-{uuid.uuid4().hex[:12]}",
+        # Injective join for the same reason the evaluator uses one: the
+        # task id is opaque, so concatenating it with the nonce is not
+        # collision-free on its own.
+        attempt_key=composite_attempt_key(task.task_id, dispatch_nonce),
         idea_id=idea_ids[0] if len(idea_ids) == 1 else None,
     )
 
@@ -403,6 +418,9 @@ def handle_ideation_task(
     """Drive one ideation task through the subprocess: claim → dispatch → submit."""
     claim = store.claim(task.task_id, worker_id)
     history = _build_history(store)
+    # Minted before the dispatch so the cost row's idempotency key is
+    # reconstructible for this dispatch (issue #343 review round 1).
+    dispatch_nonce = uuid.uuid4().hex[:12]
     try:
         terminator, ideas = ideator.dispatch_plan(
             task=task,
@@ -482,6 +500,7 @@ def handle_ideation_task(
             terminator=terminator,
             cwd=ideator.cwd,
             idea_ids=idea_ids,
+            dispatch_nonce=dispatch_nonce,
         )
 
 

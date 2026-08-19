@@ -721,6 +721,16 @@ keys on its freshly-minted `variant_id` and the evaluator on
 identifier, so it keys on a per-dispatch nonce (nothing retries that
 call, so one-record-per-dispatch holds by construction).
 
+Composite keys are **length-prefixed, not delimiter-joined**. Chapter 2
+§1.3 keeps `task_id` / `variant_id` opaque — any string — so an
+`f"{a}-{b}"` key is not injective (`("task-a", "variant-b-c")` and
+`("task-a-variant-b", "c")` render the same string), and under
+first-write-wins a collision *discards a real attempt's spend*. A key
+that would exceed the ledger's id cap is replaced by a deterministic
+**full** SHA-256 of the same input rather than truncated — a shortened
+digest is only collision-resistant to its own width, and the full hex
+still fits the cap.
+
 Attribution to an **idea** follows the same "only when it is
 unambiguous" rule: the executor and evaluator both know the idea their
 variant came from, but an ideation dispatch that produced several ideas
@@ -773,7 +783,17 @@ that from becoming a source of false precision:
   differ and all go stale. An unfilled template prices nothing.
 - **An unpriced token class is a reported gap, never a zero.** A missing
   rate that silently priced at 0 would turn "we don't know" into "it was
-  free".
+  free". This extends to the rollup's own output: a bucket with nothing
+  priced reports its dollar figures as **null**, not `0.0`, because a
+  numeric zero is indistinguishable from "free" to anything summing the
+  JSON — a `basis` field beside it does not fix a total that is already
+  wrong. A bucket where *some* token classes priced and others did not is
+  counted separately (`entries_partially_priced`) and marks its total a
+  **floor**; otherwise a report can say "all of it derived" while an
+  unrated class was silently omitted from the figure. Floor status is
+  evaluated **per bucket**, not inherited: an attempt spanning a priced
+  model and an unknown one is partial as an *attempt*, while the priced
+  model's own figure stays exact.
 
 Rates are per **token class per model** — fresh input, cache write at the
 5-minute TTL, cache write at the 1-hour TTL, cache read — not one

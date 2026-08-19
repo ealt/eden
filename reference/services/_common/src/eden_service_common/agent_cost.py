@@ -173,29 +173,38 @@ def _reported_models(raw: Any) -> tuple[ModelUsage, ...]:
     without a label is dropped rather than bucketed under a placeholder,
     since an ``"unknown"`` bucket in a per-model rollup is worse than an
     honest gap.
+
+    Repeated labels are **merged**, not kept or rejected: a bridge that
+    reports one slice per gateway call can legitimately name the same
+    model twice, the numbers are additive, and dropping the attempt over
+    it would lose real spend. Merging here is also what upholds
+    ``CostEntry``'s one-slice-per-model rule — two slices sharing a label
+    make the rollup credit that model's bucket twice.
     """
     if not isinstance(raw, list):
         return ()
-    out: list[ModelUsage] = []
+    merged: dict[str, dict[str, Any]] = {}
     for item in raw:
         if not isinstance(item, dict):
             continue
         label = _as_str(item.get("model"))
         if label is None:
             continue
-        out.append(
-            ModelUsage(
-                model=label,
-                total_cost_usd=_as_float(item.get("total_cost_usd")),
-                input_tokens=_as_int(item.get("input_tokens")),
-                output_tokens=_as_int(item.get("output_tokens")),
-                cache_creation_input_tokens=_as_int(
-                    item.get("cache_creation_input_tokens")
-                ),
-                cache_read_input_tokens=_as_int(item.get("cache_read_input_tokens")),
-            )
-        )
-    return tuple(out)
+        slot = merged.setdefault(label, {})
+        for key, coerce in (
+            ("total_cost_usd", _as_float),
+            ("input_tokens", _as_int),
+            ("output_tokens", _as_int),
+            ("cache_creation_input_tokens", _as_int),
+            ("cache_read_input_tokens", _as_int),
+        ):
+            value = coerce(item.get(key))
+            if value is None:
+                continue
+            slot[key] = (slot.get(key) or 0) + value
+    return tuple(
+        ModelUsage(model=label, **fields) for label, fields in merged.items()
+    )
 
 
 def cost_from_agent_log(path: Path, *, task_id: str = "") -> CostFields | None:

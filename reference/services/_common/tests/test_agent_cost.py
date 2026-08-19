@@ -577,3 +577,50 @@ def test_recorded_entry_carries_models_and_tiers() -> None:
     (stored,) = store.list_cost_entries()
     assert [u.model for u in stored.models] == ["claude-sonnet-4-6"]
     assert stored.cache_creation_1h_input_tokens == 16584
+
+
+def test_duplicate_reported_model_slices_are_merged_not_dropped() -> None:
+    """A bridge may name one model per gateway call; the numbers add.
+
+    Merging (rather than rejecting) keeps the spend, and it is what
+    upholds ``CostEntry``'s one-slice-per-model rule — two slices sharing
+    a label make a rollup credit that model twice.
+    """
+    fields = cost_from_reported(
+        {
+            "models": [
+                {"model": "gw-a", "input_tokens": 10, "total_cost_usd": 0.2},
+                {"model": "gw-a", "input_tokens": 5, "total_cost_usd": 0.1},
+                {"model": "gw-b", "output_tokens": 7},
+            ]
+        }
+    )
+    assert fields is not None
+    by_label = {u.model: u for u in fields.models}
+    assert set(by_label) == {"gw-a", "gw-b"}
+    assert by_label["gw-a"].input_tokens == 15
+    assert by_label["gw-a"].total_cost_usd == pytest.approx(0.3)
+    assert by_label["gw-b"].output_tokens == 7
+
+
+def test_merged_slices_build_a_valid_entry() -> None:
+    """The merge output must satisfy the record's uniqueness rule."""
+    store = _store()
+    entry = record_outcome_cost(
+        store=store,
+        outcome={
+            "cost": {
+                "models": [
+                    {"model": "gw-a", "input_tokens": 1},
+                    {"model": "gw-a", "input_tokens": 2},
+                ]
+            }
+        },
+        base_dir=Path("/tmp"),
+        role="ideator",
+        task_id="ideation-1",
+        attempt_key="dispatch-1",
+    )
+    assert entry is not None
+    (stored,) = store.list_cost_entries()
+    assert [(u.model, u.input_tokens) for u in stored.models] == [("gw-a", 3)]

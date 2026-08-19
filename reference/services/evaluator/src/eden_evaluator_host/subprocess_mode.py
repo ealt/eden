@@ -37,6 +37,7 @@ from eden_storage import (
     EvaluationSubmission,
     InvalidPrecondition,
     Store,
+    composite_attempt_key,
 )
 
 log = logging.getLogger(__name__)
@@ -186,7 +187,10 @@ def _handle_one(
             base_dir=wt.path,
             role="evaluator",
             task_id=task.task_id,
-            attempt_key=f"{task.task_id}-{variant_id}",
+            # Injective join: ids are opaque per 02-data-model §1.3, so a
+            # `-`-joined pair can collide and first-write-wins would then
+            # discard a real attempt's spend (issue #343 review round 0).
+            attempt_key=composite_attempt_key(task.task_id, variant_id),
             variant_id=variant_id,
             # The variant names the idea it came from, so evaluation
             # spend attributes per-idea too (issue #343).

@@ -182,10 +182,18 @@ def build_report(
         "experiment_id": experiment_id,
         "filters": {"role": role, "variant_id": variant_id},
         "price_table": summary.price_table,
-        "totals": {**summary.totals.model_dump(mode="json"), "basis": summary.totals.basis},
+        "totals": {
+            **summary.totals.model_dump(mode="json"),
+            "basis": summary.totals.basis,
+            "is_floor": summary.totals.is_floor,
+        },
         "unattributed": summary.unattributed,
         "by_role": {
-            name: {**totals.model_dump(mode="json"), "basis": totals.basis}
+            name: {
+                **totals.model_dump(mode="json"),
+                "basis": totals.basis,
+                "is_floor": totals.is_floor,
+            }
             for name, totals in sorted(summary.by_role.items())
         },
         "by_variant": [
@@ -194,6 +202,7 @@ def build_report(
                 **variants[vid],
                 "cost": summary.by_variant[vid].model_dump(mode="json"),
                 "basis": summary.by_variant[vid].basis,
+                "is_floor": summary.by_variant[vid].is_floor,
             }
             for vid in sorted(summary.by_variant)
         ],
@@ -204,6 +213,7 @@ def build_report(
                 "variant_ids": sorted(variants_by_idea.get(iid, [])),
                 "cost": summary.by_idea[iid].model_dump(mode="json"),
                 "basis": summary.by_idea[iid].basis,
+                "is_floor": summary.by_idea[iid].is_floor,
             }
             for iid in sorted(summary.by_idea)
         ],
@@ -212,6 +222,7 @@ def build_report(
                 "model": name,
                 "cost": totals.model_dump(mode="json"),
                 "basis": totals.basis,
+                "is_floor": totals.is_floor,
             }
             for name, totals in sorted(summary.by_model.items())
         ],
@@ -245,8 +256,13 @@ def _pricing_gaps(
     return gaps
 
 
-def _fmt_usd(value: float) -> str:
-    return f"${value:.4f}"
+def _fmt_usd(value: float | None) -> str:
+    """Render dollars, or ``n/a`` when nothing could be priced.
+
+    Never ``$0.0000`` for an absent figure — that reads as "free" to a
+    human exactly as a JSON ``0.0`` does to a program.
+    """
+    return "n/a" if value is None else f"${value:.4f}"
 
 
 def _render_totals(report: dict[str, Any]) -> list[str]:
@@ -269,10 +285,20 @@ def _render_totals(report: dict[str, Any]) -> list[str]:
             f"({totals['entries_derived']} attempt(s)) — no provider reported a "
             "dollar figure"
         )
-    if totals["entries_unpriced"]:
+    if totals["entries_unpriced"] or totals["entries_partially_priced"]:
+        shortfalls = []
+        if totals["entries_unpriced"]:
+            shortfalls.append(
+                f"{totals['entries_unpriced']} could not be priced at all"
+            )
+        if totals["entries_partially_priced"]:
+            shortfalls.append(
+                f"{totals['entries_partially_priced']} priced only some of "
+                "their token classes"
+            )
         lines.append(
-            f"  {totals['entries_unpriced']} attempt(s) could not be priced at "
-            "all: this total is a FLOOR, not a total (see pricing_gaps)"
+            f"  this total is a FLOOR, not a total — {', and '.join(shortfalls)} "
+            "(see pricing_gaps)"
         )
     table = report.get("price_table")
     if table:
@@ -292,16 +318,29 @@ def _render_roles(report: dict[str, Any]) -> list[str]:
     # a dozen lines above them.
     lines = [
         "",
-        f"{'role':<12} {'attempts':>8} {'unpriced':>8} {'usd':>12} "
-        f"{'basis':<9} {'in_tok':>12} {'out_tok':>10}",
+        f"{'role':<12} {'attempts':>8} {'unpriced':>8} {'partial':>7} "
+        f"{'usd':>12} {'basis':<9} {'floor':<5} {'in_tok':>12} {'out_tok':>10}",
     ]
     for name, row in report["by_role"].items():
         lines.append(
             f"{name:<12} {row['entries']:>8} {row['entries_unpriced']:>8} "
+            f"{row['entries_partially_priced']:>7} "
             f"{_fmt_usd(row['total_cost_usd']):>12} {row['basis']:<9} "
+            f"{_floor_flag(row):<5} "
             f"{row['input_tokens']:>12} {row['output_tokens']:>10}"
         )
     return lines
+
+
+def _floor_flag(row: dict[str, Any]) -> str:
+    """Per-row floor marker.
+
+    Every bucket table carries one: a global FLOOR line above does not
+    tell a reader *which* row understates, and a row rendering
+    ``$3.0000 derived`` with an unrated token class behind it looks
+    complete.
+    """
+    return "FLOOR" if row.get("is_floor") else ""
 
 
 def _render_models(report: dict[str, Any]) -> list[str]:
@@ -309,7 +348,7 @@ def _render_models(report: dict[str, Any]) -> list[str]:
         return []
     lines = [
         "",
-        f"{'model':<34} {'slices':>7} {'usd':>12} {'basis':<9} "
+        f"{'model':<34} {'slices':>7} {'usd':>12} {'basis':<9} {'floor':<5} "
         f"{'in_tok':>12} {'out_tok':>10} {'cache_rd':>10}",
     ]
     for row in report["by_model"]:
@@ -317,6 +356,7 @@ def _render_models(report: dict[str, Any]) -> list[str]:
         lines.append(
             f"{row['model']:<34} {cost['entries']:>7} "
             f"{_fmt_usd(cost['total_cost_usd']):>12} {row['basis']:<9} "
+            f"{_floor_flag(row):<5} "
             f"{cost['input_tokens']:>12} {cost['output_tokens']:>10} "
             f"{cost['cache_read_input_tokens']:>10}"
         )
@@ -333,13 +373,14 @@ def _render_variants(report: dict[str, Any]) -> list[str]:
     lines = [
         "",
         f"{'variant':<26} {'status':<18} {'usd':>12} {'basis':<9} "
-        f"{'evaluation':<30}",
+        f"{'floor':<5} {'evaluation':<30}",
     ]
     for row in report["by_variant"]:
         evaluation = row["evaluation"]
         lines.append(
             f"{row['variant_id']:<26} {str(row['status']):<18} "
             f"{_fmt_usd(row['cost']['total_cost_usd']):>12} {row['basis']:<9} "
+            f"{_floor_flag(row):<5} "
             f"{json.dumps(evaluation) if evaluation else '-':<30}"
         )
     return lines
@@ -350,15 +391,16 @@ def _render_ideas(report: dict[str, Any]) -> list[str]:
     lines = [
         "",
         f"{'idea':<26} {'slug':<14} {'state':<11} {'usd':>12} {'basis':<9} "
-        f"{'variants':>8}",
+        f"{'floor':<5} {'variants':>8}",
     ]
     for row in report["by_idea"]:
-        # `basis` per row for the same reason the role table has it: a
-        # $0.0000 row is "we couldn't price it", not "it was free".
+        # `basis` per row for the same reason the role table has it: an
+        # `n/a` row is "we couldn't price it", not "it was free".
         lines.append(
             f"{row['idea_id']:<26} {str(row['slug']):<14} "
             f"{str(row['state']):<11} "
             f"{_fmt_usd(row['cost']['total_cost_usd']):>12} {row['basis']:<9} "
+            f"{_floor_flag(row):<5} "
             f"{len(row['variant_ids']):>8}"
         )
     unattributed = (report.get("unattributed") or {}).get("by_idea")

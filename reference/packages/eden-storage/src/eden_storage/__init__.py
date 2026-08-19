@@ -19,10 +19,12 @@ from .artifact_backend import (
     S3Backend,
 )
 from .cost import (
+    ENTRY_ID_MAX_LEN,
     CostEntry,
     CostRole,
     CostSource,
     ModelUsage,
+    composite_attempt_key,
     cost_entry_id,
 )
 from .errors import (
@@ -64,6 +66,7 @@ from .submissions import (
 )
 
 __all__ = [
+    "ENTRY_ID_MAX_LEN",
     "AlreadyExists",
     "ArtifactBackend",
     "ArtifactStore",
@@ -108,6 +111,7 @@ __all__ = [
     "WorkerNotEligible",
     "WorkerNotRegistered",
     "WrongClaimant",
+    "composite_attempt_key",
     "cost_entry_id",
     "derive_cost",
     "ensure_readonly_role",

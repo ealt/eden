@@ -114,7 +114,7 @@ def test_summarize_partitions_by_role_and_variant() -> None:
     assert set(summary.by_variant) == {"v1"}
     assert summary.by_variant["v1"].total_cost_usd == pytest.approx(0.55)
     assert sum(
-        t.total_cost_usd for t in summary.by_role.values()
+        t.total_cost_usd or 0.0 for t in summary.by_role.values()
     ) == pytest.approx(summary.totals.total_cost_usd)
 
 
@@ -149,10 +149,12 @@ def test_summarize_counts_entries_it_could_not_price() -> None:
     assert summary.by_role["executor"].entries_unpriced == 0
 
 
-def test_summarize_of_an_empty_ledger_is_zeroed_not_absent() -> None:
+def test_summarize_of_an_empty_ledger_reports_unknown_not_zero() -> None:
+    """An empty ledger means "nothing recorded", not "the run was free"."""
     summary = summarize(EXPERIMENT_ID, [])
     assert summary.totals.entries == 0
-    assert summary.totals.total_cost_usd == 0.0
+    assert summary.totals.total_cost_usd is None
+    assert summary.totals.basis == "unpriced"
     assert summary.by_role == {}
     assert summary.by_variant == {}
 
@@ -464,7 +466,7 @@ def test_report_labels_a_derived_figure_as_derived(
     report = _report(client, price_table=_price_table())
     # 1M input tokens at $3/Mtok.
     assert report["totals"]["derived_cost_usd"] == pytest.approx(3.0)
-    assert report["totals"]["reported_cost_usd"] == 0.0
+    assert report["totals"]["reported_cost_usd"] is None
     assert report["totals"]["basis"] == "derived"
     assert report["price_table"]["as_of"] == "2026-07-30"
 
@@ -524,7 +526,8 @@ def test_report_without_a_table_derives_nothing(
     _record(store, "e1", variant_id="v1", total_cost_usd=None, input_tokens=10)
     report = _report(client)
     assert report["price_table"] is None
-    assert report["totals"]["derived_cost_usd"] == 0.0
+    assert report["totals"]["derived_cost_usd"] is None
+    assert report["totals"]["total_cost_usd"] is None
     assert report["totals"]["entries_unpriced"] == 1
 
 
@@ -562,3 +565,136 @@ def test_usable_table_is_marked_usable(
     report = _report(client, price_table=_price_table())
     assert report["price_table"]["usable"] == "yes"
     assert "UNFILLED" not in render_table(report)
+
+
+# ----------------------------------------------------------------------
+# Round-0 review findings (issue #343): the report surface
+# ----------------------------------------------------------------------
+
+
+def test_unpriced_dollars_are_null_in_json_and_na_in_the_table(
+    store: InMemoryStore, client: StoreClient
+) -> None:
+    """A consumer summing the JSON must not silently add a fake zero."""
+    _seed_idea(store, "idea-1", "p0")
+    _record(
+        store, "e1", variant_id="v1", idea_id="idea-1", total_cost_usd=None, model="m1"
+    )
+    report = _report(client)
+
+    assert report["totals"]["total_cost_usd"] is None
+    assert report["totals"]["is_floor"] is True
+    assert report["by_role"]["executor"]["total_cost_usd"] is None
+    (variant_row,) = report["by_variant"]
+    assert variant_row["cost"]["total_cost_usd"] is None
+    assert variant_row["is_floor"] is True
+    (idea_row,) = report["by_idea"]
+    assert idea_row["cost"]["total_cost_usd"] is None
+    (model_row,) = report["by_model"]
+    assert model_row["cost"]["total_cost_usd"] is None
+
+    text = render_table(report)
+    assert "n/a" in text
+    assert "$0.0000" not in text
+
+
+def test_partially_priced_total_is_labelled_a_floor(
+    store: InMemoryStore, client: StoreClient
+) -> None:
+    """Priced input + unrated output must not read as a complete total."""
+    from eden_storage import PriceTable
+
+    table = PriceTable.model_validate(
+        {
+            "source": "test rates (not real prices)",
+            "as_of": "2026-08-19",
+            "rates": {"m1": {"input": 3.0}},  # no output rate
+        }
+    )
+    _record(
+        store,
+        "e1",
+        variant_id="v1",
+        total_cost_usd=None,
+        model="m1",
+        input_tokens=1_000_000,
+        output_tokens=500,
+    )
+    report = _report(client, price_table=table)
+    assert report["totals"]["entries_partially_priced"] == 1
+    assert report["totals"]["is_floor"] is True
+    assert report["totals"]["total_cost_usd"] == pytest.approx(3.0)
+
+    text = render_table(report)
+    assert "FLOOR" in text
+    assert "priced only some of their token classes" in text
+
+
+def test_fully_priced_total_is_not_labelled_a_floor(
+    store: InMemoryStore, client: StoreClient
+) -> None:
+    _record(
+        store,
+        "e1",
+        variant_id="v1",
+        total_cost_usd=None,
+        model="m1",
+        input_tokens=1_000_000,
+        output_tokens=None,
+    )
+    report = _report(client, price_table=_price_table())
+    assert report["totals"]["is_floor"] is False
+    assert "FLOOR" not in render_table(report)
+
+
+def test_every_bucket_table_marks_its_own_floor_rows(
+    store: InMemoryStore, client: StoreClient
+) -> None:
+    """A row must not read as complete because the caveat is 20 lines up.
+
+    Round-1 finding: only the role table exposed partial/unpriced state,
+    so a partially-priced variant rendered `$3.0000 derived` with nothing
+    on the row to say the figure was a floor.
+    """
+    from eden_storage import PriceTable
+
+    table = PriceTable.model_validate(
+        {
+            "source": "test rates (not real prices)",
+            "as_of": "2026-08-19",
+            "rates": {"m1": {"input": 3.0}},  # no output rate -> partial
+        }
+    )
+    _seed_idea(store, "idea-1", "p0")
+    _record(
+        store,
+        "e1",
+        variant_id="v1",
+        idea_id="idea-1",
+        total_cost_usd=None,
+        model="m1",
+        input_tokens=1_000_000,
+        output_tokens=500,
+    )
+    report = _report(client, price_table=table)
+    for bucket, key in (("by_variant", "variant_id"), ("by_idea", "idea_id")):
+        (row,) = report[bucket]
+        assert row["is_floor"] is True, f"{bucket}[{row[key]}] should be a floor"
+    (model_row,) = report["by_model"]
+    assert model_row["is_floor"] is True
+
+    text = render_table(report)
+    # One FLOOR per bucket table (role, model, variant, idea) plus the
+    # totals line: the marker is on the rows, not only in the preamble.
+    assert text.count("FLOOR") >= 5
+
+
+def test_complete_rows_carry_no_floor_marker(
+    store: InMemoryStore, client: StoreClient
+) -> None:
+    _seed_idea(store, "idea-1", "p0")
+    _record(store, "e1", variant_id="v1", idea_id="idea-1", total_cost_usd=0.5)
+    report = _report(client)
+    (variant_row,) = report["by_variant"]
+    assert variant_row["is_floor"] is False
+    assert "FLOOR" not in render_table(report)

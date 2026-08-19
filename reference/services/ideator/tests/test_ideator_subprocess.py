@@ -572,3 +572,53 @@ def test_failed_dispatch_records_without_an_idea(tmp_path: Path) -> None:
     (entry,) = store.list_cost_entries()
     assert entry.idea_id is None
     assert entry.total_cost_usd == 0.3
+
+
+def test_dispatch_nonce_is_minted_before_the_dispatch(tmp_path: Path) -> None:
+    """The cost key is reconstructible for the life of a dispatch.
+
+    Round-1 finding: minting the nonce inside the record call made the
+    ideator the one role whose idempotency key a retry could not
+    reproduce. Nothing retries that call today, so this is hardening
+    rather than a live double-count — asserted by driving the real
+    handler and checking the recorded key against the nonce the host
+    generated.
+    """
+    import eden_ideator_host.subprocess_mode as mod
+
+    worker = _write_worker(
+        tmp_path,
+        """
+        import json, sys
+        print(json.dumps({"event": "ready"}), flush=True)
+        dispatch = json.loads(sys.stdin.readline())
+        print(json.dumps({"event": "ideation-error",
+                          "task_id": dispatch["task_id"],
+                          "cost": {"total_cost_usd": 0.2}}), flush=True)
+        """,
+    )
+    store, _, ideator_id = _seed_store_and_repo(tmp_path)
+
+    seen: list[str] = []
+    real = mod._record_ideation_cost
+
+    def _spy(**kwargs: object) -> None:
+        seen.append(str(kwargs["dispatch_nonce"]))
+        real(**kwargs)  # type: ignore[arg-type]
+
+    mod._record_ideation_cost = _spy
+    try:
+        _drive_one_ideation(store, ideator_id, tmp_path, worker)
+    finally:
+        mod._record_ideation_cost = real
+
+    (nonce,) = seen
+    (entry,) = store.list_cost_entries()
+    # The key is derived from that exact nonce, so a retry holding the
+    # same dispatch state reproduces it.
+    from eden_storage import composite_attempt_key, cost_entry_id
+
+    assert entry.entry_id == cost_entry_id(
+        role="ideator",
+        attempt_key=composite_attempt_key("ideation-1", nonce),
+    )

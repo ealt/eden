@@ -1,0 +1,144 @@
+--- docs/plans/review/issue-343-cost-instrumentation/impl/20260819T190608/1.md	2026-08-19 19:20:11.341905323 +0000
++++ docs/plans/review/issue-343-cost-instrumentation/impl/20260819T190608/2.md	2026-08-19 19:47:53.427406612 +0000
+@@ -207,73 +207,75 @@
+ 
+ ## Review Status
+ 
+-Round 1 — all three round-0 findings accepted and fixed. None was rejected.
+-
+-### 1. Unpriced dollars emitted as `$0.00` (Bug, accepted)
+-
+-Right, and it was the same class of error I had already fixed once for the
+-*derived* case without extending it to *unpriced*. A `basis` field beside a
+-numeric zero does not help a consumer summing the JSON — the sum is already
+-wrong.
+-
+-`CostTokenTotals.reported_cost_usd` / `derived_cost_usd` / `total_cost_usd` are
+-now `float | None`, `None` whenever nothing behind them was priced
+-([`rollup.py`](../../../../../reference/packages/eden-storage/src/eden_storage/rollup.py)).
+-`_refresh_total` keeps `None` rather than summing two `None`s into `0.0`. The
+-report emits JSON `null` and the table renders `n/a`; `_fmt_usd` no longer has a
+-path that prints `$0.0000` for an absent figure. Applies to **every** bucket
+-(`totals`, `by_role`, `by_variant`, `by_idea`, `by_model`), not just `by_model`.
+-The test that codified the zero now asserts `None`, and the empty-ledger test was
+-renamed — an empty ledger means "nothing recorded", not "the run was free".
+-
+-Each bucket also now carries `is_floor`, so the "this total understates spend"
+-signal is one field instead of something a consumer derives from two counters.
+-
+-### 2. Evaluator idempotency keys not injective (Bug, accepted)
+-
+-Confirmed against the spec, not just the code: chapter 2 §1.3 keeps `task_id` /
+-`variant_id` opaque with no format mandated, so `f"{task_id}-{variant_id}"`
+-genuinely collides — `("task-a", "variant-b-c")` and `("task-a-variant-b", "c")`
+-render one key, and first-write-wins then discards a real attempt's spend. That
+-is the one error this ledger must not make. This is the same "ids are opaque"
+-trap AGENTS.md records for *parsing* ref names, hit while *composing* one.
+-
+-New `composite_attempt_key(*parts)` length-prefixes each part, which is
+-injective by construction. The evaluator uses it; so does the **ideator**, whose
+-`task_id`+nonce join had the same defect and which the review didn't name.
+-
+-Fixing it surfaced a second latent bug the review didn't reach: a max-length pair
+-would have exceeded `CostEntry.entry_id`'s 128-char cap, raised inside
+-`record_outcome_cost`'s catch-all, and dropped the row **silently**.
+-`cost_entry_id` now digests any over-cap key (deterministically, so retries still
+-dedupe) instead of overflowing; truncating would have reintroduced collisions.
+-`ENTRY_ID_MAX_LEN` is exported — a test needing it to assert the cap is a sign the
+-cap belongs in the API.
+-
+-Also fixed the doc/impl drift the review caught: the docstring claimed
+-`<task_id>:<variant_id>` while the code used `-`.
+-
+-### 3. Partially priced attempts classified as fully derived (Risk, accepted)
+-
+-`DerivedCost.partially_priced` is set whenever some classes priced and others had
+-no rate. The rollup counts those in `entries_partially_priced` (they still carry
+-dollars, so they are not "unpriced"), `is_floor` covers both shortfall kinds, and
+-the table's floor line now names which applies. Previously a report could say
+-"all of it DERIVED" with an unrated class silently missing from the figure.
++Round 2 — all four round-1 findings accepted and fixed; one proposed remedy
++declined in favour of a cheaper one that removes the objection entirely.
++Round-0's three findings were fixed in round 1 and re-verified as fixed by the
++round-1 review.
++
++### 1. Over-cap digest truncated to 128 bits (Bug, accepted — remedy simplified)
++
++Correct: a 32-hex prefix is collision-*resistant* to its own width, not
++injective, and under first-write-wins a collision discards a real attempt's
++spend. Fixed by using the **full** SHA-256 hex — `cost-<role>-sha256:` plus 64
++hex is at most 86 characters, so it fits the 128-char cap with room to spare and
++there was never anything to buy by shortening it.
++
++Declined the two alternatives offered (store the canonical key in a separately
++constrained field; keep a digest but add collision detection). With a full
++SHA-256 a collision requires a cryptographic break, so detection machinery would
++be speculative complexity guarding an event that cannot be provoked — and the
++extra field would duplicate `task_id` / `variant_id`, which are already columns.
++
++### 2. `by_model` inherited attempt-wide partial status (Bug, accepted)
++
++Real precision bug. `partially_priced` is attempt-wide, and
++`_accumulate_model` applied it to every slice — so an attempt using a fully
++priced `m1` and an unknown `m2` flagged **`m1`** as a floor, understating
++confidence in a figure that is exact.
++
++`DerivedCost.partial_models` now records which models had gaps *of their own*
++(unrated class, or per-model cache writes with no TTL split), and the per-model
++bucket consults that instead of the attempt-wide flag. The attempt-level total
++remains a floor, which is correct — it is short by `m2`.
++
++### 3. Ideator nonce not stable across retries (Risk, accepted as hardening)
++
++Accepted, with the severity stated honestly: **nothing retries that call today**,
++so this was not a live double-count. `record_outcome_cost` swallows failures
++without retrying and no wrapper retries it, which is why the original docstring
++argued idempotency held "by construction". But that made the ideator the one role
++whose key a *future* retry could not reproduce, and hoisting the nonce costs
++nothing: `handle_ideation_task` now mints it before the dispatch and passes it
++into the record call, so the key is reconstructible for the life of that
++dispatch. Safe by key beats safe by assumption.
++
++### 4. Row-level floor invisible outside the role table (Risk, accepted)
++
++Right, and the same honesty principle as two earlier fixes in this chunk (the
++per-role unpriced column, the per-idea `basis` column): a caveat in the preamble
++does not tell a reader *which* row understates, and `$3.0000 derived` on a row
++whose output tokens had no rate looks complete. Every bucket table
++(role / model / variant / idea) now carries a `floor` column driven by the same
++`is_floor` the JSON exposes.
+ 
+ ### Verification of the fixes
+ 
+-`ruff` / `pyright` (0 errors) / `check-complexity` (0 blocking, still no
+-`slop-allow`) / `check-rename-discipline` / `spec-xref-check` / markdownlint all
+-green; the touched suites pass (126 tests across the cost + host + report files).
+-The operator walkthrough was re-run in all three pricing postures — the unpriced
+-ideator row now reads `n/a`, and a formatting artifact it exposed (`n/a+unpriced`,
+-a floor glyph fused to the basis) was removed rather than shipped.
+-
+-Six regression tests were added for the findings themselves: the exact colliding
+-pair, the over-cap digest path (bounded, deterministic, still injective, short
+-keys still readable), partial-vs-full pricing, reported-is-never-a-floor, and
+-`null`-not-zero across every bucket.
++`ruff` / `pyright` (0 errors, warnings back to the pre-change baseline of 28) /
++`check-complexity` (0 blocking, still no `slop-allow`) /
++`check-rename-discipline` / `spec-xref-check` / markdownlint green; the touched
++suites pass.
++
++Seven regression tests added for these findings: the digest is the full hash and
++within the cap; a fully-priced model sharing an attempt with an unknown one is
++**not** a floor while the attempt still is; a model missing one of its *own*
++rates **is**; untiered per-model cache writes make that model a floor; every
++bucket table marks its own floor rows and complete rows carry no marker; and the
++ideator's recorded key is derived from the nonce the host minted before dispatch
++(asserted by spying on the real handler, not by calling the helper directly).
++
++The operator walkthrough was re-run against a deliberately partial rate table
++(input priced, output not): the ideator role, the gateway model, and both ideas
++now show `FLOOR` on their own rows, while the provider-reported executor and
++variant rows stay unmarked.
+ 
+-Docs updated in lockstep: the binding chapter's §11 attempt-key rule and §11.2
+-honesty rules, plus `docs/observability.md` §2.10's operator caveat.
++Docs updated in lockstep (binding §11 / §11.2, `docs/observability.md` §2.10).

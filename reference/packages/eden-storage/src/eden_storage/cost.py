@@ -35,9 +35,10 @@ Two properties are load-bearing for the ledger's purpose (answering
 
 from __future__ import annotations
 
+import hashlib
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 CostRole = Literal["ideator", "executor", "evaluator"]
 """Which role spent it. Role nouns per [`docs/glossary.md`](../../../../../docs/glossary.md).
@@ -118,7 +119,8 @@ class CostEntry(BaseModel):
     """
 
     models: list[ModelUsage] = Field(default_factory=list)
-    """Per-model usage split, when the source reports one.
+    """Per-model usage split, when the source reports one — at most ONE
+    slice per model (enforced below).
 
     A ``list``, not a ``tuple``: the entry round-trips through JSON on
     the wire and through ``model_dump`` inside the store, and a JSON
@@ -161,9 +163,55 @@ class CostEntry(BaseModel):
     A caller-supplied value is ignored.
     """
 
+    @model_validator(mode="after")
+    def _models_are_unique(self) -> CostEntry:
+        """Reject a repeated model label in ``models``.
+
+        A rollup attributes derived dollars to a model **by label**, so
+        two slices sharing one label make that model's bucket sum the
+        same amount twice — the per-model figure double-counts while the
+        attempt total stays right, which is the hardest kind of wrong
+        number to notice. Producers merge duplicates before building an
+        entry (:func:`eden_service_common.agent_cost.cost_from_reported`);
+        this validator is what stops a wire client skipping that step.
+        """
+        labels = [usage.model for usage in self.models]
+        if len(labels) != len(set(labels)):
+            duplicated = sorted({m for m in labels if labels.count(m) > 1})
+            raise ValueError(
+                f"models must carry at most one slice per model; "
+                f"duplicated: {duplicated}"
+            )
+        return self
+
     def to_payload(self) -> dict[str, Any]:
         """JSON-shaped dict with absent optionals omitted."""
         return self.model_dump(mode="json", exclude_none=True)
+
+
+ENTRY_ID_MAX_LEN = 128
+"""Cap on ``CostEntry.entry_id``; :func:`cost_entry_id` never exceeds it."""
+
+_DIGEST_PREFIX = "sha256:"
+"""Namespace marker for digested attempt keys; verbatim keys never carry it."""
+
+
+def composite_attempt_key(*parts: str) -> str:
+    """Join identifier parts into ONE injective attempt key.
+
+    Length-prefixed, not delimiter-joined, because
+    [`02-data-model.md`](../../../../../spec/v0/02-data-model.md) §1.3 keeps
+    ``task_id`` / ``variant_id`` **opaque** — any string, no format
+    mandated. A plain ``f"{a}-{b}"`` is therefore not injective:
+    ``("task-a", "variant-b-c")`` and ``("task-a-variant-b", "c")`` both
+    render ``task-a-variant-b-c``. Under first-write-wins that collision
+    *silently discards a real attempt's spend*, which understates the
+    run — the one error this ledger must not make.
+
+    Prefixing each part with its length makes the encoding reversible and
+    so collision-free by construction.
+    """
+    return ".".join(f"{len(part)}:{part}" for part in parts)
 
 
 def cost_entry_id(*, role: CostRole, attempt_key: str) -> str:
@@ -172,7 +220,33 @@ def cost_entry_id(*, role: CostRole, attempt_key: str) -> str:
     ``attempt_key`` MUST identify one *attempt*, not one task. The
     executor host passes its freshly-minted ``variant_id`` (one per
     execution attempt, so a reclaimed-and-rerun task yields two rows);
-    the evaluator host passes ``<task_id>:<variant_id>``; the ideator
-    host passes its per-dispatch key.
+    the evaluator and ideator hosts compose several identifiers through
+    :func:`composite_attempt_key`.
+
+    Keys longer than :data:`ENTRY_ID_MAX_LEN` are replaced by a digest of
+    the same input rather than truncated: truncation would reintroduce
+    collisions, and letting an over-long id reach the model validator
+    would raise inside :func:`record_outcome_cost`'s catch-all and drop
+    the row *silently*. The digest stays deterministic, so a retry of the
+    same attempt still dedupes.
+
+    The digest is the **full** SHA-256 hex, not a prefix. A truncated
+    digest is only collision-*resistant* to its own width, and under
+    first-write-wins a collision discards a real attempt's spend — the
+    same failure the length-prefixing exists to prevent. The full digest
+    still fits: ``cost-<role>-sha256:`` plus 64 hex is at most 86
+    characters, so there is nothing to buy by shortening it.
+
+    The two forms occupy **disjoint namespaces**. Returning a short key
+    verbatim while digested keys carry a ``sha256:`` prefix would collide
+    deterministically if some attempt key were itself literally
+    ``sha256:<64 hex>`` — and ids are opaque (§1.3), so nothing forbids
+    that shape. Such a key is digested too, which is why the verbatim
+    branch can never produce a ``sha256:``-prefixed id.
     """
-    return f"cost-{role}-{attempt_key}"
+    candidate = f"cost-{role}-{attempt_key}"
+    ambiguous = attempt_key.startswith(_DIGEST_PREFIX)
+    if len(candidate) <= ENTRY_ID_MAX_LEN and not ambiguous:
+        return candidate
+    digest = hashlib.sha256(attempt_key.encode("utf-8")).hexdigest()
+    return f"cost-{role}-{_DIGEST_PREFIX}{digest}"

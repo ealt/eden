@@ -163,6 +163,26 @@ class DerivedCost(BaseModel):
     gaps: tuple[str, ...] = ()
     """Human-readable reasons a class or model could not be priced."""
 
+    partially_priced: bool = False
+    """True when *some* token classes were priced and others were not.
+
+    A partially-priced entry is still ``basis="derived"`` — dollars were
+    derived — but its figure is a **floor**, and a rollup that counted it
+    as fully derived could report "all of it derived" while a class went
+    unpriced. Distinguished so the floor propagates instead of being
+    visible only in :attr:`gaps`.
+    """
+
+    partial_models: frozenset[str] = frozenset()
+    """Models whose OWN token classes were only partly priced.
+
+    Separate from :attr:`partially_priced` (which is attempt-wide)
+    because the two answer different questions. An attempt using a
+    fully-priced ``m1`` and an unknown ``m2`` is partial *as an attempt*,
+    but ``m1``'s own slice is complete — flagging ``m1`` as a floor would
+    understate confidence in a figure that is exact.
+    """
+
     per_model: dict[str, float] = Field(default_factory=dict)
     """Derived dollars attributed to each model, when derivation ran.
 
@@ -268,6 +288,9 @@ def _derive_single(
         total_cost_usd=total,
         priced_classes=tuple(priced),
         gaps=tuple(gaps),
+        partially_priced=bool(gaps),
+        # One model, so the attempt's partial status is that model's.
+        partial_models=frozenset({model} if gaps and model is not None else ()),
         # A single-model attempt's whole derived cost belongs to that
         # model exactly — no allocation involved.
         per_model={model: total} if model is not None else {},
@@ -280,6 +303,7 @@ def _derive_from_models(entry: CostEntry, table: PriceTable) -> DerivedCost:
     priced: list[str] = []
     gaps: list[str] = []
     per_model: dict[str, float] = {}
+    partial_models: set[str] = set()
     for usage in entry.models:
         rates = table.rates_for(usage.model)
         if rates is None:
@@ -298,6 +322,7 @@ def _derive_from_models(entry: CostEntry, table: PriceTable) -> DerivedCost:
                     f"no {token_class} rate for model {usage.model!r} "
                     f"({tokens} tokens)"
                 )
+                partial_models.add(usage.model)
                 continue
             amount = tokens * rate / TOKENS_PER_MTOK
             total += amount
@@ -311,6 +336,7 @@ def _derive_from_models(entry: CostEntry, table: PriceTable) -> DerivedCost:
                 f"{usage.cache_creation_input_tokens} cache-write tokens for "
                 f"model {usage.model!r} have no per-model TTL split; left unpriced"
             )
+            partial_models.add(usage.model)
     if not priced:
         return DerivedCost(basis="unpriced", gaps=tuple(gaps))
     return DerivedCost(
@@ -318,5 +344,7 @@ def _derive_from_models(entry: CostEntry, table: PriceTable) -> DerivedCost:
         total_cost_usd=total,
         priced_classes=tuple(priced),
         gaps=tuple(gaps),
+        partially_priced=bool(gaps),
+        partial_models=frozenset(partial_models),
         per_model=per_model,
     )

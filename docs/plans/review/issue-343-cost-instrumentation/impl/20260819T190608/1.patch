@@ -1,0 +1,83 @@
+--- docs/plans/review/issue-343-cost-instrumentation/impl/20260819T190608/0.md	2026-08-19 19:24:58.866072205 +0000
++++ docs/plans/review/issue-343-cost-instrumentation/impl/20260819T190608/1.md	2026-08-19 19:20:11.341905323 +0000
+@@ -207,11 +207,73 @@
+ 
+ ## Review Status
+ 
+-Round 0 — awaiting initial review.
++Round 1 — all three round-0 findings accepted and fixed. None was rejected.
+ 
+-An earlier attempt (`../20260730T185542/`) was environment-blocked before Codex
+-read anything: it ran `--full-auto`, i.e. `workspace-write`, which cannot work
+-under this host's Landlock backend. This run uses `--sandbox read-only`, whose
+-preflight passes (executes, reads the tree, writes blocked; a real `codex exec`
+-returns with tool-execution events). That brief and this one are identical apart
+-from this section.
++### 1. Unpriced dollars emitted as `$0.00` (Bug, accepted)
++
++Right, and it was the same class of error I had already fixed once for the
++*derived* case without extending it to *unpriced*. A `basis` field beside a
++numeric zero does not help a consumer summing the JSON — the sum is already
++wrong.
++
++`CostTokenTotals.reported_cost_usd` / `derived_cost_usd` / `total_cost_usd` are
++now `float | None`, `None` whenever nothing behind them was priced
++([`rollup.py`](../../../../../reference/packages/eden-storage/src/eden_storage/rollup.py)).
++`_refresh_total` keeps `None` rather than summing two `None`s into `0.0`. The
++report emits JSON `null` and the table renders `n/a`; `_fmt_usd` no longer has a
++path that prints `$0.0000` for an absent figure. Applies to **every** bucket
++(`totals`, `by_role`, `by_variant`, `by_idea`, `by_model`), not just `by_model`.
++The test that codified the zero now asserts `None`, and the empty-ledger test was
++renamed — an empty ledger means "nothing recorded", not "the run was free".
++
++Each bucket also now carries `is_floor`, so the "this total understates spend"
++signal is one field instead of something a consumer derives from two counters.
++
++### 2. Evaluator idempotency keys not injective (Bug, accepted)
++
++Confirmed against the spec, not just the code: chapter 2 §1.3 keeps `task_id` /
++`variant_id` opaque with no format mandated, so `f"{task_id}-{variant_id}"`
++genuinely collides — `("task-a", "variant-b-c")` and `("task-a-variant-b", "c")`
++render one key, and first-write-wins then discards a real attempt's spend. That
++is the one error this ledger must not make. This is the same "ids are opaque"
++trap AGENTS.md records for *parsing* ref names, hit while *composing* one.
++
++New `composite_attempt_key(*parts)` length-prefixes each part, which is
++injective by construction. The evaluator uses it; so does the **ideator**, whose
++`task_id`+nonce join had the same defect and which the review didn't name.
++
++Fixing it surfaced a second latent bug the review didn't reach: a max-length pair
++would have exceeded `CostEntry.entry_id`'s 128-char cap, raised inside
++`record_outcome_cost`'s catch-all, and dropped the row **silently**.
++`cost_entry_id` now digests any over-cap key (deterministically, so retries still
++dedupe) instead of overflowing; truncating would have reintroduced collisions.
++`ENTRY_ID_MAX_LEN` is exported — a test needing it to assert the cap is a sign the
++cap belongs in the API.
++
++Also fixed the doc/impl drift the review caught: the docstring claimed
++`<task_id>:<variant_id>` while the code used `-`.
++
++### 3. Partially priced attempts classified as fully derived (Risk, accepted)
++
++`DerivedCost.partially_priced` is set whenever some classes priced and others had
++no rate. The rollup counts those in `entries_partially_priced` (they still carry
++dollars, so they are not "unpriced"), `is_floor` covers both shortfall kinds, and
++the table's floor line now names which applies. Previously a report could say
++"all of it DERIVED" with an unrated class silently missing from the figure.
++
++### Verification of the fixes
++
++`ruff` / `pyright` (0 errors) / `check-complexity` (0 blocking, still no
++`slop-allow`) / `check-rename-discipline` / `spec-xref-check` / markdownlint all
++green; the touched suites pass (126 tests across the cost + host + report files).
++The operator walkthrough was re-run in all three pricing postures — the unpriced
++ideator row now reads `n/a`, and a formatting artifact it exposed (`n/a+unpriced`,
++a floor glyph fused to the basis) was removed rather than shipped.
++
++Six regression tests were added for the findings themselves: the exact colliding
++pair, the over-cap digest path (bounded, deterministic, still injective, short
++keys still readable), partial-vs-full pricing, reported-is-never-a-floor, and
++`null`-not-zero across every bucket.
++
++Docs updated in lockstep: the binding chapter's §11 attempt-key rule and §11.2
++honesty rules, plus `docs/observability.md` §2.10's operator caveat.

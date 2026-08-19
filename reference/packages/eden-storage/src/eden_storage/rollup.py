@@ -49,9 +49,25 @@ class CostTokenTotals(BaseModel):
     - ``total_cost_usd`` — their sum, which is the number to quote *with*
       ``basis``.
 
-    ``entries_unpriced`` is the completeness check: entries that neither
-    reported a figure nor could be derived. A non-zero value means
-    ``total_cost_usd`` is a floor, not a total.
+    **A dollar field is ``None`` when there is nothing behind it, never
+    ``0.0``.** A numeric zero cannot be distinguished from "genuinely
+    free" by a consumer summing the JSON, and no ``basis`` field alongside
+    it fixes that — the sum is already wrong. ``None`` forces the
+    question. So ``reported_cost_usd`` is ``None`` unless some entry
+    reported, ``derived_cost_usd`` is ``None`` unless some entry was
+    derived, and ``total_cost_usd`` is ``None`` when nothing in the bucket
+    could be priced at all.
+
+    Two completeness counters, because a total can fall short two ways:
+
+    - ``entries_unpriced`` — entries that neither reported a figure nor
+      could be derived.
+    - ``entries_partially_priced`` — entries where *some* token classes
+      priced and others had no rate. These carry dollars, so they are not
+      unpriced; their figure is still a floor.
+
+    Either being non-zero means ``total_cost_usd`` is a **floor**, not a
+    total. :attr:`is_floor` says so in one place.
     """
 
     model_config = ConfigDict(strict=True, extra="forbid")
@@ -60,15 +76,21 @@ class CostTokenTotals(BaseModel):
     entries_reported: int = 0
     entries_derived: int = 0
     entries_unpriced: int = 0
-    reported_cost_usd: float = 0.0
-    derived_cost_usd: float = 0.0
-    total_cost_usd: float = 0.0
+    entries_partially_priced: int = 0
+    reported_cost_usd: float | None = None
+    derived_cost_usd: float | None = None
+    total_cost_usd: float | None = None
     input_tokens: int = 0
     output_tokens: int = 0
     cache_creation_input_tokens: int = 0
     cache_creation_5m_input_tokens: int = 0
     cache_creation_1h_input_tokens: int = 0
     cache_read_input_tokens: int = 0
+
+    @property
+    def is_floor(self) -> bool:
+        """True when the total understates spend by a known-unknown amount."""
+        return bool(self.entries_unpriced or self.entries_partially_priced)
 
     @property
     def basis(self) -> str:
@@ -139,6 +161,21 @@ class CostSummary(BaseModel):
     """
 
 
+def _refresh_total(totals: CostTokenTotals) -> None:
+    """Recompute ``total_cost_usd``, keeping ``None`` for "nothing priced".
+
+    Summing the two components would turn an all-unpriced bucket into
+    ``0.0``, which is the exact confusion :class:`CostTokenTotals`
+    documents against.
+    """
+    if totals.reported_cost_usd is None and totals.derived_cost_usd is None:
+        totals.total_cost_usd = None
+        return
+    totals.total_cost_usd = (totals.reported_cost_usd or 0.0) + (
+        totals.derived_cost_usd or 0.0
+    )
+
+
 def _accumulate(
     totals: CostTokenTotals, entry: CostEntry, derived: DerivedCost
 ) -> None:
@@ -146,13 +183,19 @@ def _accumulate(
     totals.entries += 1
     if derived.basis == "reported":
         totals.entries_reported += 1
-        totals.reported_cost_usd += derived.total_cost_usd or 0.0
+        totals.reported_cost_usd = (totals.reported_cost_usd or 0.0) + (
+            derived.total_cost_usd or 0.0
+        )
     elif derived.basis == "derived":
         totals.entries_derived += 1
-        totals.derived_cost_usd += derived.total_cost_usd or 0.0
+        totals.derived_cost_usd = (totals.derived_cost_usd or 0.0) + (
+            derived.total_cost_usd or 0.0
+        )
+        if derived.partially_priced:
+            totals.entries_partially_priced += 1
     else:
         totals.entries_unpriced += 1
-    totals.total_cost_usd = totals.reported_cost_usd + totals.derived_cost_usd
+    _refresh_total(totals)
     for field in _TOKEN_FIELDS:
         value = getattr(entry, field)
         if value is not None:
@@ -180,15 +223,21 @@ def _accumulate_model(
     slice_derived = derived.per_model.get(usage.model)
     if usage.total_cost_usd is not None:
         totals.entries_reported += 1
-        totals.reported_cost_usd += usage.total_cost_usd
+        totals.reported_cost_usd = (
+            totals.reported_cost_usd or 0.0
+        ) + usage.total_cost_usd
     elif slice_derived is not None:
         # Priced from this model's own tokens, so the amount is this
         # model's — no share of an attempt total is being invented.
         totals.entries_derived += 1
-        totals.derived_cost_usd += slice_derived
+        totals.derived_cost_usd = (totals.derived_cost_usd or 0.0) + slice_derived
+        # This model's own status, NOT the attempt's: a fully-priced model
+        # sharing an attempt with an unknown one is still exact.
+        if usage.model in derived.partial_models:
+            totals.entries_partially_priced += 1
     else:
         totals.entries_unpriced += 1
-    totals.total_cost_usd = totals.reported_cost_usd + totals.derived_cost_usd
+    _refresh_total(totals)
     for field in (
         "input_tokens",
         "output_tokens",

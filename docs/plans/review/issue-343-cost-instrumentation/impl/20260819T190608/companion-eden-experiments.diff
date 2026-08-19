@@ -1,0 +1,448 @@
+diff --git a/AUTHORING-experiment.md b/AUTHORING-experiment.md
+index 3781080..e4103bc 100644
+--- a/AUTHORING-experiment.md
++++ b/AUTHORING-experiment.md
+@@ -128,6 +128,13 @@ The non-negotiable hardening (all of it is in
+ - **Process-group kill + stream, don't buffer.** `start_new_session=True` +
+   `killpg`, and `--output-format stream-json --verbose` so a killed agent's
+   progress is already on disk.
++- **Point the host at the agent log (`agent_log`) so the run reports its cost.**
++  The stream-json log's terminal `result` record already carries
++  `total_cost_usd` + token counts; EDEN's executor host parses it out of
++  whatever path you name in the outcome (ealt/eden#343). One key, on **every**
++  outcome written after the agent ran — including the error ones, since a
++  refused variant still spent inference. Without it the run's cost ledger is
++  empty and economics are back to hand-estimates.
+ 
+ ```python
+ """Agent-driven executor. Edits ONE candidate file to implement the idea."""
+@@ -218,24 +225,28 @@ def main() -> int:
+     log_path = log_dir / f"execution_{variant_id}.log"
+ 
+     rc = _run_agent(cwd, idea, variant_id, log_path)
++    # From here on the agent has run and spent money: every outcome
++    # carries `agent_log` (ealt/eden#343).
+     if rc != 0:
+         return _write(out, {"status": "error",
+-                            "reason": f"agent rc={rc}; see {log_path}"})
++                            "reason": f"agent rc={rc}; see {log_path}"}, log_path)
+     if parent and _protected_changed(cwd, parent):
+         return _write(out, {"status": "error",
+-                            "reason": "agent modified protected paths"})
++                            "reason": "agent modified protected paths"}, log_path)
+     subprocess.run(["git", "add", "-A"], cwd=str(cwd), check=True)
+     if not subprocess.run(["git", "diff", "--cached", "--name-only"],
+                           cwd=str(cwd), capture_output=True,
+                           text=True).stdout.strip():
+-        return _write(out, {"status": "error", "reason": "no changes"})
++        return _write(out, {"status": "error", "reason": "no changes"}, log_path)
+     subprocess.run(["git", "-c", "commit.gpgsign=false", "commit", "-m",
+                     f"eden: {variant_id}"], cwd=str(cwd), check=True)
+     sha = subprocess.run(["git", "rev-parse", "HEAD"], cwd=str(cwd),
+                          capture_output=True, text=True).stdout.strip()
+-    return _write(out, {"status": "success", "commit_sha": sha})
++    return _write(out, {"status": "success", "commit_sha": sha}, log_path)
+ 
+-def _write(path: Path, outcome: dict) -> int:
++def _write(path: Path, outcome: dict, agent_log: Path | None = None) -> int:
++    if agent_log is not None:
++        outcome = {**outcome, "agent_log": str(agent_log)}
+     path.parent.mkdir(parents=True, exist_ok=True)
+     path.write_text(json.dumps(outcome, sort_keys=True))
+     return 0
+diff --git a/RUNBOOK-durable-experiment.md b/RUNBOOK-durable-experiment.md
+index 3d98702..c5ad698 100644
+--- a/RUNBOOK-durable-experiment.md
++++ b/RUNBOOK-durable-experiment.md
+@@ -239,6 +239,32 @@ the box at `/opt/eden-experiments/<name>/outputs/agent-logs/execution_*.log`
+ for `429` / `Too many tokens` — Bedrock's daily token quota (and the tier-gate)
+ produce uniform `rc=1`/~185s/empty-log failures that masquerade as code bugs.
+ 
++**What has the run cost so far?** With the store API port-forwarded (above) and
++`EDEN_ADMIN_TOKEN` exported from `/etc/eden/eden.env`:
++
++```bash
++# from the EDEN checkout (~/Documents/eden), against the forwarded port
++uv run python -m eden_service_common.cost_report \
++  --task-store-url http://localhost:8080 \
++  --experiment-id "$EDEN_EXPERIMENT_ID" --format table
++```
++
++Spend per role, per variant, per idea and per model, joined to each variant's
++evaluation payload (drop `--format table` for the JSON that feeds analysis).
++This reports only what the experiment's own units declare: `execution.py` must
++stamp `agent_log` on its outcomes and the ideator bridge must forward the
++gateway's `usage` — both wired in this repo, but a run launched from an older
++experiment dir reports an empty ledger.
++
++**Ideator dollars need a rate table.** The executor's agent logs carry
++`total_cost_usd`, but the gateway reports token counts at best, so ideator spend
++shows as `unpriced` until you pass `--price-table <path>` with your own rates
++(start from EDEN's `reference/pricing/price-table.example.json`; the fraxl model
++label to key on is whatever `EDEN_IDEATOR_MODEL` was set to for the run, and
++rounds 1-3 vs 4+ of run 1 used *different* models). Derived figures are labelled
++`DERIVED` and never blended into reported ones. See ealt/eden#343 and EDEN's
++`docs/observability.md` §2.10.
++
+ ## Step 6 — results access
+ 
+ The primary scientific artifact is the git lineage: each `variant/*` branch
+diff --git a/fraxl-run/fraxl-ideator.py b/fraxl-run/fraxl-ideator.py
+index 043c9e8..3147a94 100644
+--- a/fraxl-run/fraxl-ideator.py
++++ b/fraxl-run/fraxl-ideator.py
+@@ -77,8 +77,13 @@ _IDEATOR_SYSTEM = (
+ )
+ 
+ 
+-def _call_gateway(user_message: str) -> str:
+-    """POST to /v1/chat/completions routed to the persistent ideator session."""
++def _call_gateway(user_message: str) -> tuple[str, Optional[dict]]:
++    """POST to /v1/chat/completions routed to the persistent ideator session.
++
++    Returns ``(content, usage)``. ``usage`` is the response's OpenAI-style
++    token block when the gateway sends one, else ``None`` — see
++    :func:`_cost_from_usage` for what we do with it (ealt/eden#343).
++    """
+     body = json.dumps({
+         "model": "openclaw",
+         "messages": [
+@@ -101,12 +106,82 @@ def _call_gateway(user_message: str) -> str:
+     try:
+         with urllib.request.urlopen(req, timeout=_TIMEOUT) as resp:
+             result = json.loads(resp.read())
+-            return result["choices"][0]["message"]["content"]
++            _note_usage_shape(result)
++            usage = result.get("usage")
++            return (
++                result["choices"][0]["message"]["content"],
++                usage if isinstance(usage, dict) else None,
++            )
+     except urllib.error.HTTPError as exc:
+         body_text = exc.read().decode(errors="replace")[:400]
+         raise RuntimeError(f"gateway HTTP {exc.code}: {body_text}") from exc
+ 
+ 
++_USAGE_SHAPE_NOTED = False
++
++
++def _note_usage_shape(result: dict) -> None:
++    """Log once what the gateway response actually carries (ealt/eden#343).
++
++    Per-idea token counts are wanted for cost accounting, and the OpenAI
++    chat-completions shape this gateway speaks defines a ``usage`` block —
++    but whether *this* deployment populates it can only be settled by
++    looking at a live response. So: if it is there we forward it; if it is
++    not, we say what WAS there, once, and stop. Deliberately no
++    token-estimation fallback — a guessed number in a cost report is
++    worse than a missing one, because it looks authoritative.
++    """
++    global _USAGE_SHAPE_NOTED
++    if _USAGE_SHAPE_NOTED:
++        return
++    _USAGE_SHAPE_NOTED = True
++    usage = result.get("usage")
++    if isinstance(usage, dict):
++        print(
++            f"gateway usage keys: {sorted(usage)}",
++            file=sys.stderr,
++        )
++    else:
++        print(
++            "gateway response carries no 'usage' object; top-level keys: "
++            f"{sorted(result)} (cost per idea will be unreported — see "
++            "ealt/eden#343)",
++            file=sys.stderr,
++        )
++
++
++def _cost_from_usage(usage: Optional[dict]) -> Optional[dict]:
++    """Map an OpenAI-style ``usage`` block to EDEN's normalized cost keys.
++
++    The EDEN ideator host reads ``cost`` off the terminator line and
++    records it in the run's cost ledger (see the worker-host binding
++    §11). Only fields the gateway actually sent are emitted — a partial
++    report is useful, an invented one is not. Returns ``None`` when
++    there is nothing to report.
++    """
++    if not isinstance(usage, dict):
++        return None
++    cost: dict = {}
++    for src, dst in (
++        ("prompt_tokens", "input_tokens"),
++        ("completion_tokens", "output_tokens"),
++        ("input_tokens", "input_tokens"),
++        ("output_tokens", "output_tokens"),
++    ):
++        value = usage.get(src)
++        if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
++            cost[dst] = value
++    for key in ("total_cost_usd", "cost_usd"):
++        value = usage.get(key)
++        if isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0:
++            cost["total_cost_usd"] = float(value)
++            break
++    if _MODEL:
++        cost["model"] = _MODEL
++    # A model label alone is not a cost report.
++    return cost if cost.keys() - {"model"} else None
++
++
+ def _build_user_message(dispatch: dict) -> str:
+     objective = dispatch.get("objective", {})
+     schema = dispatch.get("evaluation_schema", {})
+@@ -213,10 +288,12 @@ def main() -> int:
+                    "reason": "no parent commit — set EDEN_BASE_COMMIT_SHA"})
+             continue
+ 
++        usage: Optional[dict] = None
+         try:
+             user_msg = _build_user_message(dispatch)
+             print(f"[{task_id}] calling gateway session={_SESSION_KEY}", file=sys.stderr)
+-            text = _call_gateway(user_msg)
++            text, usage = _call_gateway(user_msg)
++            cost = _cost_from_usage(usage)
+             ideas = _parse_ideas(text)
+             print(f"[{task_id}] parsed {len(ideas)} idea(s)", file=sys.stderr)
+ 
+@@ -229,11 +306,21 @@ def main() -> int:
+                     "parent_commits": [parent],
+                     "content": idea["content"],
+                 })
+-            _emit({"event": "ideation-done", "task_id": task_id})
++            done: dict = {"event": "ideation-done", "task_id": task_id}
++            if cost:
++                done["cost"] = cost
++            _emit(done)
+ 
+         except Exception as exc:
+             print(f"ERROR [{task_id}]: {exc}", file=sys.stderr)
+-            _emit({"event": "ideation-error", "task_id": task_id, "reason": str(exc)})
++            # The gateway call may have completed (and been paid for)
++            # before a later step raised, so forward whatever usage we
++            # saw — ealt/eden#343 records spend on failed attempts too.
++            err: dict = {"event": "ideation-error", "task_id": task_id, "reason": str(exc)}
++            cost = _cost_from_usage(usage)
++            if cost:
++                err["cost"] = cost
++            _emit(err)
+ 
+     return 0
+ 
+diff --git a/fraxl-run/tests/test_fraxl_ideator_cost.py b/fraxl-run/tests/test_fraxl_ideator_cost.py
+new file mode 100644
+index 0000000..c14ba5c
+--- /dev/null
++++ b/fraxl-run/tests/test_fraxl_ideator_cost.py
+@@ -0,0 +1,101 @@
++"""Gateway token capture in the ideator bridge (ealt/eden#343).
++
++The EDEN ideator host records whatever ``cost`` the bridge puts on its
++terminator line, so what these tests protect is the accounting being
++*honest*: only figures the gateway actually sent get forwarded, a
++response with no ``usage`` block yields no cost (rather than an
++estimate), and a gateway call that was paid for still reports even when
++a later step fails.
++
++``fraxl-ideator.py`` has a hyphen in its name, so it loads by path
++rather than by import.
++"""
++
++import importlib.util
++import os
++
++_PATH = os.path.join(
++    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
++    "fraxl-ideator.py",
++)
++_spec = importlib.util.spec_from_file_location("fraxl_ideator", _PATH)
++assert _spec is not None and _spec.loader is not None
++bridge = importlib.util.module_from_spec(_spec)
++_spec.loader.exec_module(bridge)
++
++
++def test_openai_usage_maps_to_eden_cost_keys():
++    cost = bridge._cost_from_usage(
++        {"prompt_tokens": 4200, "completion_tokens": 830, "total_tokens": 5030}
++    )
++    assert cost["input_tokens"] == 4200
++    assert cost["output_tokens"] == 830
++    # total_tokens is a sum of the other two, not a third figure.
++    assert "total_tokens" not in cost
++
++
++def test_anthropic_style_usage_keys_also_map():
++    cost = bridge._cost_from_usage({"input_tokens": 10, "output_tokens": 20})
++    assert cost["input_tokens"] == 10
++    assert cost["output_tokens"] == 20
++
++
++def test_dollar_figure_is_forwarded_when_present():
++    assert bridge._cost_from_usage({"prompt_tokens": 1, "total_cost_usd": 0.42})[
++        "total_cost_usd"
++    ] == 0.42
++    assert bridge._cost_from_usage({"prompt_tokens": 1, "cost_usd": 0.5})[
++        "total_cost_usd"
++    ] == 0.5
++
++
++def test_missing_usage_yields_no_cost_not_an_estimate():
++    """No usage block → no cost. A guessed number would look authoritative."""
++    assert bridge._cost_from_usage(None) is None
++    assert bridge._cost_from_usage({}) is None
++    assert bridge._cost_from_usage("usage") is None
++
++
++def test_model_label_alone_is_not_a_cost_report():
++    """The model is always known locally; on its own it says nothing about spend."""
++    assert bridge._cost_from_usage({"unknown_key": 1}) is None
++
++
++def test_malformed_figures_are_dropped_field_wise():
++    cost = bridge._cost_from_usage(
++        {"prompt_tokens": "4200", "completion_tokens": 830, "total_cost_usd": -1}
++    )
++    assert "input_tokens" not in cost
++    assert cost["output_tokens"] == 830
++    assert "total_cost_usd" not in cost
++
++
++def test_booleans_are_not_token_counts():
++    assert bridge._cost_from_usage({"prompt_tokens": True}) is None
++
++
++def test_usage_shape_is_reported_once(capsys):
++    """A response without usage must say what it DID carry — once, to stderr.
++
++    This is the whole mechanism for answering "does this gateway report
++    tokens?" without access to the box: the next run's ideator log has
++    the answer in it.
++    """
++    bridge._USAGE_SHAPE_NOTED = False
++    bridge._note_usage_shape({"id": "x", "choices": [], "model": "m"})
++    first = capsys.readouterr().err
++    assert "no 'usage' object" in first
++    assert "'choices'" in first and "'model'" in first
++
++    bridge._note_usage_shape({"id": "y"})
++    assert capsys.readouterr().err == ""
++
++
++def test_usage_shape_report_names_the_keys_when_present(capsys):
++    bridge._USAGE_SHAPE_NOTED = False
++    bridge._note_usage_shape(
++        {"usage": {"prompt_tokens": 1, "completion_tokens": 2}}
++    )
++    err = capsys.readouterr().err
++    assert "usage keys" in err
++    assert "prompt_tokens" in err
+diff --git a/r3-dynamics/execution.py b/r3-dynamics/execution.py
+index 2a19523..cdab1c4 100644
+--- a/r3-dynamics/execution.py
++++ b/r3-dynamics/execution.py
+@@ -306,22 +306,37 @@ def main() -> int:
+     elapsed = time.monotonic() - start
+ 
+     if rc != 0:
+-        _write_outcome(cwd / output_rel, {"status": "error", "reason": f"agent exited rc={rc} after {elapsed:.1f}s; see {log_path}"})
++        _write_outcome(cwd / output_rel, {"status": "error", "reason": f"agent exited rc={rc} after {elapsed:.1f}s; see {log_path}"}, log_path)
+         return 0
+ 
+-    return _commit_variant(cwd, output_rel, slug, variant_id, parent_sha)
+-
+-
+-def _commit_variant(cwd: Path, output_rel: str, slug: str, variant_id: str, parent_sha: str | None) -> int:
++    return _commit_variant(cwd, output_rel, slug, variant_id, parent_sha, log_path)
++
++
++def _commit_variant(
++    cwd: Path,
++    output_rel: str,
++    slug: str,
++    variant_id: str,
++    parent_sha: str | None,
++    agent_log: Path | None = None,
++) -> int:
++    """Validate + commit the agent's edit and write the outcome.
++
++    ``agent_log`` (when the agent actually ran) is stamped onto every
++    outcome as ``agent_log`` so the EDEN executor host can parse
++    ``total_cost_usd`` out of the stream-json log — ealt/eden#343. It is
++    stamped on the error outcomes too: a variant that the guard refused
++    still spent inference.
++    """
+     if parent_sha and _has_diff_against(cwd, parent_sha, *PROTECTED):
+-        _write_outcome(cwd / output_rel, {"status": "error", "reason": "agent modified protected paths"})
++        _write_outcome(cwd / output_rel, {"status": "error", "reason": "agent modified protected paths"}, agent_log)
+         return 0
+ 
+     _git(["add", "-A"], cwd)
+     staged = [f for f in _git(["diff", "--cached", "--name-only"], cwd).splitlines() if f.strip()]
+     evolved = _evolved_surface_paths(staged)
+     if not evolved:
+-        _write_outcome(cwd / output_rel, {"status": "error", "reason": "no change to the evolved surface (only host-injected .eden/ changed) — degenerate variant refused"})
++        _write_outcome(cwd / output_rel, {"status": "error", "reason": "no change to the evolved surface (only host-injected .eden/ changed) — degenerate variant refused"}, agent_log)
+         return 0
+ 
+     env = os.environ.copy()
+@@ -334,12 +349,18 @@ def _commit_variant(cwd: Path, output_rel: str, slug: str, variant_id: str, pare
+         cwd=str(cwd), env=env, capture_output=True, check=True,
+     )
+     commit_sha = _git(["rev-parse", "HEAD"], cwd).strip()
+-    _write_outcome(cwd / output_rel, {"status": "success", "commit_sha": commit_sha})
++    _write_outcome(cwd / output_rel, {"status": "success", "commit_sha": commit_sha}, agent_log)
+     print(f"execution.py: ok variant={variant_id} commit={commit_sha}", file=sys.stderr)
+     return 0
+ 
+ 
+-def _write_outcome(output_path: Path, outcome: dict[str, object]) -> None:
++def _write_outcome(output_path: Path, outcome: dict[str, object], agent_log: Path | None = None) -> None:
++    if agent_log is not None:
++        # ealt/eden#343: the host reads this path and parses the
++        # stream-json log's terminal `result` record for total_cost_usd
++        # + token counts. Absolute, and outside the worktree, so it
++        # survives the host's worktree cleanup.
++        outcome = {**outcome, "agent_log": str(agent_log)}
+     output_path.parent.mkdir(parents=True, exist_ok=True)
+     output_path.write_text(json.dumps(outcome, sort_keys=True), encoding="utf-8")
+     if outcome.get("status") != "success":
+diff --git a/r3-dynamics/tests/test_execution_guard.py b/r3-dynamics/tests/test_execution_guard.py
+index 40fb7df..b83ed5f 100644
+--- a/r3-dynamics/tests/test_execution_guard.py
++++ b/r3-dynamics/tests/test_execution_guard.py
+@@ -1,5 +1,7 @@
+ """Executor guardrails: the edit surface and degenerate-variant refusal."""
+ 
++import json
++
+ import execution
+ 
+ 
+@@ -15,3 +17,27 @@ def test_evolved_surface_filters_control_dir():
+     assert execution._evolved_surface_paths([".eden/task.json"]) == []
+     # a real change to discover.py is the evolved surface
+     assert execution._evolved_surface_paths([".eden/task.json", "discover.py"]) == ["discover.py"]
++
++
++def test_outcome_carries_agent_log_when_the_agent_ran(tmp_path):
++    """ealt/eden#343: the host parses cost out of the log we point it at.
++
++    Stamped on error outcomes too — a variant the guard refused still
++    spent inference, and a ledger that only counted successes would
++    understate the run.
++    """
++    log = tmp_path / "outputs" / "agent-logs" / "execution_v1.log"
++    out = tmp_path / "outcome.json"
++    for outcome in ({"status": "success", "commit_sha": "a" * 40},
++                    {"status": "error", "reason": "agent modified protected paths"}):
++        execution._write_outcome(out, outcome, log)
++        written = json.loads(out.read_text())
++        assert written["agent_log"] == str(log)
++        assert written["status"] == outcome["status"]
++
++
++def test_outcome_omits_agent_log_when_no_agent_ran(tmp_path):
++    """Pre-agent failures (and the stub path) have no log to point at."""
++    out = tmp_path / "outcome.json"
++    execution._write_outcome(out, {"status": "error", "reason": "no idea content"})
++    assert "agent_log" not in json.loads(out.read_text())
