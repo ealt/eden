@@ -74,6 +74,7 @@ from eden_contracts import (
 )
 from eden_contracts._common import _check_display_name
 
+from .cost import CostEntry
 from .errors import (
     AlreadyExists,
     IllegalTransition,
@@ -203,6 +204,11 @@ class _Tx:
     # artifact store is a separate store (`08-storage.md` §5) and a
     # deposit precedes the object that references its URI.
     artifacts: dict[str, ArtifactMetadata] = field(default_factory=dict)
+    # Cost-ledger rows (issue #343). Keyed by `entry_id`. Reference-only
+    # and event-free for the same reason as `artifacts`: bookkeeping
+    # about an attempt, not a transition of one. See
+    # [`cost.py`](cost.py).
+    cost_entries: dict[str, CostEntry] = field(default_factory=dict)
 
 
 
@@ -409,6 +415,16 @@ class _StoreCore:
         """Return the artifact metadata row, or ``None`` if absent (issue #166)."""
         raise NotImplementedError
 
+    def _get_cost_entry(self, entry_id: str) -> CostEntry | None:
+        """Return the cost-ledger row, or ``None`` if absent (issue #343)."""
+        raise NotImplementedError
+
+    def _iter_cost_entries(
+        self, *, role: str | None = None, variant_id: str | None = None
+    ) -> Iterable[CostEntry]:
+        """Iterate cost-ledger rows in insertion order, applying filters."""
+        raise NotImplementedError
+
     def _iter_groups(self) -> Iterable[Group]:
         """Iterate registered groups (any order; backends sort by ``group_id``)."""
         raise NotImplementedError
@@ -605,6 +621,7 @@ class _StoreCore:
 
 
 from ._ops.artifacts import _ArtifactOpsMixin  # noqa: E402
+from ._ops.cost import _CostOpsMixin  # noqa: E402
 from ._ops.events import _EventOpsMixin  # noqa: E402
 from ._ops.experiment import _ExperimentOpsMixin  # noqa: E402
 from ._ops.groups import _GroupOpsMixin  # noqa: E402
@@ -621,6 +638,7 @@ class _StoreBase(
     _IdeaOpsMixin,
     _VariantOpsMixin,
     _ArtifactOpsMixin,
+    _CostOpsMixin,
     _EventOpsMixin,
     _ExperimentOpsMixin,
     _WorkerOpsMixin,
@@ -644,12 +662,13 @@ class _StoreBase(
 
 # Module-load-time MRO guard (plan §6 / §8.1): a future bases reorder
 # fails loud on first import rather than as a subtle dispatch bug.
-assert _StoreBase.__mro__[1:11] == (
+assert _StoreBase.__mro__[1:12] == (
     _TaskCreateOpsMixin,
     _TaskLifecycleOpsMixin,
     _IdeaOpsMixin,
     _VariantOpsMixin,
     _ArtifactOpsMixin,
+    _CostOpsMixin,
     _EventOpsMixin,
     _ExperimentOpsMixin,
     _WorkerOpsMixin,

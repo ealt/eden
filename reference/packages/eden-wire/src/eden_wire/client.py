@@ -51,6 +51,7 @@ from eden_contracts import (
     Variant,
     Worker,
 )
+from eden_storage.cost import CostEntry
 from eden_storage.errors import InvalidPrecondition, NotFound
 from eden_storage.submissions import (
     Submission,
@@ -619,6 +620,42 @@ class StoreClient:
             f"{self._ref_base}/validate/evaluation",
             json={"evaluation": evaluation},
         )
+
+    # ------------------------------------------------------------------
+    # Cost ledger (issue #343) — reference-only, non-normative
+    # ------------------------------------------------------------------
+
+    def record_cost(self, entry: CostEntry) -> None:
+        """Record one spend event in the server's cost ledger.
+
+        Satisfies the :class:`eden_storage.CostLedger` protocol so a
+        subprocess-mode worker host writes cost the same way whether its
+        store is in-process or across the wire. First-write-wins on
+        ``entry_id`` is enforced server-side, which is what makes a
+        retry after a lost response safe.
+        """
+        self._request(
+            "POST",
+            f"{self._ref_base}/cost",
+            json=entry.model_dump(mode="json", exclude_none=True),
+        )
+
+    def list_cost_entries(
+        self,
+        *,
+        role: str | None = None,
+        variant_id: str | None = None,
+    ) -> list[CostEntry]:
+        """Return ledger entries, optionally filtered by role / variant."""
+        params: dict[str, Any] = {}
+        if role is not None:
+            params["role"] = role
+        if variant_id is not None:
+            params["variant_id"] = variant_id
+        resp = self._request("GET", f"{self._ref_base}/cost", params=params)
+        return [
+            CostEntry.model_validate(row) for row in resp.json()["entries"]
+        ]
 
     # ------------------------------------------------------------------
     # Worker registry (12a-1) — chapter 7 §6 + §13

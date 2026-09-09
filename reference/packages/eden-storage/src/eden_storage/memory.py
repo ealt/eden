@@ -38,6 +38,7 @@ from ._base import (
     _StoreBase,
     _Tx,
 )
+from .cost import CostEntry
 from .submissions import Submission
 
 
@@ -79,6 +80,10 @@ class InMemoryStore(_StoreBase):
         self._imported_from: ImportProvenance | None = None
         # Artifact metadata rows (issue #166), keyed by opaque_id.
         self._artifacts: dict[str, ArtifactMetadata] = {}
+        # Reference-only cost-ledger rows (issue #343), keyed by
+        # entry_id. `_iter_cost_entries` imposes the cross-backend
+        # `(recorded_at, entry_id)` order.
+        self._cost_entries: dict[str, CostEntry] = {}
         self._lock = RLock()
 
     # ------------------------------------------------------------------
@@ -140,6 +145,22 @@ class InMemoryStore(_StoreBase):
     def _get_artifact(self, opaque_id: str) -> ArtifactMetadata | None:
         return self._artifacts.get(opaque_id)
 
+    def _get_cost_entry(self, entry_id: str) -> CostEntry | None:
+        return self._cost_entries.get(entry_id)
+
+    def _iter_cost_entries(
+        self, *, role: str | None = None, variant_id: str | None = None
+    ) -> Iterable[CostEntry]:
+        ordered = sorted(
+            self._cost_entries.values(), key=lambda e: (e.recorded_at, e.entry_id)
+        )
+        for entry in ordered:
+            if role is not None and entry.role != role:
+                continue
+            if variant_id is not None and entry.variant_id != variant_id:
+                continue
+            yield entry
+
     def _iter_groups(self) -> Iterable[Group]:
         return [self._groups[k] for k in sorted(self._groups)]
 
@@ -187,6 +208,8 @@ class InMemoryStore(_StoreBase):
             self._groups.pop(group_id, None)
         for opaque_id, metadata in tx.artifacts.items():
             self._artifacts[opaque_id] = metadata
+        for entry_id, cost_entry in tx.cost_entries.items():
+            self._cost_entries[entry_id] = cost_entry
         if tx.dispatch_mode is not None:
             self._dispatch_mode = dict(tx.dispatch_mode)
         if tx.experiment_state is not None:

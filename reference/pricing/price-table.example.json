@@ -1,0 +1,26 @@
+{
+  "source": "PLACEHOLDER — replace with the provider's published or your negotiated rates, and cite where they came from",
+  "as_of": "unset",
+  "unit": "usd_per_mtok",
+  "notes": "Template for the issue #343 cost report's --price-table flag. Every rate is null on purpose: a shipped number would be wrong for someone (list vs negotiated, direct vs Bedrock, region), and a wrong rate that looks authoritative is worse than an explicit gap. While as_of is 'unset' the table is treated as unfilled and NOTHING is derived from it. Rates are USD per MILLION tokens. The four input classes are distinct: fresh input, cache writes at the 5-minute TTL, cache writes at the 1-hour TTL (materially more expensive), and cache reads (roughly an order of magnitude cheaper than fresh input) — see reference/packages/eden-storage/src/eden_storage/pricing.py.",
+  "rates": {
+    "claude-sonnet-4-6": {
+      "input": null,
+      "output": null,
+      "cache_write_5m": null,
+      "cache_write_1h": null,
+      "cache_read": null
+    },
+    "claude-fable-5": {
+      "input": null,
+      "output": null,
+      "cache_write_5m": null,
+      "cache_write_1h": null,
+      "cache_read": null
+    }
+  },
+  "aliases": {
+    "anthropic/claude-fable-5": "claude-fable-5",
+    "amazon-bedrock/us.anthropic.claude-fable-5-v1": "claude-fable-5"
+  }
+}

@@ -20,11 +20,13 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any, cast
 
 from eden_contracts import Idea, IdeationTask
 from eden_service_common import (
     Subprocess,
     parse_json_line,
+    record_outcome_cost,
     spawn,
     submit_with_readback,
 )
@@ -33,7 +35,12 @@ from eden_service_common.artifacts import (
     idea_naming,
     write_artifact_bundle,
 )
-from eden_storage import IdeaSubmission, Store
+from eden_storage import (
+    CostLedger,
+    IdeaSubmission,
+    Store,
+    composite_attempt_key,
+)
 
 log = logging.getLogger(__name__)
 
@@ -147,6 +154,16 @@ class IdeatorSubprocess:
     def is_alive(self) -> bool:
         """Is the underlying process still running?"""
         return self._sub.is_alive()
+
+    @property
+    def cwd(self) -> Path:
+        """The subprocess's working directory (the experiment dir, §1.2).
+
+        Exposed so a relative path the subprocess reports (an
+        ``agent_log`` on the terminator line) resolves the same way the
+        subprocess wrote it.
+        """
+        return self._config.cwd
 
     def await_ready(self) -> None:
         """Block until the subprocess prints ``{"event": "ready"}``.
@@ -330,6 +347,63 @@ def _write_content(
     )
 
 
+def _record_ideation_cost(
+    *,
+    store: Store,
+    task: IdeationTask,
+    terminator: dict[str, Any],
+    cwd: Path,
+    idea_ids: tuple[str, ...],
+    dispatch_nonce: str,
+) -> None:
+    """Record the dispatch's gateway spend, if the subprocess reported any.
+
+    Issue #343. The terminator line (``ideation-done`` **or**
+    ``ideation-error``) is the carrier: an ideation attempt that failed
+    still burned gateway tokens. Keys are the same two the executor and
+    evaluator hosts read from their outcome JSON — a ``cost`` object
+    (the shape a gateway bridge normalizes its ``usage`` into) or an
+    ``agent_log`` path, resolved against the ideator's cwd.
+
+    The attempt key is a per-dispatch nonce rather than a deterministic
+    id: unlike the executor's ``variant_id``, an ideation dispatch has
+    no stable per-attempt identifier, and a task re-dispatched after a
+    reclaim really did spend twice.
+
+    ``dispatch_nonce`` is minted by the caller **before** the dispatch and
+    held in its state, so the key is reconstructible for the life of that
+    dispatch. Nothing retries this call today — idempotency would hold by
+    construction either way — but minting the nonce here would have made
+    the ideator the one role whose key a retry could not reproduce, so a
+    retry added later would double-count. Cheap to make safe by key
+    instead of safe by assumption.
+
+    ``idea_ids`` is what the dispatch actually produced (empty on any
+    failure path). The entry is attributed to an idea only when the
+    dispatch produced **exactly one** — a dispatch that emitted three
+    ideas spent one indivisible gateway call on all three, and picking
+    one, or splitting the cost three ways, would both be inventions.
+    Those entries stay attributed at the role/task level, and
+    ``summarize``'s ``by_idea`` bucket is documented as a partial
+    partition because of it.
+    """
+    record_outcome_cost(
+        # The reference backends and `StoreClient` all satisfy the
+        # reference-only `CostLedger`; it is deliberately not part of
+        # the `Store` Protocol (see eden_storage.protocol).
+        store=cast(CostLedger, store),
+        outcome=terminator,
+        base_dir=cwd,
+        role="ideator",
+        task_id=task.task_id,
+        # Injective join for the same reason the evaluator uses one: the
+        # task id is opaque, so concatenating it with the nonce is not
+        # collision-free on its own.
+        attempt_key=composite_attempt_key(task.task_id, dispatch_nonce),
+        idea_id=idea_ids[0] if len(idea_ids) == 1 else None,
+    )
+
+
 def handle_ideation_task(
     *,
     store: Store,
@@ -344,6 +418,9 @@ def handle_ideation_task(
     """Drive one ideation task through the subprocess: claim → dispatch → submit."""
     claim = store.claim(task.task_id, worker_id)
     history = _build_history(store)
+    # Minted before the dispatch so the cost row's idempotency key is
+    # reconstructible for this dispatch (issue #343 review round 1).
+    dispatch_nonce = uuid.uuid4().hex[:12]
     try:
         terminator, ideas = ideator.dispatch_plan(
             task=task,
@@ -365,46 +442,65 @@ def handle_ideation_task(
             role="ideator",
         )
         raise
-    if terminator.get("event") == "ideation-error":
-        log.warning(
-            "ideator_ideate_error",
-            extra={
-                "task_id": task.task_id,
-                "reason": terminator.get("reason"),
-                "ideas_seen": len(ideas),
-            },
-        )
-        submit_with_readback(
-            store=store,
-            task_id=task.task_id,
-            token=claim.worker_id,
-            submission=IdeaSubmission(status="error"),
-            role="ideator",
-        )
-        return
+    # Issue #343: record the dispatch's spend exactly once, on every
+    # path, in a `finally` — because `idea_id` attribution needs the ids
+    # `_persist_ideas` mints, which are only known after the terminator
+    # has been handled. Recording last means a crash between submit and
+    # record loses the cost row; recording first would have meant a
+    # crash between record and submit loses the *submission*, which is
+    # strictly worse.
+    idea_ids: tuple[str, ...] = ()
     try:
-        ids = _persist_ideas(
-            store, task=task, ideas=ideas, artifacts_dir=artifacts_dir
-        )
-    except ProtocolViolation as exc:
-        log.warning(
-            "ideator_idea_invalid",
-            extra={"task_id": task.task_id, "error": str(exc)},
-        )
+        if terminator.get("event") == "ideation-error":
+            log.warning(
+                "ideator_ideate_error",
+                extra={
+                    "task_id": task.task_id,
+                    "reason": terminator.get("reason"),
+                    "ideas_seen": len(ideas),
+                },
+            )
+            submit_with_readback(
+                store=store,
+                task_id=task.task_id,
+                token=claim.worker_id,
+                submission=IdeaSubmission(status="error"),
+                role="ideator",
+            )
+            return
+        try:
+            ids = _persist_ideas(
+                store, task=task, ideas=ideas, artifacts_dir=artifacts_dir
+            )
+        except ProtocolViolation as exc:
+            log.warning(
+                "ideator_idea_invalid",
+                extra={"task_id": task.task_id, "error": str(exc)},
+            )
+            submit_with_readback(
+                store=store,
+                task_id=task.task_id,
+                token=claim.worker_id,
+                submission=IdeaSubmission(status="error"),
+                role="ideator",
+            )
+            return
+        idea_ids = tuple(ids)
         submit_with_readback(
             store=store,
             task_id=task.task_id,
             token=claim.worker_id,
-            submission=IdeaSubmission(status="error"),
+            submission=IdeaSubmission(status="success", idea_ids=idea_ids),
             role="ideator",
         )
-        return
-    submit_with_readback(
-        store=store,
-        task_id=task.task_id,
-        token=claim.worker_id,
-        submission=IdeaSubmission(status="success", idea_ids=tuple(ids)),
-        role="ideator",
-    )
+    finally:
+        _record_ideation_cost(
+            store=store,
+            task=task,
+            terminator=terminator,
+            cwd=ideator.cwd,
+            idea_ids=idea_ids,
+            dispatch_nonce=dispatch_nonce,
+        )
 
 

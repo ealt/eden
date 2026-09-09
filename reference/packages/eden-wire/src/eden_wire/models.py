@@ -25,6 +25,7 @@ from eden_contracts._common import (
     UriStr,
     WorkerId,
 )
+from eden_storage import CostEntry
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -113,6 +114,19 @@ class ValidateEvaluationRequest(_WireBase):
     """Body for the ``/_reference/`` validate-evaluation helper."""
 
     evaluation: dict[str, Any]
+
+
+class CostEntriesResponse(_WireBase):
+    """Body for ``GET /_reference/experiments/{E}/cost`` (issue #343).
+
+    Reference-only, like the ledger it reads: no ``spec/v0`` schema
+    backs it. The entry shape is :class:`eden_storage.CostEntry` itself
+    rather than a wire twin — a duplicated model here would be one more
+    thing to keep in lockstep for no benefit, since the ledger has no
+    normative wire format to diverge from.
+    """
+
+    entries: list[CostEntry]
 
 
 # ---------------------------------------------------------------------

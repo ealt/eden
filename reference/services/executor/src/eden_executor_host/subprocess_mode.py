@@ -20,7 +20,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from eden_contracts import ExecutionTask, Idea, Variant
 from eden_git import GitRepo
@@ -30,12 +30,14 @@ from eden_service_common import (
     make_cidfile_callbacks,
     make_cidfile_path,
     parse_json_line,
+    record_outcome_cost,
     spawn,
     submit_with_readback,
     sweep_host_worktrees,
     wrap_command,
 )
 from eden_storage import (
+    CostLedger,
     DispatchError,
     IllegalTransition,
     InvalidPrecondition,
@@ -206,7 +208,7 @@ def _handle_one(
         _submit_error(store, task.task_id, ctx.claim_token, variant_id)
         return
 
-    commit_sha = _execute_and_validate(ctx=ctx, worker_id=worker_id)
+    commit_sha = _execute_and_validate(store=store, ctx=ctx, worker_id=worker_id)
     if commit_sha is None:
         _submit_error(store, task.task_id, ctx.claim_token, variant_id)
         return
@@ -255,12 +257,18 @@ def _create_starting_variant(*, store: Store, ctx: _ExecuteContext) -> bool:
 
 
 def _execute_and_validate(
-    *, ctx: _ExecuteContext, worker_id: str
+    *, store: Store, ctx: _ExecuteContext, worker_id: str
 ) -> str | None:
-    """Phase 2a–2e: worktree + subprocess + commit validation.
+    """Phase 2a–2e: worktree + subprocess, then commit validation.
 
     Returns the validated commit SHA on success, or ``None`` if any step
-    requires the caller to submit a ``status="error"`` variant.
+    requires the caller to submit a ``status="error"`` variant. Phases
+    2d–2e live in :func:`_validated_commit_from_outcome`.
+
+    ``store`` is threaded in only for the issue #343 cost ledger: the
+    attempt's spend is recorded here, inside the worktree's lifetime and
+    regardless of how the attempt terminalizes, because money spent on a
+    failed variant is still money spent.
     """
     parent = ctx.idea.parent_commits[0]
     wt = TaskWorktree(
@@ -293,9 +301,41 @@ def _execute_and_validate(
             extra={"task_id": ctx.task.task_id},
         )
         outcome = {"status": "error"}
+    else:
+        # Issue #343: record before the worktree goes away — a relative
+        # `agent_log` resolves against it. The attempt key is the
+        # per-attempt `variant_id`, so a reclaimed-and-rerun task
+        # records each attempt's spend separately.
+        record_outcome_cost(
+            # Every reference backend and `StoreClient` satisfies the
+            # reference-only `CostLedger` too; the cast mirrors the
+            # `ArtifactStore` cast in the wire artifacts router — the
+            # extension is deliberately not on the `Store` Protocol.
+            store=cast(CostLedger, store),
+            outcome=outcome,
+            base_dir=wt.path,
+            role="executor",
+            task_id=ctx.task.task_id,
+            attempt_key=ctx.variant_id,
+            variant_id=ctx.variant_id,
+            idea_id=ctx.idea.idea_id,
+        )
     finally:
         wt.remove()
 
+    return _validated_commit_from_outcome(ctx=ctx, outcome=outcome)
+
+
+def _validated_commit_from_outcome(
+    *, ctx: _ExecuteContext, outcome: dict[str, Any]
+) -> str | None:
+    """Phase 2d–2e: outcome status + the two chapter-3 §3.3 commit gates.
+
+    Returns the validated commit SHA, or ``None`` when the caller must
+    route the attempt to ``status="error"``. Split from
+    :func:`_execute_and_validate` so the run phase (worktree lifetime,
+    subprocess, cost capture) and the validation phase read separately.
+    """
     if outcome.get("description"):
         log.info(
             "executor_outcome_description",

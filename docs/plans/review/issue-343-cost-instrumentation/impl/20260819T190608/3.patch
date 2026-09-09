@@ -1,0 +1,119 @@
+--- docs/plans/review/issue-343-cost-instrumentation/impl/20260819T190608/2.md	2026-08-19 19:47:53.427406612 +0000
++++ docs/plans/review/issue-343-cost-instrumentation/impl/20260819T190608/3.md	2026-08-19 19:53:03.154467299 +0000
+@@ -207,75 +207,47 @@
+ 
+ ## Review Status
+ 
+-Round 2 — all four round-1 findings accepted and fixed; one proposed remedy
+-declined in favour of a cheaper one that removes the objection entirely.
+-Round-0's three findings were fixed in round 1 and re-verified as fixed by the
+-round-1 review.
+-
+-### 1. Over-cap digest truncated to 128 bits (Bug, accepted — remedy simplified)
+-
+-Correct: a 32-hex prefix is collision-*resistant* to its own width, not
+-injective, and under first-write-wins a collision discards a real attempt's
+-spend. Fixed by using the **full** SHA-256 hex — `cost-<role>-sha256:` plus 64
+-hex is at most 86 characters, so it fits the 128-char cap with room to spare and
+-there was never anything to buy by shortening it.
+-
+-Declined the two alternatives offered (store the canonical key in a separately
+-constrained field; keep a digest but add collision detection). With a full
+-SHA-256 a collision requires a cryptographic break, so detection machinery would
+-be speculative complexity guarding an event that cannot be provoked — and the
+-extra field would duplicate `task_id` / `variant_id`, which are already columns.
+-
+-### 2. `by_model` inherited attempt-wide partial status (Bug, accepted)
+-
+-Real precision bug. `partially_priced` is attempt-wide, and
+-`_accumulate_model` applied it to every slice — so an attempt using a fully
+-priced `m1` and an unknown `m2` flagged **`m1`** as a floor, understating
+-confidence in a figure that is exact.
+-
+-`DerivedCost.partial_models` now records which models had gaps *of their own*
+-(unrated class, or per-model cache writes with no TTL split), and the per-model
+-bucket consults that instead of the attempt-wide flag. The attempt-level total
+-remains a floor, which is correct — it is short by `m2`.
+-
+-### 3. Ideator nonce not stable across retries (Risk, accepted as hardening)
+-
+-Accepted, with the severity stated honestly: **nothing retries that call today**,
+-so this was not a live double-count. `record_outcome_cost` swallows failures
+-without retrying and no wrapper retries it, which is why the original docstring
+-argued idempotency held "by construction". But that made the ideator the one role
+-whose key a *future* retry could not reproduce, and hoisting the nonce costs
+-nothing: `handle_ideation_task` now mints it before the dispatch and passes it
+-into the record call, so the key is reconstructible for the life of that
+-dispatch. Safe by key beats safe by assumption.
+-
+-### 4. Row-level floor invisible outside the role table (Risk, accepted)
+-
+-Right, and the same honesty principle as two earlier fixes in this chunk (the
+-per-role unpriced column, the per-idea `basis` column): a caveat in the preamble
+-does not tell a reader *which* row understates, and `$3.0000 derived` on a row
+-whose output tokens had no rate looks complete. Every bucket table
+-(role / model / variant / idea) now carries a `floor` column driven by the same
+-`is_floor` the JSON exposes.
++Round 3 — all three round-2 findings accepted and fixed. The two bugs were both
++reproduced before fixing.
+ 
+-### Verification of the fixes
++### 1. Raw/digest namespace collision (Bug, accepted)
++
++Right, and worth noting *why* I'd missed it: I had considered an attempt key
++shaped like `sha256:<hex>` and dismissed it as vanishingly unlikely. Likelihood
++was the wrong lens — ids are opaque (§1.3), so nothing forbids that shape, and
++the collision is **deterministic** rather than probabilistic. One condition fixes
++it: a key that already starts with the digest prefix is digested too, so the
++verbatim branch can never emit a `sha256:`-prefixed id and the two forms occupy
++disjoint namespaces. Short keys stay readable.
++
++### 2. Duplicate model slices double-count `by_model` (Bug, accepted)
++
++Reproduced first: two `m1` slices of 1M input tokens each priced the attempt at
++`$6.00` (correct) while `by_model["m1"]` read `$12.00`. The attempt total is right
++and only the per-model figure is wrong, which is the hardest kind of wrong number
++to notice.
++
++Fixed at both ends. Producers **merge** repeated labels
++(`cost_from_reported`) rather than rejecting the attempt — a bridge reporting one
++slice per gateway call legitimately names a model twice, the numbers are
++additive, and dropping the attempt would lose real spend. And `CostEntry` now
++**rejects** duplicate labels via a validator, because the wire accepts a
++`CostEntry` from any client and a producer-side convention is not an invariant.
++Post-fix: attempt `$6.00`, `by_model["m1"]` `$6.00`.
++
++### 3. Stale comment contradicting the floor-marker fix (Nit, accepted)
+ 
+-`ruff` / `pyright` (0 errors, warnings back to the pre-change baseline of 28) /
+-`check-complexity` (0 blocking, still no `slop-allow`) /
+-`check-rename-discipline` / `spec-xref-check` / markdownlint green; the touched
+-suites pass.
+-
+-Seven regression tests added for these findings: the digest is the full hash and
+-within the cap; a fully-priced model sharing an attempt with an unknown one is
+-**not** a floor while the attempt still is; a model missing one of its *own*
+-rates **is**; untiered per-model cache writes make that model a floor; every
+-bucket table marks its own floor rows and complete rows carry no marker; and the
+-ideator's recorded key is derived from the nonce the host minted before dispatch
+-(asserted by spying on the real handler, not by calling the helper directly).
+-
+-The operator walkthrough was re-run against a deliberately partial rate table
+-(input priced, output not): the ideator role, the gateway model, and both ideas
+-now show `FLOOR` on their own rows, while the provider-reported executor and
+-variant rows stay unmarked.
++Deleted. It explained why the role table deliberately had no row-level marker —
++true when written, false one round later.
++
++### Verification of the fixes
+ 
+-Docs updated in lockstep (binding §11 / §11.2, `docs/observability.md` §2.10).
++`ruff` / `pyright` (0 errors, 28 warnings = the pre-change baseline) /
++`check-complexity` (0 blocking, no `slop-allow`) / `check-rename-discipline` /
++`spec-xref-check` / markdownlint green. Full `pytest` green.
++
++Five regression tests added: the digest-shaped-key namespace check, duplicate
++slices rejected on the record, the review's exact double-count reproduction now
++balancing, producer-side merging (sums tokens and dollars, leaves other labels
++alone), and a merged report building a valid entry through the real
++`record_outcome_cost`.

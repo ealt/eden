@@ -2,6 +2,13 @@
 
 from __future__ import annotations
 
+from .agent_cost import (
+    CostFields,
+    cost_from_agent_log,
+    cost_from_outcome,
+    cost_from_reported,
+    record_outcome_cost,
+)
 from .auth import (
     DEFAULT_CREDENTIALS_DIR,
     WorkerCredential,
@@ -60,6 +67,7 @@ from .worktrees import TaskWorktree, sweep_host_worktrees
 
 __all__ = [
     "BindMount",
+    "CostFields",
     "DEFAULT_CREDENTIALS_DIR",
     "RESERVED_SUBSTRATE_ENV_KEYS",
     "ScriptedEvaluateFn",
@@ -75,6 +83,9 @@ __all__ = [
     "add_exec_arguments",
     "add_substrate_arguments",
     "bootstrap_worker_credential",
+    "cost_from_agent_log",
+    "cost_from_outcome",
+    "cost_from_reported",
     "cleanup_cidfile",
     "credential_path",
     "configure_logging",
@@ -92,6 +103,7 @@ __all__ = [
     "parse_bind_spec",
     "parse_env_file",
     "parse_json_line",
+    "record_outcome_cost",
     "parse_log_level",
     "parse_volume_spec",
     "reap_orphaned_containers",

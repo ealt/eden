@@ -5,6 +5,7 @@ interface every backend satisfies, and [`memory.py`](memory.py) /
 [`sqlite.py`](sqlite.py) / [`postgres.py`](postgres.py) for the
 three reference backends. Error types and submission dataclasses
 live in [`errors.py`](errors.py) and [`submissions.py`](submissions.py).
+The reference-only cost ledger (issue #343) lives in [`cost.py`](cost.py).
 """
 
 from ._base import RESERVED_GROUP_NAMES, RESERVED_WORKER_NAMES
@@ -16,6 +17,15 @@ from .artifact_backend import (
     GcsBackend,
     InMemoryArtifactBackend,
     S3Backend,
+)
+from .cost import (
+    ENTRY_ID_MAX_LEN,
+    CostEntry,
+    CostRole,
+    CostSource,
+    ModelUsage,
+    composite_attempt_key,
+    cost_entry_id,
 )
 from .errors import (
     AlreadyExists,
@@ -37,7 +47,15 @@ from .errors import (
 )
 from .memory import InMemoryStore
 from .postgres import PostgresStore, ensure_readonly_role
-from .protocol import ArtifactStore, Store
+from .pricing import (
+    DerivedCost,
+    ModelRates,
+    PriceTable,
+    derive_cost,
+    load_price_table,
+)
+from .protocol import ArtifactStore, CostLedger, Store
+from .rollup import CostSummary, CostTokenTotals, CostTotals, summarize
 from .sqlite import SqliteStore
 from .submissions import (
     EvaluationSubmission,
@@ -48,11 +66,20 @@ from .submissions import (
 )
 
 __all__ = [
+    "ENTRY_ID_MAX_LEN",
     "AlreadyExists",
     "ArtifactBackend",
     "ArtifactStore",
     "ConflictingResubmission",
+    "CostEntry",
+    "CostLedger",
+    "CostRole",
+    "CostSource",
+    "CostSummary",
+    "CostTokenTotals",
+    "CostTotals",
     "CycleDetected",
+    "DerivedCost",
     "DispatchError",
     "EvaluationSubmission",
     "FileArtifactBackend",
@@ -64,12 +91,15 @@ __all__ = [
     "InMemoryStore",
     "InvalidName",
     "InvalidPrecondition",
+    "ModelRates",
+    "ModelUsage",
     "NotClaimed",
     "NotFound",
     "IdeaSubmission",
     "ImportResult",
     "NoOpVariant",
     "PostgresStore",
+    "PriceTable",
     "RESERVED_GROUP_NAMES",
     "RESERVED_WORKER_NAMES",
     "ReservedIdentifier",
@@ -81,7 +111,12 @@ __all__ = [
     "WorkerNotEligible",
     "WorkerNotRegistered",
     "WrongClaimant",
+    "composite_attempt_key",
+    "cost_entry_id",
+    "derive_cost",
     "ensure_readonly_role",
     "iter_events_by_type",
+    "load_price_table",
     "submissions_equivalent",
+    "summarize",
 ]
